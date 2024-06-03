@@ -251,6 +251,20 @@ class ModelViewer(
     }
 
     /**
+     * Resets the camera to initial position. Calling this after [transformToUnitCube]
+     * will transform the model to initial world position
+     *
+     * Resetting the manipulator is the easiest & safest option instead of resetting the
+     * individual properties in different Manipulator (Orbit, FreeFlight, Map) implementations
+     */
+    fun setCameraManipulator(cameraManipulator: Manipulator) {
+        surfaceView?.let {
+            this.cameraManipulator = cameraManipulator
+            gestureDetector = GestureDetector(it, cameraManipulator)
+        }
+    }
+
+    /**
      * Removes the transformation that was set up via transformToUnitCube.
      */
     fun clearRootTransform() {
