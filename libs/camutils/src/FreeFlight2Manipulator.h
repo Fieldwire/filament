@@ -29,6 +29,12 @@ namespace camutils {
 
 using namespace filament::math;
 
+/**
+ * [FreeFlight2Manipulator] is a combination of [FreeFlightManipulator] & [OribitManipulator] to support FreeFlight
+ * navigation for one finger swipe(offered by FreeFlightManipulator) and PAN for two finger swipe, ZOOM for
+ * two fingers pinch (offered by OrbitManipulator). Other than copying related code (mostly grabBegin, grabUpdate,
+ * grabEnd, scroll & some private properties) no new changes are added.
+ */
 template<typename FLOAT>
 class FreeFlight2Manipulator : public Manipulator<FLOAT> {
 public:
