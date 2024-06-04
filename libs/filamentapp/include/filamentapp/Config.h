@@ -31,7 +31,7 @@ struct Config {
     bool splitView = false;
     mutable filament::Engine::Backend backend = filament::Engine::Backend::DEFAULT;
     mutable filament::backend::FeatureLevel featureLevel = filament::backend::FeatureLevel::FEATURE_LEVEL_3;
-    filament::camutils::Mode cameraMode = filament::camutils::Mode::FREE_FLIGHT_2;
+    filament::camutils::Mode cameraMode = filament::camutils::Mode::ORBIT;
     bool resizeable = true;
     bool headless = false;
     int stereoscopicEyeCount = 2;
