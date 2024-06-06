@@ -110,7 +110,8 @@ public:
             pitch = clamp(grabPitch + dely * -panSpeed.y, minPitch, maxPitch);
             yaw = fmod(grabYaw + delx * panSpeed.x, 2.0 * F_PI);
 
-            updateTarget(pitch, yaw);
+            // Reverse the direction of the target to follow the same as the swipe direction
+            updateTarget(-pitch, -yaw);
         }
         else if (mGrabState == PANNING) {
             const FLOAT ulen = distance(mGrabScene, mGrabEye);
