@@ -300,9 +300,9 @@ public class Engine {
     public static class Config {
 
         // #defines in Engine.h
-        private static final long FILAMENT_PER_RENDER_PASS_ARENA_SIZE_IN_MB = 3;
-        private static final long FILAMENT_PER_FRAME_COMMANDS_SIZE_IN_MB = 2;
-        private static final long FILAMENT_MIN_COMMAND_BUFFERS_SIZE_IN_MB = 1;
+        private static final long FILAMENT_PER_RENDER_PASS_ARENA_SIZE_IN_MB = 9;
+        private static final long FILAMENT_PER_FRAME_COMMANDS_SIZE_IN_MB = 8;
+        private static final long FILAMENT_MIN_COMMAND_BUFFERS_SIZE_IN_MB = 8;
         private static final long FILAMENT_COMMAND_BUFFER_SIZE_IN_MB =
                 FILAMENT_MIN_COMMAND_BUFFERS_SIZE_IN_MB * 3;
 

@@ -47,7 +47,7 @@ struct MetalContext;
 struct BufferState;
 
 #ifndef FILAMENT_METAL_HANDLE_ARENA_SIZE_IN_MB
-#define FILAMENT_METAL_HANDLE_ARENA_SIZE_IN_MB 8
+#define FILAMENT_METAL_HANDLE_ARENA_SIZE_IN_MB 32
 #endif
 
 class MetalDriver final : public DriverBase {
