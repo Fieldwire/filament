@@ -2,6 +2,7 @@ plugins {
     id 'com.android.application'
     id 'kotlin-android'
     id 'filament-tools-plugin'
+    id 'org.jetbrains.kotlin.plugin.compose'
 }
 
 project.ext.isSample = true
@@ -44,12 +45,30 @@ android {
         sourceCompatibility versions.jdk
         targetCompatibility versions.jdk
     }
+
+    buildFeatures {
+        compose true
+    }
+}
+
+composeCompiler {
+    enableStrongSkippingMode = true
 }
 
 dependencies {
+
+    def composeBom = platform('androidx.compose:compose-bom:2024.02.02')
+    implementation composeBom
+    implementation 'androidx.compose.foundation:foundation'
+    implementation 'androidx.compose.ui:ui'
+
     implementation deps.kotlin
     implementation deps.coroutines.core
     implementation project(':filament-android')
     implementation project(':gltfio-android')
     implementation project(':filament-utils-android')
+
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'com.google.android.material:material:1.11.0'
+    implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
 }

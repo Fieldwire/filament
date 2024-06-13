@@ -1,0 +1,23 @@
+// Textured material
+
+material {
+    name : textured_pbr,
+    shadingModel : unlit,
+     parameters : [
+        // Base color sRGB texture
+        {
+            type : sampler2d,
+            name : baseColor
+        }
+    ],
+    requires: [
+        uv0
+    ]
+}
+
+fragment {
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+        material.baseColor = texture(materialParams_baseColor, getUV0());
+    }
+}

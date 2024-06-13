@@ -141,13 +141,14 @@ class MainActivity : Activity() {
     }
 
     private fun createDefaultRenderables() {
-        val buffer = assets.open("models/scene.gltf").use { input ->
+        val buffer = assets.open("models/500_MB.glb").use { input ->
             val bytes = ByteArray(input.available())
             input.read(bytes)
             ByteBuffer.wrap(bytes)
         }
 
-        modelViewer.loadModelGltfAsync(buffer) { uri -> readCompressedAsset("models/$uri") }
+//        modelViewer.loadModelGltfAsync(buffer) { uri -> readCompressedAsset("models/$uri") }
+        modelViewer.loadModelGlb(buffer)
         updateRootTransform()
     }
 
