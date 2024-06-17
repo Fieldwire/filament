@@ -58,7 +58,7 @@
 #include <stdint.h>
 
 #ifndef FILAMENT_OPENGL_HANDLE_ARENA_SIZE_IN_MB
-#    define FILAMENT_OPENGL_HANDLE_ARENA_SIZE_IN_MB 32
+#    define FILAMENT_OPENGL_HANDLE_ARENA_SIZE_IN_MB 4
 #endif
 
 namespace filament::backend {
