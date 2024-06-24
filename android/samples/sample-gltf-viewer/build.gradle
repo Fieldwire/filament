@@ -11,6 +11,10 @@ filamentTools {
     cmgenArgs = "-q --format=ktx --size=256 --extract-blur=0.1 --deploy=src/main/assets/envs/default_env"
     iblInputFile = project.layout.projectDirectory.file("../../../third_party/environments/lightroom_14b.hdr")
     iblOutputDir = project.layout.projectDirectory.dir("src/main/assets/envs")
+
+    // For HighlightObjectActivity
+    materialInputDir = project.layout.projectDirectory.dir("src/main/materials")
+    materialOutputDir = project.layout.projectDirectory.dir("src/main/assets/materials")
 }
 
 // don't forget to update MainACtivity.kt when/if changing this.
@@ -49,6 +53,12 @@ android {
     buildFeatures {
         compose true
     }
+
+    // We use the .filamat extension for materials compiled with matc
+    // Telling aapt to not compress them allows to load them efficiently
+    aaptOptions {
+        noCompress 'filamat', 'ktx'
+    }
 }
 
 composeCompiler {
@@ -57,6 +67,7 @@ composeCompiler {
 
 dependencies {
 
+    implementation project(':filamat-android')
     def composeBom = platform('androidx.compose:compose-bom:2024.02.02')
     implementation composeBom
     implementation 'androidx.compose.foundation:foundation'

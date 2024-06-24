@@ -19,6 +19,8 @@ package com.google.android.filament.gltf
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.*
 import android.view.GestureDetector
@@ -43,6 +45,7 @@ import java.io.RandomAccessFile
 import java.net.URI
 import java.nio.Buffer
 import java.nio.ByteBuffer
+import java.nio.channels.Channels
 import java.nio.charset.StandardCharsets
 import java.util.zip.ZipInputStream
 
@@ -89,17 +92,17 @@ class HighlightObjectActivity : Activity() {
 
         modelViewer = ModelViewer(surfaceView, Engine.Builder().config(
             Engine.Config().apply {
-                    commandBufferSizeMB = 34 * 6
-                    perRenderPassArenaSizeMB = 35
-                    minCommandBufferSizeMB = 32
-                    perFrameCommandsSizeMB = 32
-                    driverHandleArenaSizeMB = 32
+                commandBufferSizeMB = 34 * 6
+                perRenderPassArenaSizeMB = 35
+                minCommandBufferSizeMB = 32
+                perFrameCommandsSizeMB = 32
+                driverHandleArenaSizeMB = 32
 
-               /* commandBufferSizeMB = 1024 * 10
-                perRenderPassArenaSizeMB = 1088
-                minCommandBufferSizeMB = 1024
-                perFrameCommandsSizeMB = 1024
-                driverHandleArenaSizeMB = 1024*/
+                /* commandBufferSizeMB = 1024 * 10
+                 perRenderPassArenaSizeMB = 1088
+                 minCommandBufferSizeMB = 1024
+                 perFrameCommandsSizeMB = 1024
+                 driverHandleArenaSizeMB = 1024*/
             }
         )
             .build())
@@ -116,7 +119,7 @@ class HighlightObjectActivity : Activity() {
             true
         }
 
-        buildMaterial()
+        loadMaterial()
         createDefaultRenderables()
         createIndirectLight()
 
@@ -161,7 +164,7 @@ class HighlightObjectActivity : Activity() {
     }
 
     private fun createDefaultRenderables() {
-        val buffer = assets.open("models/100_MB.glb").use { input ->
+        val buffer = assets.open("models/160_MB.glb").use { input ->
             val bytes = ByteArray(input.available())
             input.read(bytes)
             ByteBuffer.wrap(bytes)
@@ -239,9 +242,9 @@ class HighlightObjectActivity : Activity() {
                 val reflections = specularFilter.run(skyboxTexture)
 
                 val ibl = IndirectLight.Builder()
-                         .reflections(reflections)
-                         .intensity(30000.0f)
-                         .build(engine)
+                    .reflections(reflections)
+                    .intensity(30000.0f)
+                    .build(engine)
 
                 val sky = Skybox.Builder().environment(skyboxTexture).build(engine)
 
@@ -433,15 +436,15 @@ class HighlightObjectActivity : Activity() {
                         it.compile(
                             Material.CompilerPriorityQueue.HIGH,
                             Material.UserVariantFilterBit.DIRECTIONAL_LIGHTING or
-                            Material.UserVariantFilterBit.DYNAMIC_LIGHTING or
-                            Material.UserVariantFilterBit.SHADOW_RECEIVER,
+                                Material.UserVariantFilterBit.DYNAMIC_LIGHTING or
+                                Material.UserVariantFilterBit.SHADOW_RECEIVER,
                             null, null)
                         it.compile(
                             Material.CompilerPriorityQueue.LOW,
                             Material.UserVariantFilterBit.FOG or
-                            Material.UserVariantFilterBit.SKINNING or
-                            Material.UserVariantFilterBit.SSR or
-                            Material.UserVariantFilterBit.VSM,
+                                Material.UserVariantFilterBit.SKINNING or
+                                Material.UserVariantFilterBit.SSR or
+                                Material.UserVariantFilterBit.VSM,
                             null, null)
                     }
                 }
@@ -516,7 +519,7 @@ class HighlightObjectActivity : Activity() {
                         )
                         logg("actualmatInstance $actualMatInstance")
                         setMaterialInstanceAt(
-                            getInstance(it.renderable), 0, selectedMaterial.createInstance()
+                            getInstance(it.renderable), 0, selectedMaterial.defaultInstance
                         )
                         logg("material instance set")
                     }
@@ -527,6 +530,34 @@ class HighlightObjectActivity : Activity() {
         }
     }
 
+    private fun loadMaterial() {
+        val engine = modelViewer.engine
+        readUncompressedAsset("materials/object_highlight.filamat").let {
+            selectedMaterial = Material.Builder().payload(it, it.remaining()).build(engine)
+            selectedMaterial.compile(
+                Material.CompilerPriorityQueue.HIGH,
+                Material.UserVariantFilterBit.ALL,
+                Handler(Looper.getMainLooper())
+            ) {
+                logg("hellotriangle",
+                    "Material " + selectedMaterial.name + " compiled.")
+            }
+            engine.flush()
+        }
+    }
+
+    private fun readUncompressedAsset(assetName: String): ByteBuffer {
+        assets.openFd(assetName).use { fd ->
+            val input = fd.createInputStream()
+            val dst = ByteBuffer.allocate(fd.length.toInt())
+
+            val src = Channels.newChannel(input)
+            src.read(dst)
+            src.close()
+
+            return dst.apply { rewind() }
+        }
+    }
 
     private fun buildMaterial() {
         // MaterialBuilder.init() must be called before any MaterialBuilder methods can be used.
