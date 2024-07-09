@@ -63,6 +63,7 @@
 #include <iostream>
 #include <set>
 #include <string>
+#include <thread>
 
 #include "generated/resources/gltf_demo.h"
 #include "materials/uberarchive.h"

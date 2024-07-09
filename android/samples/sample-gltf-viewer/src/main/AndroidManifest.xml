@@ -13,9 +13,7 @@
       android:theme="@android:style/Theme.NoTitleBar">
     <activity
         android:exported="true"
-        android:name="com.google.android.filament.gltf.MainActivity"
-        android:screenOrientation="fullSensor"
-        android:configChanges="orientation|screenSize|screenLayout|keyboardHidden">
+        android:name="com.google.android.filament.gltf.HighlightObjectActivity">
       <intent-filter>
         <action android:name="android.intent.action.MAIN"/>
 

@@ -24,6 +24,7 @@ import android.view.*
 import android.view.GestureDetector
 import android.widget.TextView
 import android.widget.Toast
+import com.google.android.filament.Engine
 import com.google.android.filament.Fence
 import com.google.android.filament.IndirectLight
 import com.google.android.filament.Material
@@ -83,7 +84,23 @@ class MainActivity : Activity() {
         doubleTapDetector = GestureDetector(applicationContext, doubleTapListener)
         singleTapDetector = GestureDetector(applicationContext, singleTapListener)
 
-        modelViewer = ModelViewer(surfaceView)
+        modelViewer = ModelViewer(surfaceView, Engine.Builder().config(
+            Engine.Config().apply {
+                commandBufferSizeMB = 34 * 6
+                perRenderPassArenaSizeMB = 35
+                minCommandBufferSizeMB = 32
+                perFrameCommandsSizeMB = 32
+                driverHandleArenaSizeMB = 32
+
+                /*commandBufferSizeMB = 1024 * 10
+                perRenderPassArenaSizeMB = 1088
+                minCommandBufferSizeMB = 1024
+                perFrameCommandsSizeMB = 1024
+                driverHandleArenaSizeMB = 1024*/
+            }
+        ).featureLevel(Engine.FeatureLevel.FEATURE_LEVEL_3)
+            .backend(Engine.Backend.OPENGL)
+            .build())
         viewerContent.view = modelViewer.view
         viewerContent.sunlight = modelViewer.light
         viewerContent.lightManager = modelViewer.engine.lightManager
@@ -141,7 +158,7 @@ class MainActivity : Activity() {
     }
 
     private fun createDefaultRenderables() {
-        val buffer = assets.open("models/500_MB.glb").use { input ->
+        val buffer = assets.open("models/160_MB.glb").use { input ->
             val bytes = ByteArray(input.available())
             input.read(bytes)
             ByteBuffer.wrap(bytes)
