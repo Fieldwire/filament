@@ -748,7 +748,13 @@ int main(int argc, char** argv) {
                 createJitShaderProvider(engine, OPTIMIZE_MATERIALS) :
                 createUbershaderProvider(engine, UBERARCHIVE_DEFAULT_DATA, UBERARCHIVE_DEFAULT_SIZE);
 
-        app.assetLoader = AssetLoader::create({engine, app.materials, app.names });
+        // app.assetLoader = AssetLoader::create({engine, app.materials, app.names });
+
+        AssetConfigurationExtended ext {filename.c_str()};
+        AssetConfiguration config = {engine, app.materials, app.names };
+        config.ext = &ext;
+        app.assetLoader = AssetLoader::create(config);
+
         app.mainCamera = &view->getCamera();
         if (filename.isEmpty()) {
             app.asset = app.assetLoader->createAsset(

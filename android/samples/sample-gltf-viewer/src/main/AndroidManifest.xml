@@ -13,7 +13,7 @@
       android:theme="@android:style/Theme.NoTitleBar">
     <activity
         android:exported="true"
-        android:name="com.google.android.filament.gltf.HighlightObjectActivity">
+        android:name="com.google.android.filament.gltf.fw.FWMainActivity">
       <intent-filter>
         <action android:name="android.intent.action.MAIN"/>
 

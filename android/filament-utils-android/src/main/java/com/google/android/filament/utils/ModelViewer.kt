@@ -16,6 +16,7 @@
 
 package com.google.android.filament.utils
 
+import android.util.Log
 import android.view.MotionEvent
 import android.view.Surface
 import android.view.SurfaceView
@@ -26,9 +27,10 @@ import com.google.android.filament.android.UiHelper
 import com.google.android.filament.gltfio.*
 import kotlinx.coroutines.*
 import java.nio.Buffer
+import kotlin.math.log
 
-private const val kNearPlane = 0.05f     // 5 cm
-private const val kFarPlane = 1000.0f    // 1 km
+private const val kNearPlane = 0.0001f     // 5 cm
+private const val kFarPlane = 100.0f    // 1 km
 private const val kAperture = 16f
 private const val kShutterSpeed = 1f / 125f
 private const val kSensitivity = 100f
@@ -60,7 +62,7 @@ private const val kSensitivity = 100f
  */
 class ModelViewer(
         val engine: Engine,
-        private val uiHelper: UiHelper
+        val uiHelper: UiHelper
 ) : android.view.View.OnTouchListener {
     var asset: FilamentAsset? = null
         private set
@@ -282,7 +284,9 @@ class ModelViewer(
         resourceLoader.asyncCancelLoad()
         resourceLoader.evictResourceData()
         asset?.let { asset ->
+            logg("removingEntity")
             this.scene.removeEntities(asset.entities)
+            logg("EntityRemoved")
             assetLoader.destroyAsset(asset)
             this.asset = null
             this.animator = null
@@ -300,10 +304,12 @@ class ModelViewer(
             return
         }
 
+//        logg("render asyncUpdateLoad", tag=123)
         // Allow the resource loader to finalize textures that have become ready.
         resourceLoader.asyncUpdateLoad()
 
         // Add renderable entities to the scene as they become ready.
+//        logg("populateScene", tag=123)
         asset?.let { populateScene(it) }
 
         // Extract the camera basis from the helper and push it to the Filament camera.
@@ -315,12 +321,18 @@ class ModelViewer(
 
         // Render the scene, unless the renderer wants to skip the frame.
         if (renderer.beginFrame(swapChain!!, frameTimeNanos)) {
+            logg("rendering_begin_Frame")
             renderer.render(view)
+            logg("rendered")
             renderer.endFrame()
+            logg("frame end")
+//            logg("fml", "rendered first frame")
         }
     }
 
     private fun populateScene(asset: FilamentAsset) {
+        val start = System.currentTimeMillis()
+        var popped = false
         val rcm = engine.renderableManager
         var count = 0
         val popRenderables = { count = asset.popRenderables(readyRenderables); count != 0 }
@@ -330,6 +342,10 @@ class ModelViewer(
                 rcm.setScreenSpaceContactShadows(ri, true)
             }
             scene.addEntities(readyRenderables.take(count).toIntArray())
+            popped = true
+        }
+        if (popped) {
+            Log.d("fml", "populated ${System.currentTimeMillis() - start}")
         }
         scene.addEntities(asset.lightEntities)
     }
@@ -338,14 +354,19 @@ class ModelViewer(
         view.addOnAttachStateChangeListener(object : android.view.View.OnAttachStateChangeListener {
             override fun onViewAttachedToWindow(v: android.view.View) {}
             override fun onViewDetachedFromWindow(v: android.view.View) {
+                logg("uiHelper.detach")
                 uiHelper.detach()
 
+                logg("destroyModel")
                 destroyModel()
+
+                logg("assetDestroy")
                 assetLoader.destroy()
                 materialProvider.destroyMaterials()
                 materialProvider.destroy()
                 resourceLoader.destroy()
 
+                logg("engineResourcesDestroy")
                 engine.destroyEntity(light)
                 engine.destroyRenderer(renderer)
                 engine.destroyView(this@ModelViewer.view)
@@ -436,3 +457,8 @@ class ModelViewer(
         private val kDefaultObjectPosition = Float3(0.0f, 0.0f, -4.0f)
     }
 }
+
+fun logg(vararg msg: Any, tag: Any = "fml") {
+    Log.d(tag.toString(), msg.joinToString())
+}
+

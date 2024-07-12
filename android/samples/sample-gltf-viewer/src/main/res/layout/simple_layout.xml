@@ -6,11 +6,6 @@
     android:background="@android:color/white"
     android:orientation="vertical">
 
-    <SurfaceView
-        android:id="@+id/main_sv"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent" />
-
     <TextView
         android:id="@+id/user_hint"
         android:layout_width="match_parent"
@@ -23,4 +18,10 @@
         android:textColor="@color/colorAccent"
         android:layout_gravity="top"/>
 
+    <SurfaceView
+        android:id="@+id/main_sv"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
 </FrameLayout>
+
