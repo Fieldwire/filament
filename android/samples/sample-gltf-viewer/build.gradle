@@ -59,6 +59,10 @@ android {
     aaptOptions {
         noCompress 'filamat', 'ktx'
     }
+
+    packaging {
+        jniLibs.keepDebugSymbols += "**/*.so"
+    }
 }
 
 composeCompiler {

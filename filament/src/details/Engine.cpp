@@ -223,7 +223,7 @@ FEngine::FEngine(Engine::Builder const& builder) :
     mJobSystem.adopt();
 
     slog.i << "FEngine (" << sizeof(void*) * 8 << " bits) created at " << this << " "
-           << "(threading is " << (UTILS_HAS_THREADING ? "enabled)" : "disabled)") << io::endl;
+           << "(threading is " << (UTILS_HAS_THREADING ? "enabled)" : "disabled)") << " ThreadCount " << mJobSystem.getThreadCount() << io::endl;
 }
 
 uint32_t FEngine::getJobSystemThreadPoolSize(Engine::Config const& config) noexcept {

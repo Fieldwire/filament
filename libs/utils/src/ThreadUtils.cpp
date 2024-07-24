@@ -26,7 +26,12 @@ std::thread::id ThreadUtils::getThreadId() noexcept {
 }
 
 bool ThreadUtils::isThisThread(std::thread::id id) noexcept {
+    if (!threadingEnabled) {
+        return true;
+    }
     return getThreadId() == id;
 }
+
+bool ThreadUtils::threadingEnabled = true;
 
 } // namespace utils

@@ -68,6 +68,7 @@
 
 #include "generated/resources/gltf_demo.h"
 #include "materials/uberarchive.h"
+#include "utils/ThreadUtils.h"
 
 #if FILAMENT_DISABLE_MATOPT
 #   define OPTIMIZE_MATERIALS false
@@ -776,12 +777,12 @@ int main(int argc, char** argv) {
                 createJitShaderProvider(engine, OPTIMIZE_MATERIALS) :
                 createUbershaderProvider(engine, UBERARCHIVE_DEFAULT_DATA, UBERARCHIVE_DEFAULT_SIZE);
 
-        // app.assetLoader = AssetLoader::create({engine, app.materials, app.names });
+        app.assetLoader = AssetLoader::create({engine, app.materials, app.names });
 
-        AssetConfigurationExtended ext {filename.c_str()};
-        AssetConfiguration config = {engine, app.materials, app.names };
-        config.ext = &ext;
-        app.assetLoader = AssetLoader::create(config);
+        // AssetConfigurationExtended ext {filename.c_str()};
+        // AssetConfiguration config = {engine, app.materials, app.names };
+        // config.ext = &ext;
+        // app.assetLoader = AssetLoader::create(config);
 
         app.mainCamera = &view->getCamera();
         if (filename.isEmpty()) {
@@ -1036,6 +1037,46 @@ int main(int argc, char** argv) {
         AssetLoader::destroy(&app.assetLoader);
     };
 
+    // Different thread
+    /*auto cleanup = [&app](Engine *engine, View *, Scene *) {
+        std::thread a([&]()-> void {
+            app.automationEngine->terminate();
+            app.resourceLoader->asyncCancelLoad();
+            app.assetLoader->destroyAsset(app.asset);
+            app.materials->destroyMaterials();
+
+            engine->destroy(app.scene.groundPlane);
+            engine->destroy(app.scene.groundVertexBuffer);
+            engine->destroy(app.scene.groundIndexBuffer);
+            engine->destroy(app.scene.groundMaterial);
+            engine->destroy(app.colorGrading);
+
+            engine->destroy(app.scene.fullScreenTriangleVertexBuffer);
+            engine->destroy(app.scene.fullScreenTriangleIndexBuffer);
+
+            auto &em = EntityManager::get();
+            for (auto e: app.scene.overdrawVisualizer) {
+                engine->destroy(e);
+                em.destroy(e);
+            }
+
+            for (auto mi: app.scene.overdrawMaterialInstances) {
+                engine->destroy(mi);
+            }
+            engine->destroy(app.scene.overdrawMaterial);
+
+            delete app.viewer;
+            delete app.materials;
+            delete app.names;
+            delete app.resourceLoader;
+            delete app.stbDecoder;
+            delete app.ktxDecoder;
+
+            AssetLoader::destroy(&app.assetLoader);
+        });
+        a.join();
+    };*/
+
     auto animate = [&app](Engine*, View*, double now) {
         app.resourceLoader->asyncUpdateLoad();
 
@@ -1180,6 +1221,7 @@ int main(int argc, char** argv) {
         }
     });
 
+    ThreadUtils::threadingEnabled = false;
     filamentApp.run(app.config, setup, cleanup, gui, preRender, postRender);
 
     return 0;

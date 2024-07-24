@@ -2,10 +2,11 @@ package com.google.android.filament.gltf.fw
 
 import android.app.AlertDialog
 import android.app.Dialog
-import android.app.DialogFragment
 import android.os.Bundle
 import android.view.KeyEvent
 import androidx.core.content.ContentProviderCompat.requireContext
+import androidx.fragment.app.DialogFragment
+import kotlin.math.log
 
 
 class ProgressDialogFragment : DialogFragment() {
@@ -20,7 +21,7 @@ class ProgressDialogFragment : DialogFragment() {
 
     override fun onCreateDialog(savedInstanceState: Bundle?): Dialog {
         val ui = ProgressDialogUi()
-        val view = ui.createView(context)
+        val view = ui.createView(context!!)
         callback?.getLoadingMessage()?.let { ui.textView.text = it }
 
         return AlertDialog
@@ -30,6 +31,7 @@ class ProgressDialogFragment : DialogFragment() {
                     if (keyCode == KeyEvent.KEYCODE_BACK) {
                         dialog.dismiss()
                         callback?.onProgressCancelled()
+                        logg("dialogBack")
                     }
 
                     true

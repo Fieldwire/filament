@@ -12,6 +12,8 @@ fun readAssetAsByteBuffer(context: Context, assetName: String): ByteBuffer {
         val bytes = ByteArray(inputStream.available())
         inputStream.read(bytes)
         ByteBuffer.wrap(bytes)
+    }.also {
+        logg("assetAsByteBuffer", it)
     }
 }
 

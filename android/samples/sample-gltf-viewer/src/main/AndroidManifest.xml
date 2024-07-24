@@ -10,16 +10,25 @@
       android:roundIcon="@mipmap/ic_launcher_round"
       android:supportsRtl="true"
       android:largeHeap="true"
-      android:theme="@android:style/Theme.NoTitleBar">
+      android:theme="@style/Theme.AppCompat.NoActionBar">
     <activity
         android:exported="true"
-        android:name="com.google.android.filament.gltf.fw.FWMainActivity">
-      <intent-filter>
-        <action android:name="android.intent.action.MAIN"/>
-
-        <category android:name="android.intent.category.LAUNCHER"/>
-      </intent-filter>
+        android:name="com.google.android.filament.gltf.fw.FWMainActivity"
+        android:configChanges="orientation|screenSize|keyboard">
     </activity>
+      <activity
+          android:exported="true"
+          android:name="com.google.android.filament.gltf.MainActivity">
+      </activity>
+      <activity
+          android:exported="true"
+          android:name="com.google.android.filament.gltf.HomeActivity">
+          <intent-filter>
+              <action android:name="android.intent.action.MAIN"/>
+
+              <category android:name="android.intent.category.LAUNCHER"/>
+          </intent-filter>
+      </activity>
   </application>
 
 </manifest>

@@ -30,7 +30,6 @@ import com.google.android.filament.IndirectLight
 import com.google.android.filament.Material
 import com.google.android.filament.Skybox
 import com.google.android.filament.View
-import com.google.android.filament.View.OnPickCallback
 import com.google.android.filament.utils.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -84,23 +83,18 @@ class MainActivity : Activity() {
         doubleTapDetector = GestureDetector(applicationContext, doubleTapListener)
         singleTapDetector = GestureDetector(applicationContext, singleTapListener)
 
-        modelViewer = ModelViewer(surfaceView, Engine.Builder().config(
-            Engine.Config().apply {
-                commandBufferSizeMB = 34 * 6
-                perRenderPassArenaSizeMB = 35
-                minCommandBufferSizeMB = 32
-                perFrameCommandsSizeMB = 32
-                driverHandleArenaSizeMB = 32
-
-                /*commandBufferSizeMB = 1024 * 10
-                perRenderPassArenaSizeMB = 1088
-                minCommandBufferSizeMB = 1024
-                perFrameCommandsSizeMB = 1024
-                driverHandleArenaSizeMB = 1024*/
-            }
-        ).featureLevel(Engine.FeatureLevel.FEATURE_LEVEL_3)
-            .backend(Engine.Backend.OPENGL)
-            .build())
+        modelViewer = ModelViewer(
+            surfaceView,
+            engine = Engine.Builder().config(
+                Engine.Config().apply {
+                    perRenderPassArenaSizeMB = 26
+                    minCommandBufferSizeMB = 24
+                    perFrameCommandsSizeMB = 24
+                    commandBufferSizeMB = minCommandBufferSizeMB * 3
+                    driverHandleArenaSizeMB = 40
+                }
+            ).build()
+        )
         viewerContent.view = modelViewer.view
         viewerContent.sunlight = modelViewer.light
         viewerContent.lightManager = modelViewer.engine.lightManager
@@ -130,7 +124,7 @@ class MainActivity : Activity() {
             hdrColorBuffer = View.QualityLevel.MEDIUM
         }
 
-        // dynamic resolution often helps a lot
+        /*// dynamic resolution often helps a lot
         view.dynamicResolutionOptions = view.dynamicResolutionOptions.apply {
             enabled = true
             quality = View.QualityLevel.MEDIUM
@@ -152,20 +146,20 @@ class MainActivity : Activity() {
         // bloom is pretty expensive but adds a fair amount of realism
         view.bloomOptions = view.bloomOptions.apply {
             enabled = true
-        }
+        }*/
 
         remoteServer = RemoteServer(8082)
     }
 
     private fun createDefaultRenderables() {
-        val buffer = assets.open("models/160_MB.glb").use { input ->
+        val buffer = assets.open("models/70_MB.glb").use { input ->
             val bytes = ByteArray(input.available())
             input.read(bytes)
             ByteBuffer.wrap(bytes)
         }
 
-//        modelViewer.loadModelGltfAsync(buffer) { uri -> readCompressedAsset("models/$uri") }
         modelViewer.loadModelGlb(buffer)
+//        modelViewer.loadModelGltfAsync(buffer) { uri -> readCompressedAsset("models/$uri") }
         updateRootTransform()
     }
 

@@ -14,6 +14,7 @@ import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
+import com.google.android.filament.gltf.fw.FWMainActivity
 
 class HomeActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -26,11 +27,12 @@ class HomeActivity : ComponentActivity() {
                     ) {
                         items(
                             items = listOf(
-                                "21_KB",
-                                "70_MB",
-                                "100_MB",
-                                "160_MB",
-                                "560_MB"
+                                "21_KB.glb",
+                                "70_MB.glb",
+                                "100_MB.glb",
+                                "160_MB.glb",
+                                "500_MB.glb",
+                                "560_MB.glb"
                             ),
                             itemContent = { modelName ->
                                 ClickableText(
@@ -39,7 +41,7 @@ class HomeActivity : ComponentActivity() {
                                     style = TextStyle.Default.copy(color = Color.White),
                                     onClick = {
                                         startActivityForResult(
-                                            Intent(this@HomeActivity, MainActivity::class.java).apply {
+                                            Intent(this@HomeActivity, FWMainActivity::class.java).apply {
                                                 putExtra("model", modelName)
                                             },
                                             123
@@ -56,6 +58,6 @@ class HomeActivity : ComponentActivity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        logg("onactivityresult", "requestCode", requestCode, "resultCode", resultCode)
+        logg("onactivityresult", "requestCode", requestCode, "resultCode", resultCode, "data", data ?: "null")
     }
 }

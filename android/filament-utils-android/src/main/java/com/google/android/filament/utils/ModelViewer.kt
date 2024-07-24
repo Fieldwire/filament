@@ -321,12 +321,8 @@ class ModelViewer(
 
         // Render the scene, unless the renderer wants to skip the frame.
         if (renderer.beginFrame(swapChain!!, frameTimeNanos)) {
-            logg("rendering_begin_Frame")
             renderer.render(view)
-            logg("rendered")
             renderer.endFrame()
-            logg("frame end")
-//            logg("fml", "rendered first frame")
         }
     }
 
@@ -354,31 +350,35 @@ class ModelViewer(
         view.addOnAttachStateChangeListener(object : android.view.View.OnAttachStateChangeListener {
             override fun onViewAttachedToWindow(v: android.view.View) {}
             override fun onViewDetachedFromWindow(v: android.view.View) {
-                logg("uiHelper.detach")
-                uiHelper.detach()
-
-                logg("destroyModel")
-                destroyModel()
-
-                logg("assetDestroy")
-                assetLoader.destroy()
-                materialProvider.destroyMaterials()
-                materialProvider.destroy()
-                resourceLoader.destroy()
-
-                logg("engineResourcesDestroy")
-                engine.destroyEntity(light)
-                engine.destroyRenderer(renderer)
-                engine.destroyView(this@ModelViewer.view)
-                engine.destroyScene(scene)
-                engine.destroyCameraComponent(camera.entity)
-                EntityManager.get().destroy(camera.entity)
-
-                EntityManager.get().destroy(light)
-
-                engine.destroy()
+//                destroy()
             }
         })
+    }
+
+    fun destroy() {
+        logg("uiHelper.detach")
+        uiHelper.detach()
+
+        logg("destroyModel")
+        destroyModel()
+
+        logg("assetDestroy")
+        assetLoader.destroy()
+        materialProvider.destroyMaterials()
+        materialProvider.destroy()
+        resourceLoader.destroy()
+
+        logg("engineResourcesDestroy")
+        engine.destroyEntity(light)
+        engine.destroyRenderer(renderer)
+        engine.destroyView(this@ModelViewer.view)
+        engine.destroyScene(scene)
+        engine.destroyCameraComponent(camera.entity)
+        EntityManager.get().destroy(camera.entity)
+
+        EntityManager.get().destroy(light)
+
+        engine.destroy()
     }
 
     /**

@@ -25,6 +25,7 @@ class ThreadUtils {
 public:
     static std::thread::id getThreadId() noexcept;
     static bool isThisThread(std::thread::id id) noexcept;
+    static bool threadingEnabled;
 };
 
 } // namespace utils
