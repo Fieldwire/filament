@@ -96,6 +96,11 @@ static std::string getNodeName(cgltf_node const* node, char const* defaultNodeNa
         if (node->mesh && node->mesh->name) return node->mesh->name;
         if (node->light && node->light->name) return node->light->name;
         if (node->camera && node->camera->name) return node->camera->name;
+        // Some GLTF models have nodes that do not have geometry but act as a parent for other nodes
+        // Those child nodes do not have a name but inherit the parent's name. Since Entity do not store
+        // reference to its parent, there is no way to get the name of the parent when one of those
+        // child entity is selected. So falling back to parent node name if this node doesn't have one
+        if (node->parent && node->parent->name) return node->parent->name;
         return defaultNodeName;
     };
 
@@ -621,15 +626,7 @@ void FAssetLoader::recurseEntities(const cgltf_node* node, SceneMask scenes, Ent
     instance->mEntities.push_back(entity);
     instance->mNodeMap[node - srcAsset->nodes] = entity;
 
-    // Some GLTF models have nodes that do not have geometry but act as a parent for other nodes
-    // Those child nodes do not have a name but inherit the parent's name. Since Entity do not store
-    // reference to its parent, there is no way to get the name of the parent when one of those
-    // child entity is selected. So falling back to parent entity name if this entity don't have one
-    const char* parentName = nullptr;
-    if (mNameManager->hasComponent(parent)) {
-        parentName = mNameManager->getName(mNameManager->getInstance(parent));
-    }
-    auto nameStr = getNodeName(node, parentName ? parentName : mDefaultNodeName);
+    auto nameStr = getNodeName(node, mDefaultNodeName);
     const char* name = nameStr.c_str();
 
     if (name) {
