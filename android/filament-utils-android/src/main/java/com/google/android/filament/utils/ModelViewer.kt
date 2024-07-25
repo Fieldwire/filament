@@ -127,7 +127,7 @@ class ModelViewer(
         view.camera = camera
 
         materialProvider = UbershaderProvider(engine)
-        assetLoader = AssetLoader(engine, materialProvider, EntityManager.get(), "")
+        assetLoader = AssetLoader(engine, materialProvider, EntityManager.get(), "", "UndefinedObjectName")
         resourceLoader = ResourceLoader(engine, normalizeSkinningWeights)
 
         // Always add a direct light source since it is required for shadowing.
@@ -457,8 +457,3 @@ class ModelViewer(
         private val kDefaultObjectPosition = Float3(0.0f, 0.0f, -4.0f)
     }
 }
-
-fun logg(vararg msg: Any, tag: Any = "fml") {
-    Log.d(tag.toString(), msg.joinToString())
-}
-
