@@ -96,8 +96,13 @@ static std::string getNodeName(cgltf_node const* node, char const* defaultNodeNa
         if (node->mesh && node->mesh->name) return node->mesh->name;
         if (node->light && node->light->name) return node->light->name;
         if (node->camera && node->camera->name) return node->camera->name;
+        // Some GLTF models have nodes that do not have geometry but act as a parent for other nodes
+        // Those child nodes do not have a name but inherit the parent's name. Since Entity do not store
+        // reference to its parent, there is no way to get the name of the parent when one of those
+        // child entity is selected. So falling back to parent node name if this node doesn't have one
+        if (node->parent && node->parent->name) return node->parent->name;
         if (defaultNodeName) return defaultNodeName;
-        return "<unknown>";
+        return "<unknown>";;
     };
 
     std::string strOrig(getNameImpl());
