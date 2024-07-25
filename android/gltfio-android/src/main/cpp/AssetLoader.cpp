@@ -222,7 +222,7 @@ public:
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_google_android_filament_gltfio_AssetLoader_nCreateAssetLoader(JNIEnv* env, jclass,
-        jlong nativeEngine, jobject provider, jlong nativeEntities) {
+        jlong nativeEngine, jobject provider, jlong nativeEntities, jstring defaultNodeName) {
     Engine* engine = (Engine*) nativeEngine;
     MaterialProvider* materialProvider = nullptr;
 
@@ -240,9 +240,14 @@ Java_com_google_android_filament_gltfio_AssetLoader_nCreateAssetLoader(JNIEnv* e
         materialProvider = new JavaMaterialProvider(env, provider);
     }
 
+    const char *nativeDefaultNodeName = env->GetStringUTFChars(defaultNodeName, nullptr);
+
+    env->ReleaseStringUTFChars(defaultNodeName,  nativeDefaultNodeName);
+
     EntityManager* entities = (EntityManager*) nativeEntities;
     NameComponentManager* names = new NameComponentManager(*entities);
-    return (jlong) AssetLoader::create({engine, materialProvider, names, entities});
+    return (jlong) AssetLoader::create({engine, materialProvider, names, entities,
+                                        const_cast<char *>(nativeDefaultNodeName)});
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -266,7 +271,7 @@ Java_com_google_android_filament_gltfio_AssetLoader_nCreateAsset(JNIEnv* env, jc
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_google_android_filament_gltfio_AssetLoader_nCreateAssetLoaderExtended(JNIEnv* env, jclass,
-                                                                               jlong nativeEngine, jobject provider, jlong nativeEntities, jstring filePath) {
+                                                                               jlong nativeEngine, jobject provider, jlong nativeEntities, jstring filePath, jstring defaultNodeName) {
     Engine* engine = (Engine*) nativeEngine;
     MaterialProvider* materialProvider = nullptr;
 
@@ -288,6 +293,7 @@ Java_com_google_android_filament_gltfio_AssetLoader_nCreateAssetLoaderExtended(J
     NameComponentManager* names = new NameComponentManager(*entities);
 
     const char *nativeFilePath = env->GetStringUTFChars(filePath, nullptr);
+    const char *nativeDefaultNodeName = env->GetStringUTFChars(defaultNodeName, nullptr);
 
     AssetConfigurationExtended ext = {
             .gltfPath = nativeFilePath
@@ -297,10 +303,12 @@ Java_com_google_android_filament_gltfio_AssetLoader_nCreateAssetLoaderExtended(J
             .engine = engine,
             .materials = materialProvider,
             .names = names,
+            .defaultNodeName = const_cast<char *>(nativeDefaultNodeName),
             .ext = &ext,
     };
 
     env->ReleaseStringUTFChars(filePath, nativeFilePath);
+    env->ReleaseStringUTFChars(defaultNodeName,  nativeDefaultNodeName);
 
     return (jlong) AssetLoader::create(config);
 }
