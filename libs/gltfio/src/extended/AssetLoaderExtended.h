@@ -70,9 +70,8 @@ struct AssetLoaderExtended {
         : mEngine(engine),
           mGltfPath(config.gltfPath),
           mMaterials(materials),
-          mUriDataCache(std::make_shared<UriDataCache>()) {
-        mCgltfBuffersLoaded = false;
-    }
+          mUriDataCache(std::make_shared<UriDataCache>()),
+          mCgltfBuffersLoaded(false) {}
 
     ~AssetLoaderExtended() = default;
 
