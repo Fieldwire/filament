@@ -101,7 +101,8 @@ static std::string getNodeName(cgltf_node const* node, char const* defaultNodeNa
         // reference to its parent, there is no way to get the name of the parent when one of those
         // child entity is selected. So falling back to parent node name if this node doesn't have one
         if (node->parent && node->parent->name) return node->parent->name;
-        return defaultNodeName;
+        if (defaultNodeName) return defaultNodeName;
+        return "<unknown>";
     };
 
     std::string strOrig(getNameImpl());
