@@ -89,11 +89,30 @@ public class AssetLoader {
      * @param entities the EntityManager that should be used to create entities
      */
     public AssetLoader(@NonNull Engine engine, @NonNull MaterialProvider provider,
-            @NonNull EntityManager entities) {
+            @NonNull EntityManager entities, String defaultNodeName) {
 
         long nativeEngine = engine.getNativeObject();
         long nativeEntities = entities.getNativeObject();
-        mNativeObject = nCreateAssetLoader(nativeEngine, provider, nativeEntities);
+        mNativeObject = nCreateAssetLoader(nativeEngine, provider, nativeEntities, defaultNodeName);
+
+        if (mNativeObject == 0) {
+            throw new IllegalStateException("Unable to parse glTF asset.");
+        }
+
+        mEngine = engine;
+        mMaterialCache = provider;
+    }
+
+    public AssetLoader(@NonNull Engine engine, @NonNull MaterialProvider provider,
+                       @NonNull EntityManager entities, String filePath, String defaultNodeName) {
+
+        long nativeEngine = engine.getNativeObject();
+        long nativeEntities = entities.getNativeObject();
+        if (filePath == null) {
+            mNativeObject = nCreateAssetLoader(nativeEngine, provider, nativeEntities, defaultNodeName);
+        } else {
+            mNativeObject = nCreateAssetLoaderExtended(nativeEngine, provider, nativeEntities, filePath, defaultNodeName);
+        }
 
         if (mNativeObject == 0) {
             throw new IllegalStateException("Unable to parse glTF asset.");
@@ -189,7 +208,9 @@ public class AssetLoader {
     }
 
     private static native long nCreateAssetLoader(long nativeEngine, Object provider,
-            long nativeEntities);
+            long nativeEntities, String defaultNodeName);
+    private static native long nCreateAssetLoaderExtended(long nativeEngine, Object provider,
+                                                          long nativeEntities, String filePath, String defaultNodeName);
     private static native void nDestroyAssetLoader(long nativeLoader);
     private static native long nCreateAsset(long nativeLoader, Buffer buffer, int remaining);
     private static native long nCreateInstancedAsset(long nativeLoader, Buffer buffer, int remaining,

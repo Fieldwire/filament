@@ -222,7 +222,56 @@ public:
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_google_android_filament_gltfio_AssetLoader_nCreateAssetLoader(JNIEnv* env, jclass,
-        jlong nativeEngine, jobject provider, jlong nativeEntities) {
+        jlong nativeEngine, jobject provider, jlong nativeEntities, jstring defaultNodeName) {
+    Engine* engine = (Engine*) nativeEngine;
+    MaterialProvider* materialProvider = nullptr;
+
+    // First check for a fast path that passes a native MaterialProvider into the loader.
+    // This drastically reduces the number of JNI calls while the asset is being loaded.
+    jclass klass = env->GetObjectClass(provider);
+    jmethodID getNativeObject = env->GetMethodID(klass, "getNativeObject", "()J");
+    if (getNativeObject) {
+        materialProvider = (MaterialProvider*) env->CallLongMethod(provider, getNativeObject);
+    } else {
+        env->ExceptionClear();
+    }
+
+    if (materialProvider == nullptr) {
+        materialProvider = new JavaMaterialProvider(env, provider);
+    }
+
+    const char *nativeDefaultNodeName = env->GetStringUTFChars(defaultNodeName, nullptr);
+
+    env->ReleaseStringUTFChars(defaultNodeName,  nativeDefaultNodeName);
+
+    EntityManager* entities = (EntityManager*) nativeEntities;
+    NameComponentManager* names = new NameComponentManager(*entities);
+    return (jlong) AssetLoader::create({engine, materialProvider, names, entities,
+                                        const_cast<char *>(nativeDefaultNodeName)});
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_google_android_filament_gltfio_AssetLoader_nDestroyAssetLoader(JNIEnv*, jclass,
+        jlong nativeLoader) {
+    AssetLoader* loader = (AssetLoader*) nativeLoader;
+    NameComponentManager* names = loader->getNames();
+    AssetLoader::destroy(&loader);
+    delete names;
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_google_android_filament_gltfio_AssetLoader_nCreateAsset(JNIEnv* env, jclass,
+        jlong nativeLoader, jobject javaBuffer, jint remaining) {
+    AssetLoader* loader = (AssetLoader*) nativeLoader;
+    AutoBuffer buffer(env, javaBuffer, remaining);
+    return (jlong) loader->createAsset((const uint8_t *) buffer.getData(),
+            buffer.getSize());
+}
+
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_google_android_filament_gltfio_AssetLoader_nCreateAssetLoaderExtended(JNIEnv* env, jclass,
+                                                                               jlong nativeEngine, jobject provider, jlong nativeEntities, jstring filePath, jstring defaultNodeName) {
     Engine* engine = (Engine*) nativeEngine;
     MaterialProvider* materialProvider = nullptr;
 
@@ -242,25 +291,26 @@ Java_com_google_android_filament_gltfio_AssetLoader_nCreateAssetLoader(JNIEnv* e
 
     EntityManager* entities = (EntityManager*) nativeEntities;
     NameComponentManager* names = new NameComponentManager(*entities);
-    return (jlong) AssetLoader::create({engine, materialProvider, names, entities});
-}
 
-extern "C" JNIEXPORT void JNICALL
-Java_com_google_android_filament_gltfio_AssetLoader_nDestroyAssetLoader(JNIEnv*, jclass,
-        jlong nativeLoader) {
-    AssetLoader* loader = (AssetLoader*) nativeLoader;
-    NameComponentManager* names = loader->getNames();
-    AssetLoader::destroy(&loader);
-    delete names;
-}
+    const char *nativeFilePath = env->GetStringUTFChars(filePath, nullptr);
+    const char *nativeDefaultNodeName = env->GetStringUTFChars(defaultNodeName, nullptr);
 
-extern "C" JNIEXPORT jlong JNICALL
-Java_com_google_android_filament_gltfio_AssetLoader_nCreateAsset(JNIEnv* env, jclass,
-        jlong nativeLoader, jobject javaBuffer, jint remaining) {
-    AssetLoader* loader = (AssetLoader*) nativeLoader;
-    AutoBuffer buffer(env, javaBuffer, remaining);
-    return (jlong) loader->createAsset((const uint8_t *) buffer.getData(),
-            buffer.getSize());
+    AssetConfigurationExtended ext = {
+            .gltfPath = nativeFilePath
+    };
+
+    AssetConfiguration config = {
+            .engine = engine,
+            .materials = materialProvider,
+            .names = names,
+            .defaultNodeName = const_cast<char *>(nativeDefaultNodeName),
+            .ext = &ext,
+    };
+
+    env->ReleaseStringUTFChars(filePath, nativeFilePath);
+    env->ReleaseStringUTFChars(defaultNodeName,  nativeDefaultNodeName);
+
+    return (jlong) AssetLoader::create(config);
 }
 
 extern "C" JNIEXPORT jlong JNICALL

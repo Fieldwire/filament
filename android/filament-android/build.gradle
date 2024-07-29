@@ -7,6 +7,14 @@ android {
             withJavadocJar()
         }
     }
+
+    buildTypes {
+        debug {
+            packaging {
+                jniLibs.keepDebugSymbols += "**/*.so"
+            }
+        }
+    }
 }
 
 dependencies {
