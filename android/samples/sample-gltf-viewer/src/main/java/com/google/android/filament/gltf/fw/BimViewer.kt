@@ -31,7 +31,6 @@ class BimViewer(
     private val context: Context get() = surfaceView.context
 
     private val cameraManipulator: Manipulator get() = Manipulator.Builder()
-        .targetPosition(0f, 0f, -4f)
         .viewport(surfaceView.width, surfaceView.height)
         .flightPanSpeed(0.0004f, 0.0004f)
         .build(Manipulator.Mode.FREE_FLIGHT_2)
@@ -40,17 +39,19 @@ class BimViewer(
         setupTouchListener()
     }
 
+    private val multiplier = 2L
+
     private val modelViewer: ModelViewer = ModelViewer(
         surfaceView = surfaceView,
         manipulator = cameraManipulator,
         engine = Engine.Builder().config(
             Engine.Config().apply {
                 // Remember to change the configs in release/config file
-                commandBufferSizeMB = 34 * 6
-                perRenderPassArenaSizeMB = 35
-                minCommandBufferSizeMB = 32
-                perFrameCommandsSizeMB = 32
-                driverHandleArenaSizeMB = 32
+                commandBufferSizeMB = 2 * multiplier * 3
+                perRenderPassArenaSizeMB = 2 * multiplier + 1
+                minCommandBufferSizeMB = 2 * multiplier
+                perFrameCommandsSizeMB = 2 * multiplier
+                driverHandleArenaSizeMB = 4 * multiplier
             }
         ).build()
     )
@@ -112,14 +113,14 @@ class BimViewer(
     }
 
     private fun transformToInitialPosition() {
-        modelViewer.transformToUnitCube(Float3(0f, 0f, -4f))
+        modelViewer.transformToUnitCube(Float3(0f, 0f, ZOOM))
         modelViewer.setCameraManipulator(cameraManipulator)
     }
 
     private fun setIndirectLight(lightBuffer: ByteBuffer) {
         modelViewer.scene.indirectLight = KTX1Loader.createIndirectLight(modelViewer.engine, lightBuffer).apply {
             // Adjust this value to increase the brightness of the model
-            intensity = 20_000f
+            intensity = 35_000f
         }
     }
 
@@ -226,6 +227,8 @@ class BimViewer(
         // Find a solution that works for models of all sizes & complexities. It may not be straightforward
         // as GPU renders pixels asynchronously on a different (render) thread.
         private const val FIRST_FRAME_THRESHOLD = 60
+
+        private const val ZOOM = -4f
     }
 
     interface Callback {

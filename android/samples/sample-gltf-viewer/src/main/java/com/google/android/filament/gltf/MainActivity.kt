@@ -70,6 +70,8 @@ class MainActivity : Activity() {
     private var loadStartFence: Fence? = null
     private val viewerContent = AutomationEngine.ViewerContent()
 
+    private val multiplier = 2L
+
     @SuppressLint("ClickableViewAccessibility")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -87,11 +89,11 @@ class MainActivity : Activity() {
             surfaceView,
             engine = Engine.Builder().config(
                 Engine.Config().apply {
-                    perRenderPassArenaSizeMB = 26
-                    minCommandBufferSizeMB = 24
-                    perFrameCommandsSizeMB = 24
-                    commandBufferSizeMB = minCommandBufferSizeMB * 3
-                    driverHandleArenaSizeMB = 40
+                    commandBufferSizeMB = 2 * multiplier * 3
+                    perRenderPassArenaSizeMB = 2 * multiplier + 2
+                    minCommandBufferSizeMB = 2 * multiplier
+                    perFrameCommandsSizeMB = 2 * multiplier
+                    driverHandleArenaSizeMB = 5 * multiplier
                 }
             ).build()
         )
@@ -124,7 +126,7 @@ class MainActivity : Activity() {
             hdrColorBuffer = View.QualityLevel.MEDIUM
         }
 
-        /*// dynamic resolution often helps a lot
+        // dynamic resolution often helps a lot
         view.dynamicResolutionOptions = view.dynamicResolutionOptions.apply {
             enabled = true
             quality = View.QualityLevel.MEDIUM
@@ -146,20 +148,20 @@ class MainActivity : Activity() {
         // bloom is pretty expensive but adds a fair amount of realism
         view.bloomOptions = view.bloomOptions.apply {
             enabled = true
-        }*/
+        }
 
         remoteServer = RemoteServer(8082)
     }
 
     private fun createDefaultRenderables() {
-        val buffer = assets.open("models/70_MB.glb").use { input ->
+//        val buffer = assets.open("models/100_MB.glb").use { input ->
+        val buffer = assets.open("models/${intent.getStringExtra("model")}").use { input ->
             val bytes = ByteArray(input.available())
             input.read(bytes)
             ByteBuffer.wrap(bytes)
         }
 
         modelViewer.loadModelGlb(buffer)
-//        modelViewer.loadModelGltfAsync(buffer) { uri -> readCompressedAsset("models/$uri") }
         updateRootTransform()
     }
 
