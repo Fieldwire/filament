@@ -4,7 +4,6 @@ package com.google.android.filament.gltf.fw
 import android.content.Context
 import android.view.Choreographer.FrameCallback
 import android.view.SurfaceView
-import android.view.ViewGroup
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.asCoroutineDispatcher
@@ -12,7 +11,7 @@ import kotlinx.coroutines.launch
 import java.util.concurrent.Executors
 
 /**
- * Executes all calls to [ModelViewer] in a different, single, thread.
+ * Executes all calls to [FWModelViewer] in a different, single, thread.
  *
  * While loading the model initially, Filament blocks the thread on which Filament#Engine is created
  * (which happens in ModelViewer), causing the UI to be blocked during that time, especially for larger models
@@ -52,6 +51,10 @@ class BimExecutor(
         exec {
             bimViewer.doFrame(frameTimeNanos)
         }
+    }
+
+    override fun execute(block: () -> Unit) {
+        exec { block() }
     }
 
     fun resetModel() {

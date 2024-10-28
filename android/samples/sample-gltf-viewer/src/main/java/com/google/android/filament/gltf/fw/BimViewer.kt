@@ -3,6 +3,7 @@ package com.google.android.filament.gltf.fw
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Color
+import android.os.Looper
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.SurfaceHolder
@@ -41,10 +42,10 @@ class BimViewer(
 
     private val multiplier = 2L
 
-    private val modelViewer: ModelViewer = ModelViewer(
+    private val modelViewer: FWModelViewer = FWModelViewer(
         surfaceView = surfaceView,
         manipulator = cameraManipulator,
-        engine = Engine.Builder().config(
+        engine = Engine.Builder().backend(Engine.Backend.VULKAN).config(
             Engine.Config().apply {
                 // Remember to change the configs in release/config file
                 commandBufferSizeMB = 2 * multiplier * 3
@@ -53,7 +54,16 @@ class BimViewer(
                 perFrameCommandsSizeMB = 2 * multiplier
                 driverHandleArenaSizeMB = 4 * multiplier
             }
-        ).build()
+        ).build(),
+        executor = {
+            when (Looper.myLooper() == Looper.getMainLooper()) {
+                true -> callback.execute(it)
+                // If the current thread is not main then it must be
+                // the thread from executor so execute it immediately
+                else -> it()
+            }
+        },
+        generateNormals = true
     )
 
     // To highlight the renderable entity on selection
@@ -109,7 +119,7 @@ class BimViewer(
     }
 
     fun destroyViewer() {
-        modelViewer.destroy()
+         modelViewer.destroyViewer()
     }
 
     private fun transformToInitialPosition() {
@@ -140,6 +150,8 @@ class BimViewer(
         modelViewer.renderer.clearOptions = modelViewer.renderer.clearOptions.apply {
             clear = true
         }
+
+        modelViewer.asset.getEntitiesByName()
     }
 
     private fun disablePostProcessing() {
@@ -234,5 +246,6 @@ class BimViewer(
     interface Callback {
         fun onModelRendered()
         fun onClickProperties(entityId: String?)
+        fun execute(block: () -> Unit)
     }
 }

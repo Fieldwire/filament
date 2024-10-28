@@ -3,7 +3,7 @@ package com.google.android.filament.gltf.fw
 import com.google.android.filament.Entity
 import com.google.android.filament.utils.ModelViewer
 
-class VisibilityHandler(private val modelViewer: ModelViewer) {
+class VisibilityHandler(private val modelViewer: FWModelViewer) {
 
     var hiddenEntitiesCount = 0
         private set

@@ -96,7 +96,8 @@ class FWMainActivity : AppCompatActivity(), BimExecutor.Callback, ProgressDialog
 //        MainScope().launch {
             try {
                 showProgress()
-                bimExecutor.loadModel(this@FWMainActivity, intent.getStringExtra("model")!!) { count ->
+//                bimExecutor.loadModel(this@FWMainActivity, intent.getStringExtra("model")!!) { count ->
+                bimExecutor.loadModel(this@FWMainActivity, "100_MB_small.glb") { count ->
                     logg("nodeCount", count)
                     frameChoreographer.start()
                 }

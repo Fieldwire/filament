@@ -10,7 +10,7 @@ import com.google.android.filament.MaterialInstance
 import com.google.android.filament.utils.ModelViewer
 
 // Highlights the renderable entity (or object)
-class ObjectHighlighter(private val context: Context, private val modelViewer: ModelViewer) {
+class ObjectHighlighter(private val context: Context, private val modelViewer: FWModelViewer) {
 
     // Used to highlight the selected renderable entity
     // To change the highlight color, modify `tools/material/highlight.mat` & follow the instruction
@@ -29,7 +29,7 @@ class ObjectHighlighter(private val context: Context, private val modelViewer: M
     private var actualEntityMaterials: List<MaterialInstance>? = null
 
     init {
-        loadObjectHighlightMaterial()
+//        loadObjectHighlightMaterial()
     }
 
     fun highlight(@Entity renderableEntity: Int): Boolean {

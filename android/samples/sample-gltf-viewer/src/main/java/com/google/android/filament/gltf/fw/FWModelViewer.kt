@@ -1,7 +1,6 @@
-package com.google.android.filament.utils
+package com.google.android.filament.gltf.fw
 
-import android.os.Handler
-import android.os.Looper
+
 import android.view.MotionEvent
 import android.view.Surface
 import android.view.SurfaceView
@@ -12,10 +11,11 @@ import com.google.android.filament.Engine
 import com.google.android.filament.Entity
 import com.google.android.filament.EntityManager
 import com.google.android.filament.Fence
+import com.google.android.filament.IndirectLight
 import com.google.android.filament.LightManager
-import com.google.android.filament.Material
 import com.google.android.filament.Renderer
 import com.google.android.filament.Scene
+import com.google.android.filament.Skybox
 import com.google.android.filament.SwapChain
 import com.google.android.filament.View
 import com.google.android.filament.Viewport
@@ -27,20 +27,22 @@ import com.google.android.filament.gltfio.FilamentAsset
 import com.google.android.filament.gltfio.MaterialProvider
 import com.google.android.filament.gltfio.ResourceLoader
 import com.google.android.filament.gltfio.UbershaderProvider
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
+import com.google.android.filament.utils.Float3
+import com.google.android.filament.utils.GestureDetector
+import com.google.android.filament.utils.Manipulator
+import com.google.android.filament.utils.max
+import com.google.android.filament.utils.scale
+import com.google.android.filament.utils.translation
+import com.google.android.filament.utils.transpose
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.nio.Buffer
-import kotlin.math.cos
-import kotlin.math.sin
 
-private const val kNearPlane = 0.05f     // 5 cm
-private const val kFarPlane = 1000.0f    // 1 km
+private const val kNearPlane = 0.0001f
+private const val kFarPlane = 1000.0f // 1 km
 private const val kAperture = 16f
 private const val kShutterSpeed = 1f / 125f
 private const val kSensitivity = 100f
+
 
 /**
  * Helps render glTF models into a [SurfaceView] or [TextureView] with an orbit controller.
@@ -67,20 +69,20 @@ private const val kSensitivity = 100f
  *
  * See `sample-gltf-viewer` for a usage example.
  */
-class ClipModelViewer(
+class FWModelViewer(
     val engine: Engine,
-    private val uiHelper: UiHelper
+    val uiHelper: UiHelper,
+    // All calls to filament must be executed on the same thread so execute
+    // UI callbacks (such as from SurfaceView) on the executor so they are run in same thread
+    // as other filament calls
+    private val uiCallbackExecutor: Function1<() -> Unit, Unit>,
+    generateNormals: Boolean,
 ) : android.view.View.OnTouchListener {
-
-    var planEntity: Int? = null
-
     var asset: FilamentAsset? = null
         private set
 
     var animator: Animator? = null
         private set
-
-    var material: Material? = null
 
     @Suppress("unused")
     val progress
@@ -110,12 +112,11 @@ class ClipModelViewer(
     val view: View
     val camera: Camera
     val renderer: Renderer
-    @Entity
-    val light: Int
+    @Entity val light: Int
 
     private lateinit var displayHelper: DisplayHelper
     private lateinit var cameraManipulator: Manipulator
-    lateinit var gestureDetector: GestureDetector
+    private lateinit var gestureDetector: GestureDetector
     private var surfaceView: SurfaceView? = null
     private var textureView: TextureView? = null
 
@@ -134,14 +135,17 @@ class ClipModelViewer(
     init {
         renderer = engine.createRenderer()
         scene = engine.createScene()
-        camera = engine.createCamera(engine.entityManager.create())
-            .apply { setExposure(kAperture, kShutterSpeed, kSensitivity) }
+        camera = engine.createCamera(engine.entityManager.create()).apply {
+            setExposure(kAperture, kShutterSpeed, kSensitivity)
+        }
         view = engine.createView()
         view.scene = scene
         view.camera = camera
 
         materialProvider = UbershaderProvider(engine)
-        assetLoader = AssetLoader(engine, materialProvider, EntityManager.get(), "", "")
+        // Just pass in an empty string, see https://github.com/google/filament/issues/7905#issuecomment-2161779784,
+        // to opt for the extended asset loader until https://github.com/google/filament/issues/7782 is done
+        assetLoader = AssetLoader(engine, materialProvider, EntityManager.get(), if (generateNormals) "" else null, "UnknownObject")
         resourceLoader = ResourceLoader(engine, normalizeSkinningWeights)
 
         // Always add a direct light source since it is required for shadowing.
@@ -149,10 +153,10 @@ class ClipModelViewer(
 
         light = EntityManager.get().create()
 
-        val (r, g, b) = Colors.cct(500.0f)
+        val (r, g, b) = Colors.cct(6_500.0f)
         LightManager.Builder(LightManager.Type.DIRECTIONAL)
             .color(r, g, b)
-            .intensity(10_000.0f)
+            .intensity(100_000.0f)
             .direction(0.0f, -1.0f, 0.0f)
             .castShadows(true)
             .build(engine, light)
@@ -164,14 +168,12 @@ class ClipModelViewer(
         surfaceView: SurfaceView,
         engine: Engine = Engine.create(),
         uiHelper: UiHelper = UiHelper(UiHelper.ContextErrorPolicy.DONT_CHECK),
-        manipulator: Manipulator? = null
-    ) : this(engine, uiHelper) {
+        manipulator: Manipulator? = null,
+        executor: Function1<() -> Unit, Unit>,
+        generateNormals: Boolean = false
+    ) : this(engine, uiHelper, executor, generateNormals) {
         cameraManipulator = manipulator ?: Manipulator.Builder()
-            .targetPosition(
-                kDefaultObjectPosition.x,
-                kDefaultObjectPosition.y,
-                kDefaultObjectPosition.z
-            )
+            .targetPosition(kDefaultObjectPosition.x, kDefaultObjectPosition.y, kDefaultObjectPosition.z)
             .viewport(surfaceView.width, surfaceView.height)
             .build(Manipulator.Mode.ORBIT)
 
@@ -180,37 +182,12 @@ class ClipModelViewer(
         displayHelper = DisplayHelper(surfaceView.context)
         uiHelper.renderCallback = SurfaceCallback()
         uiHelper.attachTo(surfaceView)
-        addDetachListener(surfaceView)
-    }
-
-    @Suppress("unused")
-    constructor(
-        textureView: TextureView,
-        engine: Engine = Engine.create(),
-        uiHelper: UiHelper = UiHelper(UiHelper.ContextErrorPolicy.DONT_CHECK),
-        manipulator: Manipulator? = null
-    ) : this(engine, uiHelper) {
-        cameraManipulator = manipulator ?: Manipulator.Builder()
-            .targetPosition(
-                kDefaultObjectPosition.x,
-                kDefaultObjectPosition.y,
-                kDefaultObjectPosition.z
-            )
-            .viewport(textureView.width, textureView.height)
-            .build(Manipulator.Mode.ORBIT)
-
-        this.textureView = textureView
-        gestureDetector = GestureDetector(textureView, cameraManipulator)
-        displayHelper = DisplayHelper(textureView.context)
-        uiHelper.renderCallback = SurfaceCallback()
-        uiHelper.attachTo(textureView)
-        addDetachListener(textureView)
     }
 
     /**
      * Loads a monolithic binary glTF and populates the Filament scene.
      */
-    fun loadModelGlb(buffer: Buffer, showPercent: Int = 100) {
+    fun loadModelGlb(buffer: Buffer) {
         destroyModel()
         asset = assetLoader.createAsset(buffer)
         asset?.let { asset ->
@@ -244,19 +221,6 @@ class ClipModelViewer(
     }
 
     /**
-     * Loads a JSON-style glTF file and populates the Filament scene.
-     *
-     * The given callback is triggered from a worker thread for each requested resource.
-     */
-    fun loadModelGltfAsync(buffer: Buffer, callback: (String) -> Buffer) {
-        destroyModel()
-        asset = assetLoader.createAsset(buffer)
-        fetchResourcesJob = CoroutineScope(Dispatchers.IO).launch {
-            fetchResources(asset!!, callback)
-        }
-    }
-
-    /**
      * Sets up a root transform on the current model to make it fit into a unit cube.
      *
      * @param centerPoint Coordinate of center point of unit cube, defaults to < 0, 0, -4 >
@@ -275,19 +239,23 @@ class ClipModelViewer(
     }
 
     /**
-     * Removes the transformation that was set up via transformToUnitCube.
+     * Resets the camera to initial position. Calling this after [transformToUnitCube]
+     * will transform the model to initial world position
+     *
+     * Resetting the manipulator is the easiest & safest option instead of resetting the
+     * individual properties in different Manipulator (Orbit, FreeFlight, Map) implementations
      */
-    fun clearRootTransform() {
-        asset?.let {
-            val tm = engine.transformManager
-            tm.setTransform(tm.getInstance(it.root), Mat4().toFloatArray())
+    fun setCameraManipulator(cameraManipulator: Manipulator) {
+        surfaceView?.let {
+            this.cameraManipulator = cameraManipulator
+            gestureDetector = GestureDetector(it, cameraManipulator)
         }
     }
 
     /**
      * Frees all entities associated with the most recently-loaded model.
      */
-    fun destroyModel() {
+    private fun destroyModel() {
         fetchResourcesJob?.cancel()
         resourceLoader.asyncCancelLoad()
         resourceLoader.evictResourceData()
@@ -306,9 +274,7 @@ class ClipModelViewer(
      *                       typically comes from {@link android.view.Choreographer.FrameCallback}
      */
     fun render(frameTimeNanos: Long) {
-        if (!uiHelper.isReadyToRender) {
-            return
-        }
+        val nativeSurface = swapChain ?: return
 
         // Allow the resource loader to finalize textures that have become ready.
         resourceLoader.asyncUpdateLoad()
@@ -321,11 +287,10 @@ class ClipModelViewer(
         camera.lookAt(
             eyePos[0], eyePos[1], eyePos[2],
             target[0], target[1], target[2],
-            upward[0], upward[1], upward[2]
-        )
+            upward[0], upward[1], upward[2])
 
         // Render the scene, unless the renderer wants to skip the frame.
-        if (renderer.beginFrame(swapChain!!, frameTimeNanos)) {
+        if (renderer.beginFrame(nativeSurface, frameTimeNanos)) {
             renderer.render(view)
             renderer.endFrame()
         }
@@ -338,181 +303,87 @@ class ClipModelViewer(
         while (popRenderables()) {
             for (i in 0 until count) {
                 val ri = rcm.getInstance(readyRenderables[i])
-                rcm.setPriority(ri, 0)
                 rcm.setScreenSpaceContactShadows(ri, true)
-                if (i % 2 == 0) {
-                    rcm.setMaterialInstanceAt(ri, 0, material!!.defaultInstance)
-                }
             }
             scene.addEntities(readyRenderables.take(count).toIntArray())
         }
         scene.addEntities(asset.lightEntities)
     }
 
-    private fun setMaterial() {
-        val rcm = engine.renderableManager
-        asset?.renderableEntities?.forEachIndexed { idx, ri ->
-            if (fullClip || idx % 2 == 0) {
-                // rcm.getMaterialInstanceAt(ri, 0, material!!.defaultInstance)
-            }
-        }
-    }
+    fun destroyViewer() {
+        uiHelper.detach()
 
-    private fun addDetachListener(view: android.view.View) {
-        view.addOnAttachStateChangeListener(object : android.view.View.OnAttachStateChangeListener {
-            override fun onViewAttachedToWindow(v: android.view.View) {}
-            override fun onViewDetachedFromWindow(v: android.view.View) {
-                uiHelper.detach()
+        destroyModel()
+        assetLoader.destroy()
+        materialProvider.destroyMaterials()
+        materialProvider.destroy()
+        resourceLoader.destroy()
 
-                destroyModel()
-                assetLoader.destroy()
-                materialProvider.destroyMaterials()
-                materialProvider.destroy()
-                resourceLoader.destroy()
+        engine.destroyEntity(light)
+        engine.destroyRenderer(renderer)
+        engine.destroyView(this@FWModelViewer.view)
+        engine.destroyScene(scene)
+        engine.destroyCameraComponent(camera.entity)
+        EntityManager.get().destroy(camera.entity)
 
-                engine.destroyEntity(light)
-                engine.destroyRenderer(renderer)
-                engine.destroyView(this@ClipModelViewer.view)
-                engine.destroyScene(scene)
-                engine.destroyCameraComponent(camera.entity)
-                EntityManager.get().destroy(camera.entity)
+        EntityManager.get().destroy(light)
 
-                EntityManager.get().destroy(light)
-
-                engine.destroy()
-            }
-        })
+        engine.destroy()
+        logg("viewer destroyed")
     }
 
     /**
      * Handles a [MotionEvent] to enable one-finger orbit, two-finger pan, and pinch-to-zoom.
      */
     fun onTouchEvent(event: MotionEvent) {
+        // don't process touch gestures beyond two fingers
+        if (event.pointerCount > 2) return
+
         gestureDetector.onTouchEvent(event)
     }
 
-    private var pAngle = 0f
-        set(value) {
-            field = value
-            normal.x = sin(value)
-        }
-    private var pHeight = 0f
-        set(value) {
-            field = value
-            pointOnPlane.y = value
-        }
-    private var normal = Float3(sin(pAngle), -1f, 0f)
-    private var pointOnPlane = Float3(0f, 1f, 0f)
-
-    private var prevY = 0f
-
-    var fullClip = true
-        set(value) {
-            field = value
-            // setMaterial()
-        }
-
-    var enableClipping = false
-
-    fun setAngleAndHeight(angle: Float = 0f, height: Float = 1f) {
-        pAngle = angle
-        pHeight = height
-        //setPlane()
-    }
-
-    private fun setPlane() {
-        val d = -dot(normal, pointOnPlane)
-        material!!.defaultInstance.setParameter("clipPlane", normal.x, normal.y, normal.z, d)
-    }
-
     @SuppressWarnings("ClickableViewAccessibility")
-    override fun onTouch(view: android.view.View, e: MotionEvent): Boolean {
-
-        if (!enableClipping) {
-            onTouchEvent(event = e)
-            return true
-        }
-
-        val y: Float = this.view.viewport.height - e.y
-
-        when (e.action) {
-            MotionEvent.ACTION_MOVE -> {
-                // val normalizedY = 1.0f - (2.0f * y) / this.view.viewport.height
-                //material!!.defaultInstance.setParameter("clipPlane", normalizedY)
-                //val dy = y - prevY
-                val normalizedY = y / this.view.viewport.height
-
-                if (e.x > view.width / 2) {
-                    pAngle = normalizedY * 10
-                    pHeight = 1f
-                } else {
-                    pAngle = 0f
-                    pHeight = normalizedY
-                }
-
-                setPlane()
-            }
-        }
-
-        prevY = y
-
+    override fun onTouch(view: android.view.View, event: MotionEvent): Boolean {
+        onTouchEvent(event)
         return true
-    }
-
-    private val pickingHandler by lazy { Handler(Looper.getMainLooper()) }
-
-    private suspend fun fetchResources(asset: FilamentAsset, callback: (String) -> Buffer) {
-        val items = HashMap<String, Buffer>()
-        val resourceUris = asset.resourceUris
-        for (resourceUri in resourceUris) {
-            items[resourceUri] = callback(resourceUri)
-        }
-
-        withContext(Dispatchers.Main) {
-            for ((uri, buffer) in items) {
-                resourceLoader.addResourceData(uri, buffer)
-            }
-            resourceLoader.asyncBeginLoad(asset)
-            animator = asset.instance.animator
-            asset.releaseSourceData()
-        }
     }
 
     private fun updateCameraProjection() {
         val width = view.viewport.width
         val height = view.viewport.height
         val aspect = width.toDouble() / height.toDouble()
-        camera.setLensProjection(
-            cameraFocalLength.toDouble(), aspect,
-            cameraNear.toDouble(), cameraFar.toDouble()
-        )
+        camera.setLensProjection(cameraFocalLength.toDouble(), aspect,
+            cameraNear.toDouble(), cameraFar.toDouble())
     }
 
     inner class SurfaceCallback : UiHelper.RendererCallback {
         override fun onNativeWindowChanged(surface: Surface) {
-            swapChain?.let { engine.destroySwapChain(it) }
-            swapChain = engine.createSwapChain(surface)
-            surfaceView?.let { displayHelper.attach(renderer, it.display) }
-            textureView?.let { displayHelper.attach(renderer, it.display) }
+            uiCallbackExecutor.invoke {
+                swapChain?.let { engine.destroySwapChain(it) }
+                swapChain = engine.createSwapChain(surface)
+                surfaceView?.let { displayHelper.attach(renderer, it.display) }
+                textureView?.let { displayHelper.attach(renderer, it.display) }
+            }
         }
 
         override fun onDetachedFromSurface() {
-            displayHelper.detach()
-            swapChain?.let {
-                engine.destroySwapChain(it)
-                engine.flushAndWait()
-                swapChain = null
+            uiCallbackExecutor.invoke {
+                displayHelper.detach()
+                swapChain?.let {
+                    engine.destroySwapChain(it)
+                    engine.flushAndWait()
+                    swapChain = null
+                }
             }
         }
 
         override fun onResized(width: Int, height: Int) {
-            view.viewport = Viewport(0, 0, width, height)
-            cameraManipulator.setViewport(width, height)
-            material?.defaultInstance?.setParameter("res", width.toFloat(), height.toFloat())?.also {
-                logg("setting resolution ${material}")
+            uiCallbackExecutor.invoke {
+                view.viewport = Viewport(0, 0, width, height)
+                cameraManipulator.setViewport(width, height)
+                updateCameraProjection()
+                synchronizePendingFrames(engine)
             }
-            updateCameraProjection()
-            synchronizePendingFrames(engine)
         }
     }
 
@@ -526,6 +397,6 @@ class ClipModelViewer(
     }
 
     companion object {
-        private val kDefaultObjectPosition = Float3(0.0f, 0.0f, -4.0f)
+        private val kDefaultObjectPosition = Float3(0.0f, 0.0f, 0f)
     }
 }

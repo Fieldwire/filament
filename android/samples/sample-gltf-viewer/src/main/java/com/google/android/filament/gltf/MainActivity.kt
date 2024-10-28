@@ -155,7 +155,7 @@ class MainActivity : Activity() {
 
     private fun createDefaultRenderables() {
 //        val buffer = assets.open("models/100_MB.glb").use { input ->
-        val buffer = assets.open("models/${intent.getStringExtra("model")}").use { input ->
+        val buffer = assets.open("models/100_dup_objects_large.glb").use { input ->
             val bytes = ByteArray(input.available())
             input.read(bytes)
             ByteBuffer.wrap(bytes)
