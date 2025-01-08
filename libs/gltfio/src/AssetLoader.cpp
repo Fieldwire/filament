@@ -1760,7 +1760,7 @@ void FAssetLoader::importSkins(FFilamentInstance* instance, const cgltf_data* gl
 // Including support for Android
 // See https://github.com/google/filament/discussions/7851#discussioncomment-9453369
 bool AssetConfigurationExtended::isSupported() {
-#if defined(IOS) || defined(__EMSCRIPTEN__)
+#if defined(FILAMENT_IOS) || defined(__EMSCRIPTEN__)
     return false;
 #else
     return true;
