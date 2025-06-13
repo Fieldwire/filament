@@ -15,6 +15,7 @@
  */
 
 #include "common/arguments.h"
+#include "common/configuration.h"
 
 #include <filamentapp/Config.h>
 #include <filamentapp/FilamentApp.h>
@@ -799,9 +800,11 @@ int main(int argc, char** argv) {
             }
         }
 
-        app.materials = (app.materialSource == JITSHADER) ?
-                createJitShaderProvider(engine, OPTIMIZE_MATERIALS) :
-                createUbershaderProvider(engine, UBERARCHIVE_DEFAULT_DATA, UBERARCHIVE_DEFAULT_SIZE);
+        app.materials = (app.materialSource == JITSHADER)
+                                ? createJitShaderProvider(engine, OPTIMIZE_MATERIALS,
+                                          samples::getJitMaterialVariantFilter(app.config.backend))
+                                : createUbershaderProvider(engine, UBERARCHIVE_DEFAULT_DATA,
+                                          UBERARCHIVE_DEFAULT_SIZE);
 
         // This code path is used to load the gltf file with normals
         // app.assetLoader = AssetLoader::create({ engine, app.materials, app.names });
