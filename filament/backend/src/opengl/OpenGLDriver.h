@@ -81,7 +81,7 @@ public:
             const Platform::DriverConfig& driverConfig) noexcept;
 
     class DebugMarker {
-        OpenGLDriver& driver;
+        UTILS_UNUSED OpenGLDriver& driver;
     public:
         DebugMarker(OpenGLDriver& driver, const char* string) noexcept;
         ~DebugMarker() noexcept;
@@ -126,7 +126,7 @@ public:
     struct GLSamplerGroup : public HwSamplerGroup {
         using HwSamplerGroup::HwSamplerGroup;
         struct Entry {
-            GLTexture const* texture = nullptr;
+            Handle<HwTexture> th;
             GLuint sampler = 0u;
         };
         utils::FixedCapacityVector<Entry> textureUnitEntries;
@@ -254,6 +254,11 @@ private:
             std::is_base_of_v<B, typename std::remove_pointer_t<Dp>>, Dp>
     handle_cast(Handle<B>& handle) {
         return mHandleAllocator.handle_cast<Dp, B>(handle);
+    }
+
+    template<typename B>
+    bool is_valid(Handle<B>& handle) {
+        return mHandleAllocator.is_valid(handle);
     }
 
     template<typename Dp, typename B>

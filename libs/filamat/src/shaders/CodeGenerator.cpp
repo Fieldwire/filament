@@ -332,6 +332,9 @@ utils::io::sstream& CodeGenerator::generateProlog(utils::io::sstream& out, Shade
     generateSpecializationConstant(out, "CONFIG_STEREO_EYE_COUNT",
             +ReservedSpecializationConstants::CONFIG_STEREO_EYE_COUNT, material.stereoscopicEyeCount);
 
+    generateSpecializationConstant(out, "CONFIG_SH_BANDS_COUNT",
+            +ReservedSpecializationConstants::CONFIG_SH_BANDS_COUNT, 3);
+
     // CONFIG_MAX_STEREOSCOPIC_EYES is used to size arrays and on Adreno GPUs + vulkan, this has to
     // be explicitly, statically defined (as in #define). Otherwise (using const int for
     // example), we'd run into a GPU crash.
@@ -448,15 +451,20 @@ io::sstream& CodeGenerator::generatePostProcessMain(io::sstream& out, ShaderStag
 }
 
 io::sstream& CodeGenerator::generateVariable(io::sstream& out, ShaderStage stage,
-        const CString& name, size_t index) {
-
+        const MaterialBuilder::CustomVariable& variable, size_t index) {
+    auto const& name = variable.name;
+    const char* precisionString = getPrecisionQualifier(variable.precision);
     if (!name.empty()) {
         if (stage == ShaderStage::VERTEX) {
             out << "\n#define VARIABLE_CUSTOM" << index << " " << name.c_str() << "\n";
             out << "\n#define VARIABLE_CUSTOM_AT" << index << " variable_" << name.c_str() << "\n";
-            out << "LAYOUT_LOCATION(" << index << ") VARYING vec4 variable_" << name.c_str() << ";\n";
+            out << "LAYOUT_LOCATION(" << index << ") VARYING " << precisionString << " vec4 variable_" << name.c_str() << ";\n";
         } else if (stage == ShaderStage::FRAGMENT) {
-            out << "\nLAYOUT_LOCATION(" << index << ") VARYING highp vec4 variable_" << name.c_str() << ";\n";
+            if (!variable.hasPrecision && variable.precision == Precision::DEFAULT) {
+                // for backward compatibility
+                precisionString = "highp";
+            }
+            out << "\nLAYOUT_LOCATION(" << index << ") VARYING " << precisionString << " vec4 variable_" << name.c_str() << ";\n";
         }
     }
     return out;
@@ -1189,6 +1197,8 @@ char const* CodeGenerator::getConstantName(MaterialBuilder::Property property) n
         case Property::IOR:                         return "IOR";
         case Property::MICRO_THICKNESS:             return "MICRO_THICKNESS";
         case Property::BENT_NORMAL:                 return "BENT_NORMAL";
+        case Property::SPECULAR_FACTOR:             return "SPECULAR_FACTOR";
+        case Property::SPECULAR_COLOR_FACTOR:       return "SPECULAR_COLOR_FACTOR";
     }
 }
 

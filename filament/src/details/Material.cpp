@@ -119,6 +119,7 @@ struct Material::BuilderDetails {
     const void* mPayload = nullptr;
     size_t mSize = 0;
     bool mDefaultMaterial = false;
+    int32_t mShBandsCount = 3;
     std::unordered_map<
         utils::CString,
         std::variant<int32_t, float, bool>,
@@ -140,6 +141,11 @@ BuilderType::Builder& BuilderType::Builder::operator=(BuilderType::Builder&& rhs
 Material::Builder& Material::Builder::package(const void* payload, size_t size) {
     mImpl->mPayload = payload;
     mImpl->mSize = size;
+    return *this;
+}
+
+Material::Builder& Material::Builder::sphericalHarmonicsBandCount(size_t shBandCount) noexcept {
+    mImpl->mShBandsCount = math::clamp(shBandCount, size_t(1), size_t(3));
     return *this;
 }
 
@@ -186,6 +192,30 @@ Material* Material::Builder::build(Engine& engine) {
         return nullptr;
     }
 
+    // Print a warning if the material's stereo type doesn't align with the engine's setting.
+    MaterialDomain materialDomain;
+    UserVariantFilterMask variantFilterMask;
+    materialParser->getMaterialDomain(&materialDomain);
+    materialParser->getMaterialVariantFilterMask(&variantFilterMask);
+    bool const hasStereoVariants = !(variantFilterMask & UserVariantFilterMask(UserVariantFilterBit::STE));
+    if (materialDomain == MaterialDomain::SURFACE && hasStereoVariants) {
+        StereoscopicType const engineStereoscopicType = engine.getConfig().stereoscopicType;
+        // Default materials are always compiled with either 'instanced' or 'multiview'.
+        // So, we only verify compatibility if the engine is set up for stereo.
+        if (engineStereoscopicType != StereoscopicType::NONE) {
+            StereoscopicType materialStereoscopicType = StereoscopicType::NONE;
+            materialParser->getStereoscopicType(&materialStereoscopicType);
+            if (materialStereoscopicType != engineStereoscopicType) {
+                CString name;
+                materialParser->getName(&name);
+                slog.w << "The stereoscopic type in the compiled material '" << name.c_str_safe()
+                        << "' is " << (int)materialStereoscopicType
+                        << ", which is not compatiable with the engine's setting "
+                        << (int)engineStereoscopicType << "." << io::endl;
+            }
+        }
+    }
+
     return downcast(engine).createMaterial(*this, std::move(materialParser));
 }
 
@@ -194,8 +224,7 @@ FMaterial::FMaterial(FEngine& engine, const Material::Builder& builder,
         : mIsDefaultMaterial(builder->mDefaultMaterial),
           mEngine(engine),
           mMaterialId(engine.getMaterialId()),
-          mMaterialParser(std::move(materialParser))
-{
+          mMaterialParser(std::move(materialParser)) {
     MaterialParser* const parser = mMaterialParser.get();
 
     UTILS_UNUSED_IN_RELEASE bool const nameOk = parser->getName(&mName);
@@ -589,6 +618,7 @@ Program FMaterial::getProgramWithVariants(
 
 void FMaterial::createAndCacheProgram(Program&& p, Variant variant) const noexcept {
     auto program = mEngine.getDriverApi().createProgram(std::move(p));
+    mEngine.getDriverApi().setDebugTag(program.getId(), mName);
     assert_invariant(program);
     mCachedPrograms[variant.key] = program;
 }
@@ -867,7 +897,7 @@ void FMaterial::processSpecializationConstants(FEngine& engine, Material::Builde
             engine.getDriverApi().getMaxUniformBufferSize() / 16u);
 
     bool const staticTextureWorkaround =
-            engine.getDriverApi().isWorkaroundNeeded(Workaround::A8X_STATIC_TEXTURE_TARGET_ERROR);
+            engine.getDriverApi().isWorkaroundNeeded(Workaround::METAL_STATIC_TEXTURE_TARGET_ERROR);
 
     bool const powerVrShaderWorkarounds =
             engine.getDriverApi().isWorkaroundNeeded(Workaround::POWER_VR_SHADER_WORKAROUNDS);
@@ -897,6 +927,8 @@ void FMaterial::processSpecializationConstants(FEngine& engine, Material::Builde
     mSpecializationConstants.push_back({
             +ReservedSpecializationConstants::CONFIG_STEREO_EYE_COUNT,
             (int)engine.getConfig().stereoscopicEyeCount });
+    mSpecializationConstants.push_back({
+            +ReservedSpecializationConstants::CONFIG_SH_BANDS_COUNT, builder->mShBandsCount });
     if (UTILS_UNLIKELY(parser->getShaderLanguage() == ShaderLanguage::ESSL1)) {
         // The actual value of this spec-constant is set in the OpenGLDriver backend.
         mSpecializationConstants.push_back({

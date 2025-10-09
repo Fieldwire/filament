@@ -292,8 +292,8 @@ VulkanProgram::VulkanProgram(VkDevice device, Program const& builder) noexcept
     }
 
 #if FVK_ENABLED(FVK_DEBUG_SHADER_MODULE)
-    utils::slog.d << "Created VulkanProgram " << builder << ", shaders = (" << modules[0]
-                  << ", " << modules[1] << ")" << utils::io::endl;
+    FVK_LOGD << "Created VulkanProgram " << builder << ", shaders = (" << modules[0]
+             << ", " << modules[1] << ")" << utils::io::endl;
 #endif
 }
 
@@ -323,11 +323,12 @@ VulkanRenderTarget::VulkanRenderTarget(VkDevice device, VkPhysicalDevice physica
         VulkanContext const& context, VmaAllocator allocator, VulkanCommands* commands,
         uint32_t width, uint32_t height, uint8_t samples,
         VulkanAttachment color[MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT],
-        VulkanAttachment depthStencil[2], VulkanStagePool& stagePool)
+        VulkanAttachment depthStencil[2], VulkanStagePool& stagePool, uint8_t layerCount)
     : HwRenderTarget(width, height),
       VulkanResource(VulkanResourceType::RENDER_TARGET),
       mOffscreen(true),
-      mSamples(samples) {
+      mSamples(samples),
+      mLayerCount(layerCount) {
     for (int index = 0; index < MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT; index++) {
         mColor[index] = color[index];
     }

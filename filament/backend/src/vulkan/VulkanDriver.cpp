@@ -115,15 +115,15 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debugReportCallback(VkDebugReportFlagsEXT flags,
         VkDebugReportObjectTypeEXT objectType, uint64_t object, size_t location,
         int32_t messageCode, const char* pLayerPrefix, const char* pMessage, void* pUserData) {
     if (flags & VK_DEBUG_REPORT_ERROR_BIT_EXT) {
-        utils::slog.e << "VULKAN ERROR: (" << pLayerPrefix << ") " << pMessage << utils::io::endl;
+        FVK_LOGE << "VULKAN ERROR: (" << pLayerPrefix << ") " << pMessage << utils::io::endl;
     } else {
         // TODO: emit best practices warnings about aggressive pipeline barriers.
         if (strstr(pMessage, "ALL_GRAPHICS_BIT") || strstr(pMessage, "ALL_COMMANDS_BIT")) {
             return VK_FALSE;
         }
-        utils::slog.w << "VULKAN WARNING: (" << pLayerPrefix << ") " << pMessage << utils::io::endl;
+        FVK_LOGW << "VULKAN WARNING: (" << pLayerPrefix << ") " << pMessage << utils::io::endl;
     }
-    utils::slog.e << utils::io::endl;
+    FVK_LOGE << utils::io::endl;
     return VK_FALSE;
 }
 #endif // FVK_EANBLED(FVK_DEBUG_VALIDATION)
@@ -133,18 +133,18 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debugUtilsCallback(VkDebugUtilsMessageSeverityFla
         VkDebugUtilsMessageTypeFlagsEXT types, const VkDebugUtilsMessengerCallbackDataEXT* cbdata,
         void* pUserData) {
     if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
-        utils::slog.e << "VULKAN ERROR: (" << cbdata->pMessageIdName << ") " << cbdata->pMessage
-                      << utils::io::endl;
+        FVK_LOGE << "VULKAN ERROR: (" << cbdata->pMessageIdName << ") " << cbdata->pMessage
+                 << utils::io::endl;
     } else {
         // TODO: emit best practices warnings about aggressive pipeline barriers.
         if (strstr(cbdata->pMessage, "ALL_GRAPHICS_BIT")
                 || strstr(cbdata->pMessage, "ALL_COMMANDS_BIT")) {
             return VK_FALSE;
         }
-        utils::slog.w << "VULKAN WARNING: (" << cbdata->pMessageIdName << ") " << cbdata->pMessage
-                      << utils::io::endl;
+        FVK_LOGW << "VULKAN WARNING: (" << cbdata->pMessageIdName << ") " << cbdata->pMessage
+                 << utils::io::endl;
     }
-    utils::slog.e << utils::io::endl;
+    FVK_LOGE << utils::io::endl;
     return VK_FALSE;
 }
 #endif // FVK_EANBLED(FVK_DEBUG_DEBUG_UTILS)
@@ -292,7 +292,7 @@ Driver* VulkanDriver::create(VulkanPlatform* platform, VulkanContext const& cont
     //    VulkanRenderTarget            : 312       few
     // -- less than or equal to 312 bytes
 
-    utils::slog.d
+    FVK_LOGD
            << "\nVulkanSwapChain: " << sizeof(VulkanSwapChain)
            << "\nVulkanBufferObject: " << sizeof(VulkanBufferObject)
            << "\nVulkanVertexBuffer: " << sizeof(VulkanVertexBuffer)
@@ -595,6 +595,8 @@ void VulkanDriver::createRenderTargetR(Handle<HwRenderTarget> rth,
             colorTargets[i] = {
                 .texture = mResourceAllocator.handle_cast<VulkanTexture*>(color[i].handle),
                 .level = color[i].level,
+                .baseViewIndex = color[i].baseViewIndex,
+                .layerCount = layerCount,
                 .layer = color[i].layer,
             };
             UTILS_UNUSED_IN_RELEASE VkExtent2D extent = colorTargets[i].getExtent2D();
@@ -609,6 +611,8 @@ void VulkanDriver::createRenderTargetR(Handle<HwRenderTarget> rth,
         depthStencil[0] = {
             .texture = mResourceAllocator.handle_cast<VulkanTexture*>(depth.handle),
             .level = depth.level,
+            .baseViewIndex = depth.baseViewIndex,
+            .layerCount = layerCount,
             .layer = depth.layer,
         };
         UTILS_UNUSED_IN_RELEASE VkExtent2D extent = depthStencil[0].getExtent2D();
@@ -621,6 +625,8 @@ void VulkanDriver::createRenderTargetR(Handle<HwRenderTarget> rth,
         depthStencil[1] = {
             .texture = mResourceAllocator.handle_cast<VulkanTexture*>(stencil.handle),
             .level = stencil.level,
+            .baseViewIndex = stencil.baseViewIndex,
+            .layerCount = layerCount,
             .layer = stencil.layer,
         };
         UTILS_UNUSED_IN_RELEASE VkExtent2D extent = depthStencil[1].getExtent2D();
@@ -637,7 +643,7 @@ void VulkanDriver::createRenderTargetR(Handle<HwRenderTarget> rth,
 
     auto renderTarget = mResourceAllocator.construct<VulkanRenderTarget>(rth, mPlatform->getDevice(),
             mPlatform->getPhysicalDevice(), mContext, mAllocator, &mCommands, width, height,
-            samples, colorTargets, depthStencil, mStagePool);
+            samples, colorTargets, depthStencil, mStagePool, layerCount);
     mResourceManager.acquire(renderTarget);
 }
 
@@ -660,8 +666,8 @@ void VulkanDriver::createFenceR(Handle<HwFence> fh, int) {
 
 void VulkanDriver::createSwapChainR(Handle<HwSwapChain> sch, void* nativeWindow, uint64_t flags) {
     if ((flags & backend::SWAP_CHAIN_CONFIG_SRGB_COLORSPACE) != 0 && !isSRGBSwapChainSupported()) {
-        utils::slog.w << "sRGB swapchain requested, but Platform does not support it"
-                      << utils::io::endl;
+        FVK_LOGW << "sRGB swapchain requested, but Platform does not support it"
+                 << utils::io::endl;
         flags = flags | ~(backend::SWAP_CHAIN_CONFIG_SRGB_COLORSPACE);
     }
     auto swapChain = mResourceAllocator.construct<VulkanSwapChain>(sch, mPlatform, mContext,
@@ -672,7 +678,7 @@ void VulkanDriver::createSwapChainR(Handle<HwSwapChain> sch, void* nativeWindow,
 void VulkanDriver::createSwapChainHeadlessR(Handle<HwSwapChain> sch, uint32_t width,
         uint32_t height, uint64_t flags) {
     if ((flags & backend::SWAP_CHAIN_CONFIG_SRGB_COLORSPACE) != 0 && !isSRGBSwapChainSupported()) {
-        utils::slog.w << "sRGB swapchain requested, but Platform does not support it"
+        FVK_LOGW << "sRGB swapchain requested, but Platform does not support it"
                       << utils::io::endl;
         flags = flags | ~(backend::SWAP_CHAIN_CONFIG_SRGB_COLORSPACE);
     }
@@ -914,7 +920,7 @@ bool VulkanDriver::isStereoSupported() {
         case backend::StereoscopicType::INSTANCED:
             return mContext.isClipDistanceSupported();
         case backend::StereoscopicType::MULTIVIEW:
-            // TODO: implement multiview feature in Vulkan.
+            return mContext.isMultiviewEnabled();
         case backend::StereoscopicType::NONE:
             return false;
     }
@@ -936,6 +942,10 @@ bool VulkanDriver::isDepthStencilBlitSupported(TextureFormat format) {
 
 bool VulkanDriver::isProtectedTexturesSupported() {
     return false;
+}
+
+bool VulkanDriver::isDepthClampSupported() {
+    return mContext.isDepthClampSupported();
 }
 
 bool VulkanDriver::isWorkaroundNeeded(Workaround workaround) {
@@ -986,15 +996,15 @@ FeatureLevel VulkanDriver::getFeatureLevel() {
 
     // If the max sampler counts do not meet FL2 standards, then this is an FL1 device.
     const auto& fl2 = FEATURE_LEVEL_CAPS[+FeatureLevel::FEATURE_LEVEL_2];
-    if (fl2.MAX_VERTEX_SAMPLER_COUNT < limits.maxPerStageDescriptorSamplers ||
-        fl2.MAX_FRAGMENT_SAMPLER_COUNT < limits.maxPerStageDescriptorSamplers) {
+    if (limits.maxPerStageDescriptorSamplers < fl2.MAX_VERTEX_SAMPLER_COUNT  ||
+        limits.maxPerStageDescriptorSamplers < fl2.MAX_FRAGMENT_SAMPLER_COUNT) {
         return FeatureLevel::FEATURE_LEVEL_1;
     }
 
     // If the max sampler counts do not meet FL3 standards, then this is an FL2 device.
     const auto& fl3 = FEATURE_LEVEL_CAPS[+FeatureLevel::FEATURE_LEVEL_3];
-    if (fl3.MAX_VERTEX_SAMPLER_COUNT < limits.maxPerStageDescriptorSamplers ||
-        fl3.MAX_FRAGMENT_SAMPLER_COUNT < limits.maxPerStageDescriptorSamplers) {
+    if (limits.maxPerStageDescriptorSamplers < fl3.MAX_VERTEX_SAMPLER_COUNT||
+        limits.maxPerStageDescriptorSamplers < fl3.MAX_FRAGMENT_SAMPLER_COUNT) {
         return FeatureLevel::FEATURE_LEVEL_2;
     }
 
@@ -1267,6 +1277,8 @@ void VulkanDriver::beginRenderPass(Handle<HwRenderTarget> rth, const RenderPassP
         }
     }
 
+    uint8_t const renderTargetLayerCount = rt->getLayerCount();
+
     // Create the VkRenderPass or fetch it from cache.
     VulkanFboCache::RenderPassKey rpkey = {
         .initialColorLayoutMask = 0,
@@ -1277,10 +1289,12 @@ void VulkanDriver::beginRenderPass(Handle<HwRenderTarget> rth, const RenderPassP
         .discardEnd = discardEndVal,
         .samples = rt->getSamples(),
         .subpassMask = uint8_t(params.subpassMask),
+        .viewCount = renderTargetLayerCount,
     };
     for (int i = 0; i < MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT; i++) {
         const VulkanAttachment& info = rt->getColor(i);
         if (info.texture) {
+            assert_invariant(info.layerCount == renderTargetLayerCount);
             rpkey.initialColorLayoutMask |= 1 << i;
             rpkey.colorFormat[i] = info.getFormat();
             if (rpkey.samples > 1 && info.texture->samples == 1) {
@@ -1806,6 +1820,8 @@ void VulkanDriver::bindPipeline(PipelineState const& pipelineState) {
         .dstAlphaBlendFactor = getBlendFactor(rasterState.blendFunctionDstAlpha),
         .colorWriteMask = (VkColorComponentFlags) (rasterState.colorWrite ? 0xf : 0x0),
         .rasterizationSamples = rt->getSamples(),
+        .depthClamp = rasterState.depthClamp,
+        .reserved = 0,
         .colorTargetCount = rt->getColorTargetCount(mCurrentRenderPass),
         .colorBlendOp = rasterState.blendEquationRGB,
         .alphaBlendOp =  rasterState.blendEquationAlpha,
@@ -1862,9 +1878,9 @@ void VulkanDriver::bindPipeline(PipelineState const& pipelineState) {
         // matching characteristics. (e.g. if the missing texture is a 3D texture)
         if (UTILS_UNLIKELY(texture->getPrimaryImageLayout() == VulkanLayout::UNDEFINED)) {
 #if FVK_ENABLED(FVK_DEBUG_TEXTURE) && FVK_ENABLED_DEBUG_SAMPLER_NAME
-            utils::slog.w << "Uninitialized texture bound to '" << bindingToName[binding] << "'";
-            utils::slog.w << " in material '" << program->name.c_str() << "'";
-            utils::slog.w << " at binding point " << +binding << utils::io::endl;
+            FVK_LOGW << "Uninitialized texture bound to '" << bindingToName[binding] << "'";
+            FVK_LOGW << " in material '" << program->name.c_str() << "'";
+            FVK_LOGW << " at binding point " << +binding << utils::io::endl;
 #endif
             texture = mEmptyTexture;
         }
@@ -2014,12 +2030,16 @@ void VulkanDriver::debugCommandBegin(CommandStream* cmds, bool synchronous, cons
         assert_invariant(inRenderPass);
         inRenderPass = false;
     } else if (inRenderPass && OUTSIDE_COMMANDS.find(command) != OUTSIDE_COMMANDS.end()) {
-        utils::slog.e << command.data() << " issued inside a render pass." << utils::io::endl;
+        FVK_LOGE << command.data() << " issued inside a render pass." << utils::io::endl;
     }
 #endif
 }
 
 void VulkanDriver::resetState(int) {
+}
+
+void VulkanDriver::setDebugTag(HandleBase::HandleId handleId, utils::CString tag) {
+    mResourceAllocator.associateHandle(handleId, std::move(tag));
 }
 
 // explicit instantiation of the Dispatcher

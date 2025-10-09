@@ -105,17 +105,21 @@ public:
         mHandleAllocatorImpl.deallocate(handle, obj);
     }
 
+    inline void associateHandle(HandleBase::HandleId id, utils::CString&& tag) noexcept {
+        mHandleAllocatorImpl.associateTagToHandle(id, std::move(tag));
+    }
+
 private:
     AllocatorImpl mHandleAllocatorImpl;
 
 #if DEBUG_RESOURCE_LEAKS
 public:
     void print() {
-        utils::slog.d << "Resource Allocator state (debug only)" << utils::io::endl;
+        FVK_LOGD << "Resource Allocator state (debug only)" << utils::io::endl;
         for (size_t i = 0; i < RESOURCE_TYPE_COUNT; i++) {
-            utils::slog.d << "[" << i << "]=" << mDebugOnlyResourceCount[i] << utils::io::endl;
+            FVK_LOGD << "[" << i << "]=" << mDebugOnlyResourceCount[i] << utils::io::endl;
         }
-        utils::slog.d << "+++++++++++++++++++++++++++++++++++++" << utils::io::endl;
+        FVK_LOGD << "+++++++++++++++++++++++++++++++++++++" << utils::io::endl;
     }
 private:
     utils::FixedCapacityVector<size_t> mDebugOnlyResourceCount;

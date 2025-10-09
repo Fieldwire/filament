@@ -83,12 +83,20 @@
 #define HAS_MAPBUFFERS 1
 #endif
 
-#define DEBUG_MARKER_NONE       0x00    // no debug marker
-#define DEBUG_MARKER_OPENGL     0x01    // markers in the gl command queue (req. driver support)
-#define DEBUG_MARKER_BACKEND    0x02    // markers on the backend side (systrace)
-#define DEBUG_MARKER_ALL        0x03    // all markers
+#define DEBUG_GROUP_MARKER_NONE       0x00    // no debug marker
+#define DEBUG_GROUP_MARKER_OPENGL     0x01    // markers in the gl command queue (req. driver support)
+#define DEBUG_GROUP_MARKER_BACKEND    0x02    // markers on the backend side (systrace)
+#define DEBUG_GROUP_MARKER_ALL        0x03    // all markers
 
-// set to the desired debug marker level
+#define DEBUG_MARKER_NONE             0x00    // no debug marker
+#define DEBUG_MARKER_OPENGL           0x01    // markers in the gl command queue (req. driver support)
+#define DEBUG_MARKER_BACKEND          0x02    // markers on the backend side (systrace)
+#define DEBUG_MARKER_ALL              0x03    // all markers
+
+// set to the desired debug marker level (for user markers [default: All])
+#define DEBUG_GROUP_MARKER_LEVEL      DEBUG_GROUP_MARKER_ALL
+
+// set to the desired debug level (for internal debugging [Default: None])
 #define DEBUG_MARKER_LEVEL      DEBUG_MARKER_NONE
 
 #if DEBUG_MARKER_LEVEL > DEBUG_MARKER_NONE
@@ -196,11 +204,37 @@ Driver* OpenGLDriver::create(OpenGLPlatform* const platform,
 
 OpenGLDriver::DebugMarker::DebugMarker(OpenGLDriver& driver, const char* string) noexcept
         : driver(driver) {
-    driver.pushGroupMarker(string, strlen(string));
+#ifndef __EMSCRIPTEN__
+#ifdef GL_EXT_debug_marker
+#if DEBUG_MARKER_LEVEL & DEBUG_MARKER_OPENGL
+    if (UTILS_LIKELY(driver.getContext().ext.EXT_debug_marker)) {
+        glPushGroupMarkerEXT(GLsizei(strlen(string)), string);
+    }
+#endif
+#endif
+
+#if DEBUG_MARKER_LEVEL & DEBUG_MARKER_BACKEND
+    SYSTRACE_CONTEXT();
+    SYSTRACE_NAME_BEGIN(string);
+#endif
+#endif
 }
 
 OpenGLDriver::DebugMarker::~DebugMarker() noexcept {
-    driver.popGroupMarker();
+#ifndef __EMSCRIPTEN__
+#ifdef GL_EXT_debug_marker
+#if DEBUG_MARKER_LEVEL & DEBUG_MARKER_OPENGL
+    if (UTILS_LIKELY(driver.getContext().ext.EXT_debug_marker)) {
+        glPopGroupMarkerEXT();
+    }
+#endif
+#endif
+
+#if DEBUG_MARKER_LEVEL & DEBUG_MARKER_BACKEND
+    SYSTRACE_CONTEXT();
+    SYSTRACE_NAME_END();
+#endif
+#endif
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -304,6 +338,13 @@ void OpenGLDriver::bindSampler(GLuint unit, GLuint sampler) noexcept {
 void OpenGLDriver::setPushConstant(backend::ShaderStage stage, uint8_t index,
         backend::PushConstantVariant value) {
     assert_invariant(stage == ShaderStage::VERTEX || stage == ShaderStage::FRAGMENT);
+
+#if FILAMENT_ENABLE_MATDBG
+    if (UTILS_UNLIKELY(!mValidProgram)) {
+        return;
+    }
+#endif
+
     utils::Slice<std::pair<GLint, ConstantType>> constants;
     if (stage == ShaderStage::VERTEX) {
         constants = mCurrentPushConstants->vertexConstants;
@@ -340,15 +381,11 @@ void OpenGLDriver::bindTexture(GLuint unit, GLTexture const* t) noexcept {
 }
 
 bool OpenGLDriver::useProgram(OpenGLProgram* p) noexcept {
-    if (UTILS_UNLIKELY(!p->isValid())) {
-        // If the program is not valid, we can't call use().
-        return false;
-    }
-
     // set-up textures and samplers in the proper TMUs (as specified in setSamplers)
-    p->use(this, mContext);
+    bool const success = p->use(this, mContext);
+    assert_invariant(success == p->isValid());
 
-    if (UTILS_UNLIKELY(mContext.isES2())) {
+    if (UTILS_UNLIKELY(mContext.isES2() && success)) {
         for (uint32_t i = 0; i < Program::UNIFORM_BINDING_COUNT; i++) {
             auto [id, buffer, age] = mContext.getEs2UniformBinding(i);
             if (buffer) {
@@ -359,7 +396,8 @@ bool OpenGLDriver::useProgram(OpenGLProgram* p) noexcept {
         // when mPlatform.isSRGBSwapChainSupported() is false (no need to check though).
         p->setRec709ColorSpace(mRec709OutputColorspace);
     }
-    return true;
+
+    return success;
 }
 
 
@@ -412,6 +450,14 @@ void OpenGLDriver::setRasterState(RasterState rs) noexcept {
         gl.enable(GL_SAMPLE_ALPHA_TO_COVERAGE);
     } else {
         gl.disable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+    }
+
+    if (gl.ext.EXT_depth_clamp) {
+        if (rs.depthClamp) {
+            gl.enable(GL_DEPTH_CLAMP);
+        } else {
+            gl.disable(GL_DEPTH_CLAMP);
+        }
     }
 }
 
@@ -2081,6 +2127,10 @@ bool OpenGLDriver::isProtectedTexturesSupported() {
     return getContext().ext.EXT_protected_textures;
 }
 
+bool OpenGLDriver::isDepthClampSupported() {
+    return getContext().ext.EXT_depth_clamp;
+}
+
 bool OpenGLDriver::isWorkaroundNeeded(Workaround workaround) {
     switch (workaround) {
         case Workaround::SPLIT_EASU:
@@ -2171,6 +2221,10 @@ void OpenGLDriver::makeCurrent(Handle<HwSwapChain> schDraw, Handle<HwSwapChain> 
 // ------------------------------------------------------------------------------------------------
 // Updating driver objects
 // ------------------------------------------------------------------------------------------------
+
+void OpenGLDriver::setDebugTag(HandleBase::HandleId handleId, utils::CString tag) {
+    mHandleAllocator.associateTagToHandle(handleId, std::move(tag));
+}
 
 void OpenGLDriver::setVertexBufferObject(Handle<HwVertexBuffer> vbh,
         uint32_t index, Handle<HwBufferObject> boh) {
@@ -2332,10 +2386,19 @@ void OpenGLDriver::updateSamplerGroup(Handle<HwSamplerGroup> sbh,
     auto const* const pSamplers = (SamplerDescriptor const*)data.buffer;
     for (size_t i = 0, c = sb->textureUnitEntries.size(); i < c; i++) {
         GLuint samplerId = 0u;
-        const GLTexture* t = nullptr;
-        if (UTILS_LIKELY(pSamplers[i].t)) {
-            t = handle_cast<const GLTexture*>(pSamplers[i].t);
+        Handle<HwTexture> th = pSamplers[i].t;
+        if (UTILS_LIKELY(th)) {
+            GLTexture const* const t = handle_cast<const GLTexture*>(th);
             assert_invariant(t);
+
+            if (UTILS_UNLIKELY(es2)
+#if defined(GL_EXT_texture_filter_anisotropic)
+                    || UTILS_UNLIKELY(anisotropyWorkaround)
+ #endif
+                    ) {
+                // We must set texture parameters on the texture itself.
+                bindTexture(OpenGLContext::DUMMY_TEXTURE_BINDING, t);
+            }
 
             SamplerParams params = pSamplers[i].s;
             if (UTILS_UNLIKELY(t->target == SamplerType::SAMPLER_EXTERNAL)) {
@@ -2390,7 +2453,7 @@ void OpenGLDriver::updateSamplerGroup(Handle<HwSamplerGroup> sbh,
             // which is not an error.
         }
 
-        sb->textureUnitEntries[i] = { t, samplerId };
+        sb->textureUnitEntries[i] = { th, samplerId };
     }
     scheduleDestroy(std::move(data));
 }
@@ -3147,14 +3210,14 @@ void OpenGLDriver::insertEventMarker(char const* string, uint32_t len) {
 void OpenGLDriver::pushGroupMarker(char const* string, uint32_t len) {
 #ifndef __EMSCRIPTEN__
 #ifdef GL_EXT_debug_marker
-#if DEBUG_MARKER_LEVEL & DEBUG_MARKER_OPENGL
+#if DEBUG_GROUP_MARKER_LEVEL & DEBUG_GROUP_MARKER_OPENGL
     if (UTILS_LIKELY(mContext.ext.EXT_debug_marker)) {
         glPushGroupMarkerEXT(GLsizei(len ? len : strlen(string)), string);
     }
 #endif
 #endif
 
-#if DEBUG_MARKER_LEVEL & DEBUG_MARKER_BACKEND
+#if DEBUG_GROUP_MARKER_LEVEL & DEBUG_GROUP_MARKER_BACKEND
     SYSTRACE_CONTEXT();
     SYSTRACE_NAME_BEGIN(string);
 #endif
@@ -3164,14 +3227,14 @@ void OpenGLDriver::pushGroupMarker(char const* string, uint32_t len) {
 void OpenGLDriver::popGroupMarker(int) {
 #ifndef __EMSCRIPTEN__
 #ifdef GL_EXT_debug_marker
-#if DEBUG_MARKER_LEVEL & DEBUG_MARKER_OPENGL
+#if DEBUG_GROUP_MARKER_LEVEL & DEBUG_GROUP_MARKER_OPENGL
     if (UTILS_LIKELY(mContext.ext.EXT_debug_marker)) {
         glPopGroupMarkerEXT();
     }
 #endif
 #endif
 
-#if DEBUG_MARKER_LEVEL & DEBUG_MARKER_BACKEND
+#if DEBUG_GROUP_MARKER_LEVEL & DEBUG_GROUP_MARKER_BACKEND
     SYSTRACE_CONTEXT();
     SYSTRACE_NAME_END();
 #endif
@@ -3877,6 +3940,7 @@ void OpenGLDriver::bindRenderPrimitive(Handle<HwRenderPrimitive> rph) {
 }
 
 void OpenGLDriver::draw2(uint32_t indexOffset, uint32_t indexCount, uint32_t instanceCount) {
+    DEBUG_MARKER()
     GLRenderPrimitive const* const rp = mBoundRenderPrimitive;
     if (UTILS_UNLIKELY(!rp || !mValidProgram)) {
         return;
@@ -3898,6 +3962,7 @@ void OpenGLDriver::draw2(uint32_t indexOffset, uint32_t indexCount, uint32_t ins
 }
 
 void OpenGLDriver::draw2GLES2(uint32_t indexOffset, uint32_t indexCount, uint32_t instanceCount) {
+    DEBUG_MARKER()
     GLRenderPrimitive const* const rp = mBoundRenderPrimitive;
     if (UTILS_UNLIKELY(!rp || !mValidProgram)) {
         return;
@@ -3918,6 +3983,7 @@ void OpenGLDriver::draw2GLES2(uint32_t indexOffset, uint32_t indexCount, uint32_
 }
 
 void OpenGLDriver::scissor(Viewport scissor) {
+    DEBUG_MARKER()
     setScissor(scissor);
 }
 
@@ -3937,6 +4003,7 @@ void OpenGLDriver::draw(PipelineState state, Handle<HwRenderPrimitive> rph,
 }
 
 void OpenGLDriver::dispatchCompute(Handle<HwProgram> program, math::uint3 workGroupCount) {
+    DEBUG_MARKER()
     getShaderCompilerService().tick();
 
     OpenGLProgram* const p = handle_cast<OpenGLProgram*>(program);

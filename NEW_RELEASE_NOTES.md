@@ -8,4 +8,4 @@ appropriate header in [RELEASE_NOTES.md](./RELEASE_NOTES.md).
 
 ## Release notes for next branch cut
 
-- engine: fix skinning normals with large transforms (b/342459864) [⚠️ **New Material Version**]
+- Add a `name` API to Filament objects for debugging handle use-after-free assertions

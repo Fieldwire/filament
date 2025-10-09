@@ -59,7 +59,11 @@ VkExtent2D VulkanAttachment::getExtent2D() const {
 
 VkImageView VulkanAttachment::getImageView() {
     assert_invariant(texture);
-    return texture->getAttachmentView(getSubresourceRange());
+    VkImageSubresourceRange range = getSubresourceRange();
+    if (range.layerCount > 1) {
+        return texture->getMultiviewAttachmentView(range);
+    }
+    return texture->getAttachmentView(range);
 }
 
 bool VulkanAttachment::isDepth() const {
@@ -73,7 +77,7 @@ VkImageSubresourceRange VulkanAttachment::getSubresourceRange() const {
             .baseMipLevel = uint32_t(level),
             .levelCount = 1,
             .baseArrayLayer = uint32_t(layer),
-            .layerCount = 1,
+            .layerCount = layerCount,
     };
 }
 
@@ -100,7 +104,7 @@ std::tuple<uint32_t, uint32_t> VulkanTimestamps::getNextQuery() {
 	    return std::make_tuple(timerIndex * 2, timerIndex * 2 + 1);
         }
     }
-    utils::slog.e << "More than " << maxTimers << " timers are not supported." << utils::io::endl;
+    FVK_LOGE << "More than " << maxTimers << " timers are not supported." << utils::io::endl;
     return std::make_tuple(0, 1);
 }
 

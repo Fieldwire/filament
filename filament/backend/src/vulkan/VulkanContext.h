@@ -43,6 +43,8 @@ struct VulkanCommandBuffer;
 struct VulkanAttachment {
     VulkanTexture* texture = nullptr;
     uint8_t level = 0;
+    uint8_t baseViewIndex = 0;
+    uint8_t layerCount = 1;
     uint16_t layer = 0;
 
     bool isDepth() const;
@@ -123,12 +125,20 @@ public:
         return mPhysicalDeviceFeatures.imageCubeArray == VK_TRUE;
     }
 
+    inline bool isDepthClampSupported() const noexcept {
+        return mPhysicalDeviceFeatures.depthClamp == VK_TRUE;
+    }
+
     inline bool isDebugMarkersSupported() const noexcept {
         return mDebugMarkersSupported;
     }
 
     inline bool isDebugUtilsSupported() const noexcept {
         return mDebugUtilsSupported;
+    }
+
+    inline bool isMultiviewEnabled() const noexcept {
+        return mMultiviewEnabled;
     }
 
     inline bool isClipDistanceSupported() const noexcept {
@@ -141,6 +151,7 @@ private:
     VkPhysicalDeviceFeatures mPhysicalDeviceFeatures = {};
     bool mDebugMarkersSupported = false;
     bool mDebugUtilsSupported = false;
+    bool mMultiviewEnabled = false;
 
     VkFormatList mDepthStencilFormats;
     VkFormatList mBlittableDepthStencilFormats;

@@ -299,6 +299,24 @@ public:
         size_t textureUseAfterFreePoolSize = 0;
 
         /**
+         * When uploading vertex or index data, the Filament Metal backend copies data
+         * into a shared staging area before transferring it to the GPU. This setting controls
+         * the total size of the buffer used to perform these allocations.
+         *
+         * Higher values can improve performance when performing many uploads across a small
+         * number of frames.
+         *
+         * This buffer remains alive throughout the lifetime of the Engine, so this size adds to the
+         * memory footprint of the app and should be set as conservative as possible.
+         *
+         * A value of 0 disables the shared staging buffer entirely; uploads will acquire an
+         * individual buffer from a pool of shared buffers.
+         *
+         * Only respected by the Metal backend.
+         */
+        size_t metalUploadBufferSizeBytes = 512 * 1024;
+
+        /**
          * Set to `true` to forcibly disable parallel shader compilation in the backend.
          * Currently only honored by the GL and Metal backends.
          */
@@ -332,9 +350,12 @@ public:
         uint32_t resourceAllocatorCacheSizeMB = 64;
 
         /*
-         * This value determines for how many frames are texture entries kept in the cache.
+         * This value determines how many frames texture entries are kept for in the cache. This
+         * is a soft limit, meaning some texture older than this are allowed to stay in the cache.
+         * Typically only one texture is evicted per frame.
+         * The default is 1.
          */
-        uint32_t resourceAllocatorCacheMaxAge = 2;
+        uint32_t resourceAllocatorCacheMaxAge = 1;
 
         /*
          * Disable backend handles use-after-free checks.
@@ -876,6 +897,29 @@ public:
     bool isValid(const InstanceBuffer* UTILS_NULLABLE p) const;
 
     /**
+     * Retrieve the count of each resource tracked by Engine.
+     * This is intended for debugging.
+     * @{
+     */
+    size_t getBufferObjectCount() const noexcept;
+    size_t getViewCount() const noexcept;
+    size_t getSceneCount() const noexcept;
+    size_t getSwapChainCount() const noexcept;
+    size_t getStreamCount() const noexcept;
+    size_t getIndexBufferCount() const noexcept;
+    size_t getSkinningBufferCount() const noexcept;
+    size_t getMorphTargetBufferCount() const noexcept;
+    size_t getInstanceBufferCount() const noexcept;
+    size_t getVertexBufferCount() const noexcept;
+    size_t getIndirectLightCount() const noexcept;
+    size_t getMaterialCount() const noexcept;
+    size_t getTextureCount() const noexcept;
+    size_t getSkyboxeCount() const noexcept;
+    size_t getColorGradingCount() const noexcept;
+    size_t getRenderTargetCount() const noexcept;
+    /**  @} */
+
+    /**
      * Kicks the hardware thread (e.g. the OpenGL, Vulkan or Metal thread) and blocks until
      * all commands to this point are executed. Note that does guarantee that the
      * hardware is actually finished.
@@ -1020,6 +1064,21 @@ public:
       */
     void resetBackendState() noexcept;
 #endif
+
+    /**
+     * Get the current time. This is a convenience function that simply returns the
+     * time in nanosecond since epoch of std::chrono::steady_clock.
+     * A possible implementation is:
+     *
+     * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+     *     return std::chrono::steady_clock::now().time_since_epoch().count();
+     * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+     *
+     * @return current time in nanosecond since epoch of std::chrono::steady_clock.
+     * @see Renderer::beginFrame()
+     */
+    static uint64_t getSteadyClockTimeNano() noexcept;
+
 
     DebugRegistry& getDebugRegistry() noexcept;
 
