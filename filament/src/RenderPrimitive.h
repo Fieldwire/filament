@@ -80,15 +80,14 @@ public:
 
 private:
     // These first fields are dereferences from PrimitiveInfo, keep them together
-    struct {
-        FMaterialInstance const* mMaterialInstance = nullptr;
-        backend::Handle<backend::HwRenderPrimitive> mHandle = {};
-        backend::Handle<backend::HwVertexBufferInfo> mVertexBufferInfoHandle = {};
-        FVertexBuffer* mVertexBuffer = nullptr;
-        uint32_t mIndexOffset = 0;
-        uint32_t mIndexCount = 0;
-        uint32_t mMorphingBufferOffset = 0;
-    };
+    FMaterialInstance const* mMaterialInstance = nullptr;
+    backend::Handle<backend::HwRenderPrimitive> mHandle = {};
+    backend::Handle<backend::HwVertexBufferInfo> mVertexBufferInfoHandle = {};
+    const FVertexBuffer* mVertexBuffer = nullptr;
+    uint32_t mIndexOffset = 0;
+    uint32_t mIndexCount = 0;
+    uint32_t mMorphingBufferOffset = 0;
+    // End PrimitiveInfo fields.
 
     AttributeBitset mEnabledAttributes = {};
     uint16_t mBlendOrder = 0;
