@@ -122,6 +122,25 @@ public class AssetLoader {
         mMaterialCache = provider;
     }
 
+    public AssetLoader(@NonNull Engine engine, @NonNull MaterialProvider provider,
+                       @NonNull EntityManager entities, String filePath) {
+
+        long nativeEngine = engine.getNativeObject();
+        long nativeEntities = entities.getNativeObject();
+        if (filePath == null) {
+            mNativeObject = nCreateAssetLoader(nativeEngine, provider, nativeEntities);
+        } else {
+            mNativeObject = nCreateAssetLoaderExtended(nativeEngine, provider, nativeEntities, filePath);
+        }
+
+        if (mNativeObject == 0) {
+            throw new IllegalStateException("Unable to parse glTF asset.");
+        }
+
+        mEngine = engine;
+        mMaterialCache = provider;
+    }
+
     /**
      * Frees all memory consumed by the native <code>AssetLoader</code>
      *

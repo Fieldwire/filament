@@ -19,11 +19,14 @@ package com.google.android.filament.gltf
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.*
 import android.view.GestureDetector
 import android.widget.TextView
 import android.widget.Toast
+import com.google.android.filament.Engine
 import com.google.android.filament.Fence
 import com.google.android.filament.IndirectLight
 import com.google.android.filament.Material
@@ -70,6 +73,8 @@ class MainActivity : Activity() {
     private var loadStartFence: Fence? = null
     private val viewerContent = AutomationEngine.ViewerContent()
 
+    private val multiplier = 2L
+
     @SuppressLint("ClickableViewAccessibility")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -83,7 +88,19 @@ class MainActivity : Activity() {
         doubleTapDetector = GestureDetector(applicationContext, doubleTapListener)
         singleTapDetector = GestureDetector(applicationContext, singleTapListener)
 
-        modelViewer = ModelViewer(surfaceView)
+        modelViewer = ModelViewer(surfaceView,
+            engine = Engine.Builder().backend(Engine.Backend.VULKAN).config(
+                Engine.Config().apply {
+                    // Remember to change the configs in release/config file
+                    commandBufferSizeMB = 2 * multiplier * 3
+                    perRenderPassArenaSizeMB = 2 * multiplier + 2
+                    minCommandBufferSizeMB = 2 * multiplier
+                    perFrameCommandsSizeMB = 2 * multiplier
+                    driverHandleArenaSizeMB = 5 * multiplier
+                }
+            ).build()
+        )
+
         viewerContent.view = modelViewer.view
         viewerContent.sunlight = modelViewer.light
         viewerContent.lightManager = modelViewer.engine.lightManager
@@ -141,13 +158,14 @@ class MainActivity : Activity() {
     }
 
     private fun createDefaultRenderables() {
-        val buffer = assets.open("models/scene.gltf").use { input ->
+        val buffer = assets.open("models/70_MB.glb").use { input ->
             val bytes = ByteArray(input.available())
             input.read(bytes)
             ByteBuffer.wrap(bytes)
         }
 
-        modelViewer.loadModelGltfAsync(buffer) { uri -> readCompressedAsset("models/$uri") }
+//        modelViewer.loadModelGltfAsync(buffer) { uri -> readCompressedAsset("models/$uri") }
+        modelViewer.loadModelGlb(buffer)
         updateRootTransform()
     }
 
@@ -381,10 +399,14 @@ class MainActivity : Activity() {
         }
     }
 
+    private val handler = Handler(Looper.getMainLooper())
+
     inner class FrameCallback : Choreographer.FrameCallback {
         private val startTime = System.nanoTime()
         override fun doFrame(frameTimeNanos: Long) {
-            choreographer.postFrameCallback(this)
+            handler.postDelayed({
+                choreographer.postFrameCallback(this)
+            }, 100)
 
             loadStartFence?.let {
                 if (it.wait(Fence.Mode.FLUSH, 0) == Fence.FenceStatus.CONDITION_SATISFIED) {
