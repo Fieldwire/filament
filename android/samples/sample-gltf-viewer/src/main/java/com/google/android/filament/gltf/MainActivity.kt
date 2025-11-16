@@ -18,13 +18,15 @@ package com.google.android.filament.gltf
 
 import android.annotation.SuppressLint
 import android.app.Activity
-import android.content.Intent
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.*
 import android.view.GestureDetector
 import android.widget.TextView
 import android.widget.Toast
+import com.google.android.filament.Engine
 import com.google.android.filament.Fence
 import com.google.android.filament.IndirectLight
 import com.google.android.filament.Material
@@ -51,7 +53,6 @@ class MainActivity : Activity() {
         // Load the library for the utility layer, which in turn loads gltfio and the Filament core.
         init { Utils.init() }
         private const val TAG = "gltf-viewer"
-        private const val STATIC_MODEL_TAG = "use-static-model"
     }
 
     private lateinit var surfaceView: SurfaceView
@@ -71,7 +72,8 @@ class MainActivity : Activity() {
     private var loadStartTime = 0L
     private var loadStartFence: Fence? = null
     private val viewerContent = AutomationEngine.ViewerContent()
-    private var useStaticModel = false
+
+    private val multiplier = 2L
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -86,13 +88,19 @@ class MainActivity : Activity() {
         doubleTapDetector = GestureDetector(applicationContext, doubleTapListener)
         singleTapDetector = GestureDetector(applicationContext, singleTapListener)
 
-        val intent: Intent = intent
-        val bundle: Bundle? = intent.extras
-        bundle?.let {
-            useStaticModel = it.getBoolean(STATIC_MODEL_TAG, false)
-        }
+        modelViewer = ModelViewer(surfaceView,
+            engine = Engine.Builder().backend(Engine.Backend.VULKAN).config(
+                Engine.Config().apply {
+                    // Remember to change the configs in release/config file
+                    commandBufferSizeMB = 2 * multiplier * 3
+                    perRenderPassArenaSizeMB = 2 * multiplier + 2
+                    minCommandBufferSizeMB = 2 * multiplier
+                    perFrameCommandsSizeMB = 2 * multiplier
+                    driverHandleArenaSizeMB = 5 * multiplier
+                }
+            ).build()
+        )
 
-        modelViewer = ModelViewer(surfaceView)
         viewerContent.view = modelViewer.view
         viewerContent.sunlight = modelViewer.light
         viewerContent.lightManager = modelViewer.engine.lightManager
@@ -150,22 +158,14 @@ class MainActivity : Activity() {
     }
 
     private fun createDefaultRenderables() {
-        // Sometimes it's useful to set to the default model to something static. You can enable
-        // the static model by launching the app from adb, as in
-        // `adb shell am start -n com.google.android.filament.gltf/.MainActivity --ez "use-static-model" true`
-        val modelPath = if (useStaticModel) {
-            "models/helmet.glb"
-        } else {
-            "models/scene.gltf"
-        }
-
-        val buffer = assets.open(modelPath).use { input ->
+        val buffer = assets.open("models/70_MB.glb").use { input ->
             val bytes = ByteArray(input.available())
             input.read(bytes)
             ByteBuffer.wrap(bytes)
         }
 
-        modelViewer.loadModelGltfAsync(buffer) { uri -> readCompressedAsset("models/$uri") }
+//        modelViewer.loadModelGltfAsync(buffer) { uri -> readCompressedAsset("models/$uri") }
+        modelViewer.loadModelGlb(buffer)
         updateRootTransform()
     }
 
@@ -174,16 +174,12 @@ class MainActivity : Activity() {
         val scene = modelViewer.scene
         val ibl = "default_env"
         readCompressedAsset("envs/$ibl/${ibl}_ibl.ktx").let {
-            val bundle = KTX1Loader.createIndirectLight(engine, it)
-            scene.indirectLight = bundle.indirectLight
-            modelViewer.indirectLightCubemap = bundle.cubemap
+            scene.indirectLight = KTX1Loader.createIndirectLight(engine, it)
             scene.indirectLight!!.intensity = 30_000.0f
             viewerContent.indirectLight = modelViewer.scene.indirectLight
         }
         readCompressedAsset("envs/$ibl/${ibl}_skybox.ktx").let {
-            val bundle = KTX1Loader.createSkybox(engine, it)
-            scene.skybox = bundle.skybox
-            modelViewer.skyboxCubemap = bundle.cubemap
+            scene.skybox = KTX1Loader.createSkybox(engine, it)
         }
     }
 
@@ -403,10 +399,14 @@ class MainActivity : Activity() {
         }
     }
 
+    private val handler = Handler(Looper.getMainLooper())
+
     inner class FrameCallback : Choreographer.FrameCallback {
         private val startTime = System.nanoTime()
         override fun doFrame(frameTimeNanos: Long) {
-            choreographer.postFrameCallback(this)
+            handler.postDelayed({
+                choreographer.postFrameCallback(this)
+            }, 100)
 
             loadStartFence?.let {
                 if (it.wait(Fence.Mode.FLUSH, 0) == Fence.FenceStatus.CONDITION_SATISFIED) {

@@ -19,6 +19,7 @@ android {
         // "More than one file was found with OS independent path ..."
         jniLibs {
             excludes += ['lib/*/libfilament-jni.so', 'lib/*/libgltfio-jni.so']
+            keepDebugSymbols += "**/*.so"
         }
     }
 

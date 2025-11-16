@@ -128,7 +128,7 @@ class ModelViewer(
         view.camera = camera
 
         materialProvider = UbershaderProvider(engine)
-        assetLoader = AssetLoader(engine, materialProvider, EntityManager.get())
+        assetLoader = AssetLoader(engine, materialProvider, EntityManager.get(), "")
         resourceLoader = ResourceLoader(engine, normalizeSkinningWeights)
 
         // Always add a direct light source since it is required for shadowing.
