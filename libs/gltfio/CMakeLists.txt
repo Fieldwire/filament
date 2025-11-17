@@ -20,6 +20,7 @@ set(PUBLIC_HDRS
         include/gltfio/ResourceLoader.h
         include/gltfio/TextureProvider.h
         include/gltfio/math.h
+        include/gltfio/Picking.h
 )
 
 set(SRCS
@@ -60,6 +61,7 @@ set(SRCS
         src/extended/TangentsJobExtended.h
         src/extended/TangentSpaceMeshWrapper.cpp
         src/extended/TangentSpaceMeshWrapper.h
+        src/Picking.cpp
 )
 
 # ==================================================================================================

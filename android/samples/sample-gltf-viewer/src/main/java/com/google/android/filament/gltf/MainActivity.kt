@@ -158,7 +158,7 @@ class MainActivity : Activity() {
     }
 
     private fun createDefaultRenderables() {
-        val buffer = assets.open("models/70_MB.glb").use { input ->
+        val buffer = assets.open("models/21_KB.glb").use { input ->
             val bytes = ByteArray(input.available())
             input.read(bytes)
             ByteBuffer.wrap(bytes)
@@ -174,12 +174,12 @@ class MainActivity : Activity() {
         val scene = modelViewer.scene
         val ibl = "default_env"
         readCompressedAsset("envs/$ibl/${ibl}_ibl.ktx").let {
-            scene.indirectLight = KTX1Loader.createIndirectLight(engine, it)
+            scene.indirectLight = KTX1Loader.createIndirectLight(engine, it).indirectLight
             scene.indirectLight!!.intensity = 30_000.0f
             viewerContent.indirectLight = modelViewer.scene.indirectLight
         }
         readCompressedAsset("envs/$ibl/${ibl}_skybox.ktx").let {
-            scene.skybox = KTX1Loader.createSkybox(engine, it)
+            scene.skybox = KTX1Loader.createSkybox(engine, it).skybox
         }
     }
 
@@ -493,14 +493,34 @@ class MainActivity : Activity() {
     // Just for testing purposes
     inner class SingleTapListener : GestureDetector.SimpleOnGestureListener() {
         override fun onSingleTapUp(event: MotionEvent): Boolean {
+            // Existing pixel-based GPU picking.
             modelViewer.view.pick(
                 event.x.toInt(),
                 surfaceView.height - event.y.toInt(),
                 surfaceView.handler, {
-                    val name = modelViewer.asset!!.getName(it.renderable)
-                    Log.v("Filament", "Picked ${it.renderable}: " + name)
+                    val name = modelViewer.asset?.getName(it.renderable)
+                    Log.v("Filament", "Picked (GPU) ${it.renderable}: $name")
                 },
             )
+
+            // CPU-side triangle picking using a simple forward ray from camera eye to target.
+            modelViewer.asset?.let { asset ->
+                val eye = modelViewer.eyePosition
+                val tgt = modelViewer.targetPosition
+                val dx = (tgt[0] - eye[0]).toFloat()
+                val dy = (tgt[1] - eye[1]).toFloat()
+                val dz = (tgt[2] - eye[2]).toFloat()
+                val lenInv = 1.0f / kotlin.math.sqrt(dx*dx + dy*dy + dz*dz).coerceAtLeast(1e-6f)
+                val origin = floatArrayOf(eye[0].toFloat(), eye[1].toFloat(), eye[2].toFloat())
+                val direction = floatArrayOf(dx * lenInv, dy * lenInv, dz * lenInv)
+                val hit = asset.pick(origin, direction)
+                if (hit != null) {
+                    val pickedName = asset.getName(hit.entity)
+                    Log.v("Filament", "Ray-picked entity=${hit.entity} name=${pickedName} tri=${hit.triangle} dist=${hit.distance} bary=(${hit.u},${hit.v},${hit.w})")
+                } else {
+                    Log.v("Filament", "Ray pick: no intersection")
+                }
+            }
             return super.onSingleTapUp(event)
         }
     }
