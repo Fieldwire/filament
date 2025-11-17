@@ -33,6 +33,7 @@ import com.google.android.filament.Material
 import com.google.android.filament.Skybox
 import com.google.android.filament.View
 import com.google.android.filament.View.OnPickCallback
+import com.google.android.filament.gltfio.FilamentAsset
 import com.google.android.filament.utils.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -493,7 +494,7 @@ class MainActivity : Activity() {
     // Just for testing purposes
     inner class SingleTapListener : GestureDetector.SimpleOnGestureListener() {
         override fun onSingleTapUp(event: MotionEvent): Boolean {
-            // Existing pixel-based GPU picking.
+            // GPU picking remains for renderable entity.
             modelViewer.view.pick(
                 event.x.toInt(),
                 surfaceView.height - event.y.toInt(),
@@ -503,20 +504,15 @@ class MainActivity : Activity() {
                 },
             )
 
-            // CPU-side triangle picking using a simple forward ray from camera eye to target.
+            // CPU triangle picking using native screen-coordinate conversion (no Java unprojection).
             modelViewer.asset?.let { asset ->
-                val eye = modelViewer.eyePosition
-                val tgt = modelViewer.targetPosition
-                val dx = (tgt[0] - eye[0]).toFloat()
-                val dy = (tgt[1] - eye[1]).toFloat()
-                val dz = (tgt[2] - eye[2]).toFloat()
-                val lenInv = 1.0f / kotlin.math.sqrt(dx*dx + dy*dy + dz*dz).coerceAtLeast(1e-6f)
-                val origin = floatArrayOf(eye[0].toFloat(), eye[1].toFloat(), eye[2].toFloat())
-                val direction = floatArrayOf(dx * lenInv, dy * lenInv, dz * lenInv)
-                val hit = asset.pick(origin, direction)
+                val hit = asset.pickScreen(modelViewer.view, event.x.toInt(), event.y.toInt()) // Updated usage: removed redundant asset parameter
                 if (hit != null) {
                     val pickedName = asset.getName(hit.entity)
-                    Log.v("Filament", "Ray-picked entity=${hit.entity} name=${pickedName} tri=${hit.triangle} dist=${hit.distance} bary=(${hit.u},${hit.v},${hit.w})")
+                    Log.v(
+                        "Filament",
+                        "Ray-picked entity=${hit.entity} name=${pickedName} tri=${hit.triangle} dist=${hit.distance} bary=(${hit.u},${hit.v},${hit.w})"
+                    )
                 } else {
                     Log.v("Filament", "Ray pick: no intersection")
                 }

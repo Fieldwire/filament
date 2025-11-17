@@ -511,11 +511,11 @@ static void createOverdrawVisualizerEntities(Engine* engine, Scene* scene, App& 
 static void onClick(App& app, View* view, ImVec2 pos) {
     // existing pixel-based GPU picking
     view->pick(pos.x, pos.y, [&app](View::PickingQueryResult const& result){
-        if (const char* name = app.asset->getName(result.renderable); name) {
+        /*if (const char* name = app.asset->getName(result.renderable); name) {
             app.notificationText = name; // will be augmented by CPU picking below
         } else {
             app.notificationText.clear();
-        }
+        }*/
     });
 
     // CPU-side triangle picking using ray from camera.
@@ -863,7 +863,17 @@ int main(int argc, char** argv) {
                                 : createUbershaderProvider(engine, UBERARCHIVE_DEFAULT_DATA,
                                           UBERARCHIVE_DEFAULT_SIZE);
 
-        app.assetLoader = AssetLoader::create({ engine, app.materials, app.names });
+        // app.assetLoader = AssetLoader::create({ engine, app.materials, app.names });
+        AssetConfigurationExtended ext = {
+                .gltfPath = filename.c_str(),
+            };
+        AssetConfiguration config = {
+                .engine = engine,
+                .materials = app.materials,
+                .names = app.names,
+                .ext = &ext,
+            };
+        app.assetLoader = AssetLoader::create(config);
         app.mainCamera = &view->getCamera();
         if (filename.isEmpty()) {
             app.asset = app.assetLoader->createAsset(
@@ -897,7 +907,12 @@ int main(int argc, char** argv) {
             const ImVec4 yellow(1.0f,1.0f,0.0f,1.0f);
 
             if (!app.notificationText.empty()) {
-                ImGui::TextColored(yellow, "Picked %s", app.notificationText.c_str());
+                // Word-wrap the picked notification within the available content region.
+                ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x);
+                ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetColorU32(yellow));
+                ImGui::TextWrapped("Picked %s", app.notificationText.c_str());
+                ImGui::PopStyleColor();
+                ImGui::PopTextWrapPos();
                 ImGui::Spacing();
             }
 

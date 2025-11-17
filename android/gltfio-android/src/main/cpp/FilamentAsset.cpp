@@ -18,6 +18,12 @@
 
 #include <gltfio/FilamentAsset.h>
 #include <gltfio/Picking.h>
+#include <filament/TransformManager.h>
+#include <filament/Engine.h>
+#include <filament/View.h>
+#include <filament/Camera.h>
+#include <filament/Viewport.h> // Added to provide full definition of filament::Viewport
+#include <math/mat4.h>
 
 using namespace filament;
 using namespace filament::math;
@@ -266,6 +272,21 @@ Java_com_google_android_filament_gltfio_FilamentAsset_nRayPick(JNIEnv* env, jcla
     if (!asset) return nullptr;
     PickingRegistry* reg = asset->getPickingRegistry();
     if (!reg) return nullptr;
+    // Update world transforms for all renderables prior to picking for accuracy.
+    Engine* engine = asset->getEngine();
+    if (engine) {
+        auto& tcm = engine->getTransformManager();
+        size_t rc = asset->getRenderableEntityCount();
+        const utils::Entity* renderables = asset->getRenderableEntities();
+        if (renderables) {
+            for (size_t i = 0; i < rc; ++i) {
+                auto inst = tcm.getInstance(renderables[i]);
+                if (inst) {
+                    reg->updateTransform(renderables[i], tcm.getWorldTransform(inst));
+                }
+            }
+        }
+    }
     auto hit = reg->pick(float3{ox, oy, oz}, float3{dx, dy, dz});
     if (hit.entity.getId() == 0 || hit.triangle < 0) {
         return nullptr; // no intersection
@@ -279,4 +300,78 @@ Java_com_google_android_filament_gltfio_FilamentAsset_nRayPick(JNIEnv* env, jcla
             (jfloat) hit.distance, (jfloat) hit.bary.x, (jfloat) hit.bary.y, (jfloat) hit.bary.z);
 }
 
+extern "C" JNIEXPORT jobject JNICALL
+Java_com_google_android_filament_gltfio_FilamentAsset_nRayPickScreen(JNIEnv* env, jclass,
+        jlong nativeAsset, jlong nativeView, jint sx, jint sy) {
+    FilamentAsset* asset = (FilamentAsset*) nativeAsset;
+    if (!asset) return nullptr;
+    View* view = (View*) nativeView;
+    if (!view) return nullptr;
+    Camera* cam = &view->getCamera();
+    PickingRegistry* reg = asset->getPickingRegistry();
+    if (!reg || !cam) return nullptr;
 
+    // Update transforms before picking.
+    Engine* engine = asset->getEngine();
+    if (engine) {
+        auto& tcm = engine->getTransformManager();
+        size_t rc = asset->getRenderableEntityCount();
+        const utils::Entity* renderables = asset->getRenderableEntities();
+        if (renderables) {
+            for (size_t i = 0; i < rc; ++i) {
+                auto inst = tcm.getInstance(renderables[i]);
+                if (inst) {
+                    reg->updateTransform(renderables[i], tcm.getWorldTransform(inst));
+                }
+            }
+        }
+    }
+
+    // Screen to NDC conversion. Viewport origin is lower-left in Filament; Java gives top-left.
+    filament::Viewport vp = view->getViewport();
+    if (vp.width <= 0 || vp.height <= 0) return nullptr;
+
+    // Flip y: incoming sy has top-left origin.
+    int flippedY = (int)vp.height - 1 - sy;
+    double nx = (double(sx) / double(vp.width)) * 2.0 - 1.0;
+    double ny = (double(flippedY) / double(vp.height)) * 2.0 - 1.0;
+
+    // Build ray.
+    using namespace filament::math;
+    mat4 proj = cam->getProjectionMatrix();
+    bool isPerspective = std::abs(proj[3][3]) < 1e-6;
+    mat4 invProj = Camera::inverseProjection(proj);
+    mat4 viewM = cam->getViewMatrix();
+    mat4 invView = inverse(viewM);
+
+    float3 rayOrigin;
+    float3 rayDir;
+    if (isPerspective) {
+        double4 clip{ nx, ny, -1.0, 1.0 }; // near plane
+        double4 viewSpace = invProj * clip;
+        float3 viewPoint = float3(viewSpace.x, viewSpace.y, viewSpace.z);
+        float3 dirView = viewPoint;
+        float3 dirWorld = (invView * float4(dirView, 0)).xyz;
+        rayOrigin = cam->getPosition();
+        rayDir = dirWorld;
+    } else {
+        double4 clip{ nx, ny, -1.0, 1.0 };
+        double4 viewSpace = invProj * clip;
+        float3 viewPoint = float3(viewSpace.x, viewSpace.y, viewSpace.z);
+        float3 worldPoint = (invView * float4(viewPoint, 1)).xyz;
+        rayOrigin = worldPoint;
+        rayDir = cam->getForwardVector();
+    }
+
+    auto hit = reg->pick(rayOrigin, rayDir);
+    if (hit.entity.getId() == 0 || hit.triangle < 0) {
+        return nullptr;
+    }
+    jclass hitClass = env->FindClass("com/google/android/filament/gltfio/FilamentAsset$Hit");
+    if (!hitClass) return nullptr;
+    jmethodID ctor = env->GetMethodID(hitClass, "<init>", "(IIFFFF)V");
+    if (!ctor) return nullptr;
+    return env->NewObject(hitClass, ctor,
+            (jint) hit.entity.getId(), (jint) hit.triangle,
+            (jfloat) hit.distance, (jfloat) hit.bary.x, (jfloat) hit.bary.y, (jfloat) hit.bary.z);
+}
