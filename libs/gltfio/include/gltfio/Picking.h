@@ -17,64 +17,61 @@
 #ifndef GLTFIO_PICKING_H
 #define GLTFIO_PICKING_H
 
-#include <filament/Box.h>            // for filament::Aabb
-#include <math/vec3.h>               // for filament::math::float3
-#include <math/mat4.h>               // for filament::math::mat4f
-#include <utils/Entity.h>            // for utils::Entity
-#include <utils/compiler.h>          // for UTILS_PUBLIC
+#include <filament/Box.h>
+#include <math/vec3.h>
+#include <math/mat4.h>
+#include <utils/Entity.h>
+#include <utils/compiler.h>
+
 #include <vector>
 #include <unordered_map>
 #include <cstdint>
+
+#include <cgltf.h>
 
 namespace filament::gltfio {
 
 // Use the same alias pattern as other gltfio headers.
 using Entity = utils::Entity;
 
-struct MeshTriangle {
-    uint32_t i0, i1, i2;
-};
+struct MeshTriangle { uint32_t i0, i1, i2; };
 
 struct MeshBVHNode {
     filament::math::float3 min;
     filament::math::float3 max;
-    uint32_t left;   // child index or start of triangle range
-    uint32_t right;  // child index or count of triangles if leaf
+    uint32_t left;   // child index OR start of triangle range if leaf
+    uint32_t right;  // child index OR triangle count if leaf
     bool leaf;
 };
 
 struct MeshData {
-    std::vector<filament::math::float3> positions;   // local-space positions
-    std::vector<uint32_t> indices;                   // 3 * triangleCount (triangle list)
-    std::vector<MeshBVHNode> bvh;                    // empty until built
-    std::vector<uint32_t> leafTris;                  // triangle indices order for leaves
-    filament::Aabb localBounds;                      // un-transformed local bounds
+    std::vector<filament::math::float3> positions;   // local-space vertex positions
+    std::vector<uint32_t> indices;                   // triangle list (3 * triCount)
+    std::vector<MeshBVHNode> bvh;                    // BVH nodes (empty until built)
+    std::vector<uint32_t> leafTris;                  // triangle ordinals for leaves
+    filament::Aabb localBounds;                      // un-transformed bounds
     bool bvhBuilt = false;                           // BVH build flag
 };
 
+// Build CPU mesh data for picking from a cgltf mesh (triangles only). localBounds left empty.
+MeshData buildMeshDataForPicking(const cgltf_mesh* mesh);
+
 class UTILS_PUBLIC PickingRegistry {
 public:
-    /** Register a mesh's CPU data for picking. */
     void registerMesh(Entity e, MeshData&& mesh);
-    /** Get immutable mesh data (or nullptr if not registered). */
-    const MeshData* getMesh(Entity e) const;
-    /** Get mutable mesh data (or nullptr if not registered). */
-    MeshData* getMeshMutable(Entity e);
-    /** Build the BVH lazily if not yet built. */
-    void buildBVHIfNeeded(Entity e);
-    /** Placeholder for transform update caching (not yet implemented). */
-    void updateTransform(Entity e, const filament::math::mat4f& world); // optional cache placeholder
+    [[nodiscard]] const MeshData* getMesh(Entity e) const;
+    void updateTransform(Entity e, const filament::math::mat4f& world);
 
     struct Hit { Entity entity; int triangle; float distance; filament::math::float3 bary; };
-    /** Ray pick against all registered meshes (returns closest hit or entity==0 if none). */
-    Hit pick(const filament::math::float3& rayOrigin, const filament::math::float3& rayDir) const;
+    [[nodiscard]] Hit pick(const filament::math::float3& rayOrigin, const filament::math::float3& rayDir) const;
 
-    // Scene broadphase item (optional usage)
     struct SceneItem { Entity e; filament::Aabb worldBounds; };
 private:
+    void buildBVHIfNeeded(Entity e);
+    MeshData* getMeshMutable(Entity e);
+
     std::unordered_map<Entity, MeshData, Entity::Hasher> mMeshes;
-    std::unordered_map<Entity, filament::math::mat4f, Entity::Hasher> mWorldTransforms; // cached world transforms (optional)
-    // Optionally maintain a flat vector of SceneItem for faster iteration.
+    std::unordered_map<Entity, filament::math::mat4f, Entity::Hasher> mWorldTransforms;
 };
 
 } // namespace filament::gltfio

@@ -100,9 +100,6 @@ struct Primitive {
     MorphTargetBuffer* morphTargetBuffer = nullptr;
     uint32_t morphTargetOffset;
     std::vector<int> slotIndices;
-    // Picking support: CPU-side copy of positions and indices for this primitive.
-    std::vector<filament::math::float3> pickingPositions;
-    std::vector<uint32_t> pickingIndices; // triangle list indices referencing pickingPositions
 };
 using MeshCache = utils::FixedCapacityVector<utils::FixedCapacityVector<Primitive>>;
 

@@ -56,6 +56,7 @@
 #include <tsl/robin_map.h>
 
 #include <cgltf.h>
+#include <gltfio/Picking.h>
 
 #include "downcast.h"
 
@@ -889,27 +890,14 @@ void FAssetLoader::createRenderable(const cgltf_node* node, Entity entity, const
         .receiveShadows(true)
         .build(mEngine, entity);
 
-    // Picking registration: aggregate CPU-side primitive data (positions + indices) into one mesh.
-    MeshData meshData; // local-space data
-    uint32_t baseVertex = 0;
-    bool anyData = false;
-    for (auto const &prim: prims) {
-        if (!prim.pickingPositions.empty() && !prim.pickingIndices.empty()) {
-            anyData = true;
-            meshData.positions.insert(meshData.positions.end(), prim.pickingPositions.begin(), prim.pickingPositions.end());
-            for (uint32_t idx: prim.pickingIndices) {
-                meshData.indices.push_back(idx + baseVertex);
-            }
-            // Advance baseVertex only for primitives whose positions we actually appended.
-            baseVertex += (uint32_t) prim.pickingPositions.size();
+    // Picking registration now uses free helper buildMeshDataForPicking.
+    {
+        MeshData meshData = buildMeshDataForPicking(mesh);
+        if (!meshData.positions.empty() && !meshData.indices.empty()) {
+            meshData.localBounds.min = aabb.min;
+            meshData.localBounds.max = aabb.max;
+            fAsset->mPickingRegistry.registerMesh(entity, std::move(meshData));
         }
-        // NOTE: Do NOT advance baseVertex for primitives without CPU picking data; doing so would
-        // offset subsequent indices into non-existent position entries and yield empty positions.
-    }
-    if (anyData && !meshData.positions.empty() && !meshData.indices.empty()) {
-        meshData.localBounds.min = aabb.min;
-        meshData.localBounds.max = aabb.max;
-        fAsset->mPickingRegistry.registerMesh(entity, std::move(meshData));
     }
 
     // According to the spec, the mesh may or may not specify default weights, regardless of whether
