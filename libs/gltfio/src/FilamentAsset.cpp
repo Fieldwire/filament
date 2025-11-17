@@ -17,6 +17,7 @@
 #include "FFilamentAsset.h"
 
 #include <gltfio/Animator.h>
+#include <gltfio/Picking.h>
 
 #include <filament/RenderableManager.h>
 #include <filament/Scene.h>
@@ -109,7 +110,7 @@ void FFilamentAsset::addTextureBinding(MaterialInstance* materialInstance,
         TextureProvider::TextureFlags flags) {
     if (!srcTexture->image && !srcTexture->basisu_image) {
 #ifndef NDEBUG
-        slog.w << "Texture is missing image (" << srcTexture->name << ")." << io::endl;
+        slog.w << "Texture is missing image (" << srcTexture->name << ")." << utils::io::endl;
 #endif
         return;
     }
@@ -406,6 +407,11 @@ const char* FilamentAsset::getSceneName(size_t sceneIndex) const noexcept {
 void FilamentAsset::addEntitiesToScene(Scene& targetScene, const Entity* entities, size_t count,
         SceneMask sceneFilter) const {
     downcast(this)->addEntitiesToScene(targetScene, entities, count, sceneFilter);
+}
+
+PickingRegistry* FilamentAsset::getPickingRegistry() noexcept {
+    auto* impl = static_cast<FFilamentAsset*>(this);
+    return &impl->mPickingRegistry;
 }
 
 } // namespace filament::gltfio

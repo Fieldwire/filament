@@ -948,6 +948,9 @@ bool FAssetLoader::createPrimitive(const cgltf_primitive& inPrim, const char* na
         slots->push_back(entry);
     };
 
+    // Track position accessor for picking data.
+    const cgltf_accessor* positionAccessor = nullptr;
+
     // In glTF, each primitive may or may not have an index buffer.
     IndexBuffer* indices = nullptr;
     const cgltf_accessor* accessor = inPrim.indices;
@@ -1001,6 +1004,10 @@ bool FAssetLoader::createPrimitive(const cgltf_primitive& inPrim, const char* na
         const cgltf_attribute_type atype = attribute.type;
         const cgltf_accessor* accessor = attribute.data;
         int8_t customIndex = -1;
+        // Capture position accessor for picking.
+        if (atype == cgltf_attribute_type_position) {
+            positionAccessor = accessor; // store for later picking population
+        }
 
         // The glTF tangent data is ignored here, but honored in ResourceLoader.
         if (atype == cgltf_attribute_type_tangent) {
@@ -1255,6 +1262,49 @@ bool FAssetLoader::createPrimitive(const cgltf_primitive& inPrim, const char* na
             mDummyBufferObject->setBuffer(mEngine, std::move(bd));
         }
         vertices->setBufferObjectAt(mEngine, slot, mDummyBufferObject);
+    }
+
+    // Picking data population (triangles only, requires embedded or already-loaded buffer data).
+    if (inPrim.type == cgltf_primitive_type_triangles && positionAccessor) {
+        bool havePositionData = positionAccessor->buffer_view && positionAccessor->buffer_view->buffer && positionAccessor->buffer_view->buffer->data;
+        if (havePositionData) {
+            cgltf_size count = positionAccessor->count;
+            int numComponents = 0;
+            switch (positionAccessor->type) {
+                case cgltf_type_vec2: numComponents = 2; break;
+                case cgltf_type_vec3: numComponents = 3; break;
+                case cgltf_type_vec4: numComponents = 4; break;
+                case cgltf_type_scalar: numComponents = 1; break;
+                default: numComponents = 3; break; // assume vec3 if unexpected
+            }
+            if (numComponents >= 3) {
+                std::vector<float> tmp(count * numComponents);
+                if (cgltf_accessor_unpack_floats(positionAccessor, tmp.data(), tmp.size()) == cgltf_result_success) {
+                    outPrim->pickingPositions.reserve(count);
+                    for (size_t i = 0; i < count; ++i) {
+                        outPrim->pickingPositions.emplace_back(tmp[i * numComponents + 0],
+                                                                tmp[i * numComponents + 1],
+                                                                tmp[i * numComponents + 2]);
+                    }
+                }
+            }
+        }
+        // Indices.
+        const cgltf_accessor* indexAccessor = inPrim.indices;
+        if (indexAccessor && indexAccessor->buffer_view && indexAccessor->buffer_view->buffer && indexAccessor->buffer_view->buffer->data) {
+            cgltf_size icount = indexAccessor->count;
+            outPrim->pickingIndices.resize(icount);
+            for (size_t i = 0; i < icount; ++i) {
+                cgltf_size value = cgltf_accessor_read_index(indexAccessor, i);
+                outPrim->pickingIndices[i] = static_cast<uint32_t>(value);
+            }
+        } else if (!indexAccessor && !outPrim->pickingPositions.empty()) {
+            // Generated trivial indices earlier.
+            outPrim->pickingIndices.resize(outPrim->pickingPositions.size());
+            for (size_t i = 0, n = outPrim->pickingPositions.size(); i < n; ++i) {
+                outPrim->pickingIndices[i] = static_cast<uint32_t>(i);
+            }
+        }
     }
 
     return true;

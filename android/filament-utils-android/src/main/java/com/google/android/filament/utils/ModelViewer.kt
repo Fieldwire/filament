@@ -119,6 +119,10 @@ class ModelViewer(
     private val target = DoubleArray(3)
     private val upward = DoubleArray(3)
 
+    // Public accessors for current camera eye and target (copies to avoid external mutation).
+    val eyePosition: DoubleArray get() = eyePos.copyOf()
+    val targetPosition: DoubleArray get() = target.copyOf()
+
     init {
         renderer = engine.createRenderer()
         scene = engine.createScene()

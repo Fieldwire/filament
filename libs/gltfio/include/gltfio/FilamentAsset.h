@@ -36,6 +36,7 @@ namespace filament::gltfio {
 
 class Animator;
 class FilamentInstance;
+class PickingRegistry; // forward declaration
 
 /**
  * \class FilamentAsset FilamentAsset.h gltfio/FilamentAsset.h
@@ -280,6 +281,9 @@ public:
     FilamentInstance* getInstance() noexcept {
         return getAssetInstanceCount() > 0 ? getAssetInstances()[0] : nullptr;
     }
+
+    /** Access the picking registry (may be empty if no meshes registered yet). */
+    PickingRegistry* getPickingRegistry() noexcept;
 
     /*! \cond PRIVATE */
 

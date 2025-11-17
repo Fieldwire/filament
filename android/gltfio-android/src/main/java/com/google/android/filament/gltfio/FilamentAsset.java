@@ -240,6 +240,50 @@ public class FilamentAsset {
         mNativeObject = 0;
     }
 
+    /**
+     * Result of a triangle picking query.
+     *
+     * entity    The picked renderable entity (0 if none)
+     * triangle  Triangle index within the mesh's triangle list (0-based, -1 if none)
+     * distance  Distance along the ray direction to the intersection point
+     * u,v,w     Barycentric coordinates at the hit point (they sum to 1)
+     */
+    public static final class Hit {
+        public final @Entity int entity;
+        public final int triangle;
+        public final float distance;
+        public final float u;
+        public final float v;
+        public final float w;
+        public Hit(int entity, int triangle, float distance, float u, float v, float w) {
+            this.entity = entity;
+            this.triangle = triangle;
+            this.distance = distance;
+            this.u = u; this.v = v; this.w = w;
+        }
+    }
+
+    /**
+     * Performs CPU-side ray / triangle picking against meshes registered in this asset's
+     * PickingRegistry. Returns a Hit object or null if no intersection.
+     *
+     * The ray direction does not need to be normalized (distance will correspond to the scaled
+     * direction length). Barycentric coordinates (u,v,w) refer to the triangle's vertices in the
+     * original mesh index order.
+     *
+     * @param origin    float[3] ray origin in world space
+     * @param direction float[3] ray direction in world space
+     */
+    public @Nullable Hit pick(@NonNull float[] origin, @NonNull float[] direction) {
+        if (origin.length < 3 || direction.length < 3) {
+            throw new IllegalArgumentException("origin and direction must have length >= 3");
+        }
+        if (mNativeObject == 0) {
+            return null; // allow safe invocation in tests before native library is loaded
+        }
+        return nRayPick(mNativeObject, origin[0], origin[1], origin[2], direction[0], direction[1], direction[2]);
+    }
+
     private static native int nGetRoot(long nativeAsset);
     private static native int nPopRenderable(long nativeAsset);
     private static native int nPopRenderables(long nativeAsset, int[] result);
@@ -273,4 +317,8 @@ public class FilamentAsset {
     private static native void nGetResourceUris(long nativeAsset, String[] result);
 
     private static native void nReleaseSourceData(long nativeAsset);
+
+    // New native bridge for ray-based triangle picking.
+    private static native @Nullable Hit nRayPick(long nativeAsset,
+            float ox, float oy, float oz, float dx, float dy, float dz);
 }

@@ -20,6 +20,7 @@
 #include <gltfio/FilamentAsset.h>
 #include <gltfio/NodeManager.h>
 #include <gltfio/TrsTransformManager.h>
+#include <gltfio/Picking.h>
 
 #include <filament/Engine.h>
 #include <filament/IndexBuffer.h>
@@ -99,6 +100,9 @@ struct Primitive {
     MorphTargetBuffer* morphTargetBuffer = nullptr;
     uint32_t morphTargetOffset;
     std::vector<int> slotIndices;
+    // Picking support: CPU-side copy of positions and indices for this primitive.
+    std::vector<filament::math::float3> pickingPositions;
+    std::vector<uint32_t> pickingIndices; // triangle list indices referencing pickingPositions
 };
 using MeshCache = utils::FixedCapacityVector<utils::FixedCapacityVector<Primitive>>;
 
@@ -370,6 +374,8 @@ struct FFilamentAsset : public FilamentAsset {
     };
 
     std::variant<ResourceInfo, ResourceInfoExtended> mResourceInfo;
+
+    PickingRegistry mPickingRegistry; // per-asset picking registry
 };
 
 FILAMENT_DOWNCAST(FilamentAsset)

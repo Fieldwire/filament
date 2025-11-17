@@ -1,5 +1,10 @@
 option(FILAMENT_USE_EXTERNAL_ABSL "Use find_package to locate an external Abseil dependency" OFF)
 
+# Ensure the required C++ standard is set before pulling in Abseil.
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
 if (FILAMENT_USE_EXTERNAL_ABSL)
   find_package(absl CONFIG QUIET)
 else()

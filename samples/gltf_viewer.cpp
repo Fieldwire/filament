@@ -35,6 +35,7 @@
 
 #include <gltfio/AssetLoader.h>
 #include <gltfio/FilamentAsset.h>
+#include <gltfio/Picking.h>
 #include <gltfio/ResourceLoader.h>
 #include <gltfio/TextureProvider.h>
 
@@ -55,6 +56,7 @@
 #include <math/vec4.h>
 #include <math/mat3.h>
 #include <math/norm.h>
+#include <cmath>
 
 #include <imgui.h>
 #include <filagui/ImGuiExtensions.h>
@@ -507,13 +509,82 @@ static void createOverdrawVisualizerEntities(Engine* engine, Scene* scene, App& 
 }
 
 static void onClick(App& app, View* view, ImVec2 pos) {
+    // existing pixel-based GPU picking
     view->pick(pos.x, pos.y, [&app](View::PickingQueryResult const& result){
         if (const char* name = app.asset->getName(result.renderable); name) {
-            app.notificationText = name;
+            app.notificationText = name; // will be augmented by CPU picking below
         } else {
             app.notificationText.clear();
         }
     });
+
+    // CPU-side triangle picking using ray from camera.
+    Camera* cam = &view->getCamera();
+    const Viewport& vp = view->getViewport();
+    // Convert pixel to NDC (-1..1) where origin is bottom-left after y flip already applied.
+    double nx = (double(pos.x) / double(vp.width)) * 2.0 - 1.0;
+    double ny = (double(pos.y) / double(vp.height)) * 2.0 - 1.0;
+
+    // Perspective vs Ortho heuristic: perspective projection matrix has m[3][3] == 0.
+    mat4 proj = cam->getProjectionMatrix();
+    bool isPerspective = std::abs(proj[3][3]) < 1e-6;
+
+    mat4 invProj = Camera::inverseProjection(proj);
+    mat4 viewM = cam->getViewMatrix();
+    mat4 invView = inverse(viewM);
+
+    float3 rayOrigin;
+    float3 rayDir;
+    if (isPerspective) {
+        // Unproject a point on the near plane in view space.
+        double4 clip{ nx, ny, -1.0, 1.0 }; // z=-1 near
+        double4 viewSpace = invProj * clip;
+        // For perspective, direction is from origin toward the unprojected point.
+        float3 viewPoint = float3( (float)viewSpace.x, (float)viewSpace.y, (float)viewSpace.z );
+        float3 dirView = normalize(viewPoint);
+        float3 dirWorld = normalize( (invView * float4(dirView, 0)).xyz );
+        rayOrigin = cam->getPosition();
+        rayDir = dirWorld;
+    } else {
+        // Orthographic: generate world position of cursor on near plane then forward direction.
+        double4 clip{ nx, ny, -1.0, 1.0 }; // near
+        double4 viewSpace = invProj * clip;
+        float3 viewPoint = float3( (float)viewSpace.x, (float)viewSpace.y, (float)viewSpace.z );
+        float3 worldPoint = (invView * float4(viewPoint, 1)).xyz;
+        rayOrigin = worldPoint;
+        rayDir = normalize(cam->getForwardVector());
+    }
+
+    auto reg = app.asset->getPickingRegistry();
+    if (reg) {
+        // Update transforms for accuracy (could be done once per frame elsewhere).
+        Engine* engine = app.engine; // guaranteed set
+        auto& tcm = engine->getTransformManager();
+        const utils::Entity* renderables = app.asset->getRenderableEntities();
+        size_t rc = app.asset->getRenderableEntityCount();
+        if (renderables) {
+            for (size_t i = 0; i < rc; ++i) {
+                auto inst = tcm.getInstance(renderables[i]);
+                if (inst) {
+                    reg->updateTransform(renderables[i], tcm.getWorldTransform(inst));
+                }
+            }
+        }
+        auto hit = reg->pick(rayOrigin, rayDir);
+        if (hit.entity.getId() != 0 && hit.triangle >= 0) {
+            const char* name = app.asset->getName(hit.entity);
+            std::ostringstream oss;
+            if (name) {
+                oss << name << " (triangle " << hit.triangle << ")";
+            } else {
+                oss << "Entity " << hit.entity.getId() << " (triangle " << hit.triangle << ")";
+            }
+            // Include barycentric and distance for debugging.
+            oss << " dist=" << std::fixed << std::setprecision(3) << hit.distance
+                << " bary=(" << hit.bary.x << "," << hit.bary.y << "," << hit.bary.z << ")";
+            app.notificationText = oss.str();
+        }
+    }
 }
 
 static utils::Path getPathForIBLAsset(std::string_view string) {
@@ -1172,6 +1243,24 @@ int main(int argc, char** argv) {
             view->setColorGrading(app.colorGrading);
         } else {
             view->setColorGrading(nullptr);
+        }
+
+        // After updating transforms, refresh picking world transforms once per frame for all renderables.
+        if (app.asset) {
+            auto reg = app.asset->getPickingRegistry();
+            if (reg) {
+                auto& tcm = engine->getTransformManager();
+                const utils::Entity* renderables = app.asset->getRenderableEntities();
+                size_t rc = app.asset->getRenderableEntityCount();
+                if (renderables) {
+                    for (size_t i = 0; i < rc; ++i) {
+                        auto inst = tcm.getInstance(renderables[i]);
+                        if (inst) {
+                            reg->updateTransform(renderables[i], tcm.getWorldTransform(inst));
+                        }
+                    }
+                }
+            }
         }
     };
 

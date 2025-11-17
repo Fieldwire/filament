@@ -15,6 +15,17 @@ if (APPLE AND NOT IOS)
     set(CMAKE_OSX_DEPLOYMENT_TARGET 10.15 CACHE STRING "")
 endif()
 
+# Enforce a modern C++ standard for all targets (Abseil requires >=17). Use 20 for consistency with android modules.
+# Moved before project() so that try_compile / check_cxx_source_compiles in third_party projects pick it up.
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+# Explicitly inject the standard flag for checks that rely on CMAKE_CXX_FLAGS (e.g., Abseil's check_cxx_source_compiles).
+string(FIND "${CMAKE_CXX_FLAGS}" "-std=c++20" _std20_index)
+if (_std20_index EQUAL -1)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++20")
+endif()
+
 # ==================================================================================================
 # Project declaration
 # ==================================================================================================
@@ -206,7 +217,7 @@ if (APPLE)
 endif()
 
 if (WIN32)
-    # Link statically against c/c++ lib to avoid missing redistriburable such as
+    # Link statically against c/c++ lib to avoid missing redistribuable such as
     # "VCRUNTIME140.dll not found. Try reinstalling the app.", but give users
     # a choice to opt for the shared runtime if they want.
     option(USE_STATIC_CRT "Link against the static runtime libraries." ON)
@@ -871,6 +882,8 @@ add_subdirectory(${LIBRARIES}/uberz)
 add_subdirectory(${LIBRARIES}/utils)
 add_subdirectory(${LIBRARIES}/viewer)
 add_subdirectory(${FILAMENT}/shaders)
+# Ensure Abseil's feature checks compile with the correct standard.
+set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} -std=c++20")
 add_subdirectory(${EXTERNAL}/abseil/tnt)
 add_subdirectory(${EXTERNAL}/basisu/tnt)
 add_subdirectory(${EXTERNAL}/civetweb/tnt)

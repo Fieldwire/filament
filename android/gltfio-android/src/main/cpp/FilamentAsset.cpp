@@ -17,6 +17,7 @@
 #include <jni.h>
 
 #include <gltfio/FilamentAsset.h>
+#include <gltfio/Picking.h>
 
 using namespace filament;
 using namespace filament::math;
@@ -257,3 +258,25 @@ Java_com_google_android_filament_gltfio_FilamentAsset_nReleaseSourceData(JNIEnv*
     FilamentAsset* asset = (FilamentAsset*) nativeAsset;
     asset->releaseSourceData();
 }
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_com_google_android_filament_gltfio_FilamentAsset_nRayPick(JNIEnv* env, jclass,
+        jlong nativeAsset, jfloat ox, jfloat oy, jfloat oz, jfloat dx, jfloat dy, jfloat dz) {
+    FilamentAsset* asset = (FilamentAsset*) nativeAsset;
+    if (!asset) return nullptr;
+    PickingRegistry* reg = asset->getPickingRegistry();
+    if (!reg) return nullptr;
+    auto hit = reg->pick(float3{ox, oy, oz}, float3{dx, dy, dz});
+    if (hit.entity.getId() == 0 || hit.triangle < 0) {
+        return nullptr; // no intersection
+    }
+    jclass hitClass = env->FindClass("com/google/android/filament/gltfio/FilamentAsset$Hit");
+    if (!hitClass) return nullptr; // class not found
+    jmethodID ctor = env->GetMethodID(hitClass, "<init>", "(IIFFFF)V");
+    if (!ctor) return nullptr; // constructor not found
+    return env->NewObject(hitClass, ctor,
+            (jint) hit.entity.getId(), (jint) hit.triangle,
+            (jfloat) hit.distance, (jfloat) hit.bary.x, (jfloat) hit.bary.y, (jfloat) hit.bary.z);
+}
+
+
