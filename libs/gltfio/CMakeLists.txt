@@ -62,6 +62,7 @@ set(SRCS
         src/extended/TangentSpaceMeshWrapper.cpp
         src/extended/TangentSpaceMeshWrapper.h
         src/Picking.cpp
+        src/PickingUtility.cpp  # moved buildMeshDataForPicking here
 )
 
 # ==================================================================================================

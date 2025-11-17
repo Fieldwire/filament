@@ -1,7 +1,8 @@
 /*
- * Picking.cpp - implementation of CPU-side triangle picking for gltfio.
+ * Picking.cpp - implementation of CPU-side BVH picking runtime (excluding mesh data construction).
  */
 
+#include <cgltf.h> // ensure cgltf definitions available for any forward references (no heavy use here)
 #include <gltfio/Picking.h>
 
 #include <math/vec4.h>
@@ -27,7 +28,6 @@ namespace filament::gltfio {
 
 static inline bool intersectAabb(const float3& rayOrigin, const float3& rayDirInv,
                                  const float3& bmin, const float3& bmax, float tMax) noexcept {
-    // Slab test against axis-aligned box.
     for (int axis = 0; axis < 3; ++axis) {
         float o = axis == 0 ? rayOrigin.x : (axis == 1 ? rayOrigin.y : rayOrigin.z);
         float dInv = axis == 0 ? rayDirInv.x : (axis == 1 ? rayDirInv.y : rayDirInv.z);
@@ -42,15 +42,11 @@ static inline bool intersectAabb(const float3& rayOrigin, const float3& rayDirIn
     return true;
 }
 
-struct BuildTriInfo {
-    uint32_t triIndex; // triangle ordinal
-    float3 centroid;
-};
+struct BuildTriInfo { uint32_t triIndex; float3 centroid; };
 
 static void buildBvhRecursive(MeshData& mesh, std::vector<BuildTriInfo>& tris,
                               uint32_t start, uint32_t end, uint32_t leafSize,
                               uint32_t& outNodeIndex) {
-    // Compute bounds for this node.
     float3 bmin{ std::numeric_limits<float>::max() };
     float3 bmax{ -std::numeric_limits<float>::max() };
     for (uint32_t i = start; i < end; ++i) {
@@ -72,7 +68,7 @@ static void buildBvhRecursive(MeshData& mesh, std::vector<BuildTriInfo>& tris,
     if (triCount <= leafSize) {
         node.leaf = true;
         node.left = (uint32_t)mesh.leafTris.size();
-        node.right = triCount; // count
+        node.right = triCount;
         for (uint32_t i = start; i < end; ++i) {
             mesh.leafTris.push_back(tris[i].triIndex);
         }
@@ -81,7 +77,6 @@ static void buildBvhRecursive(MeshData& mesh, std::vector<BuildTriInfo>& tris,
         return;
     }
 
-    // Choose split axis by extent.
     float3 extent = bmax - bmin;
     int axis = (extent.x > extent.y && extent.x > extent.z) ? 0 : (extent.y > extent.z ? 1 : 2);
     uint32_t mid = start + triCount / 2;
@@ -128,7 +123,6 @@ static void buildBVH(MeshData& mesh, uint32_t leafSize = 12) {
 // -------------------------------------------------------------------------------------------------
 
 void PickingRegistry::registerMesh(Entity e, MeshData&& mesh) {
-    // Compute bounds if not provided.
     if (mesh.localBounds.isEmpty()) {
         float3 bmin{ std::numeric_limits<float>::max() };
         float3 bmax{ -std::numeric_limits<float>::max() };
@@ -138,6 +132,9 @@ void PickingRegistry::registerMesh(Entity e, MeshData&& mesh) {
         }
         mesh.localBounds.min = bmin;
         mesh.localBounds.max = bmax;
+    }
+    if (!mesh.bvhBuilt) {
+        buildBVH(mesh);
     }
     mMeshes.emplace(e, std::move(mesh));
 }
@@ -189,11 +186,10 @@ PickingRegistry::Hit PickingRegistry::pick(const float3& rayOrigin, const float3
     Hit best{ Entity{}, -1, std::numeric_limits<float>::max(), {} };
     float3 dirNorm = normalize(rayDir);
 
-    // Iterate over meshes (avoid structured bindings for C++14 compatibility).
     for (auto it = mMeshes.begin(); it != mMeshes.end(); ++it) {
         Entity entity = it->first;
         MeshData const& mesh = it->second;
-        mat4f world; // default identity
+        mat4f world; // identity init (default constructor may not zero)
         auto wIt = mWorldTransforms.find(entity);
         if (wIt != mWorldTransforms.end()) {
             world = wIt->second;
