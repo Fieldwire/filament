@@ -1422,6 +1422,7 @@ MaterialKey FAssetLoader::getMaterialKey(const cgltf_data* srcAsset,
         .hasSheen = !!inputMat->has_sheen,
         .hasIOR = !!inputMat->has_ior,
         .hasVolume = !!inputMat->has_volume,
+        .hasDispersion = !!inputMat->has_dispersion,
         .hasSpecular = !!inputMat->has_specular,
         .hasSpecularTexture = spConfig.specular_texture.texture != nullptr,
         .hasSpecularColorTexture = spConfig.specular_color_texture.texture != nullptr,
@@ -1513,6 +1514,7 @@ MaterialInstance* FAssetLoader::createMaterialInstance(const cgltf_material* inp
     auto sgConfig = inputMat->pbr_specular_glossiness;
     auto ccConfig = inputMat->clearcoat;
     auto trConfig = inputMat->transmission;
+    auto dpConfig = inputMat->dispersion;
     auto shConfig = inputMat->sheen;
     auto vlConfig = inputMat->volume;
     auto spConfig = inputMat->specular;
@@ -1694,6 +1696,10 @@ MaterialInstance* FAssetLoader::createMaterialInstance(const cgltf_material* inp
                 mi->setParameter("transmissionUvMatrix", uvmat);
             }
         }
+    }
+
+    if (matkey.hasDispersion) {
+        mi->setParameter("dispersion", dpConfig.dispersion);
     }
 
     // IOR can be implemented as either IOR or reflectance because of ubershaders
