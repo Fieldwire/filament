@@ -198,6 +198,35 @@ void FFilamentAsset::releaseSourceData() noexcept {
     mSourceAsset.reset();
 }
 
+size_t FFilamentAsset::getTriangleCount() const noexcept {
+    // Use RenderableManager to count triangles from loaded geometry
+    // This works even after releaseSourceData() is called
+    auto &rcm = mEngine->getRenderableManager();
+    size_t totalTriangles = 0;
+
+    const Entity *renderables = getRenderableEntities();
+    const size_t renderableCount = getRenderableEntityCount();
+
+    if (!renderables) {
+        return 0;
+    }
+
+    for (size_t i = 0; i < renderableCount; i++) {
+        auto instance = rcm.getInstance(renderables[i]);
+        if (!instance) continue;
+
+        size_t primitiveCount = rcm.getPrimitiveCount(instance);
+
+        for (size_t p = 0; p < primitiveCount; p++) {
+            size_t indexCount = rcm.getIndexCountAt(instance, p);
+            // Each triangle uses 3 indices
+            totalTriangles += indexCount / 3;
+        }
+    }
+
+    return totalTriangles;
+}
+
 const char* FFilamentAsset::getName(utils::Entity entity) const noexcept {
     if (mNameManager == nullptr) {
         return nullptr;
@@ -379,6 +408,10 @@ Engine* FilamentAsset::getEngine() const noexcept {
 
 void FilamentAsset::releaseSourceData() noexcept {
     return downcast(this)->releaseSourceData();
+}
+
+size_t FilamentAsset::getTriangleCount() const noexcept {
+    return downcast(this)->getTriangleCount();
 }
 
 const void* FilamentAsset::getSourceAsset() noexcept {

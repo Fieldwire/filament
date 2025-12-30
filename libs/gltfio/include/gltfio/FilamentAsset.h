@@ -242,6 +242,19 @@ public:
     const void* getSourceAsset() noexcept;
 
     /**
+     * Returns the total number of triangles in the asset.
+     *
+     * This counts all triangles across all primitives in all meshes by querying the
+     * RenderableManager. Only primitives of type TRIANGLES are counted.
+     *
+     * This method works even after releaseSourceData() has been called, making it suitable
+     * for runtime statistics and debugging on memory-constrained devices.
+     *
+     * @return Total triangle count across all renderables in the asset.
+     */
+    size_t getTriangleCount() const noexcept;
+
+    /**
      * Returns the number of scenes in the asset.
      */
     size_t getSceneCount() const noexcept;
