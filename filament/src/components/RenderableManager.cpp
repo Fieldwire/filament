@@ -854,6 +854,17 @@ AttributeBitset FRenderableManager::getEnabledAttributesAt(
     return AttributeBitset{};
 }
 
+size_t FRenderableManager::getIndexCountAt(
+        Instance const instance, uint8_t const level, size_t const primitiveIndex) const noexcept {
+    if (instance) {
+        Slice<FRenderPrimitive> const& primitives = getRenderPrimitives(instance, level);
+        if (primitiveIndex < primitives.size()) {
+            return primitives[primitiveIndex].getIndexCount();
+        }
+    }
+    return 0;
+}
+
 void FRenderableManager::setGeometryAt(Instance instance, uint8_t level, size_t primitiveIndex,
         PrimitiveType type, FVertexBuffer* vertices, FIndexBuffer* indices,
         size_t offset, size_t count) noexcept {
