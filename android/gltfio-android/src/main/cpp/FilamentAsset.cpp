@@ -189,11 +189,11 @@ Java_com_google_android_filament_gltfio_FilamentAsset_nGetBoundingBox(JNIEnv* en
     env->ReleaseFloatArrayElements(result, values, 0);
 }
 
-extern "C" JNIEXPORT jint JNICALL
+extern "C" JNIEXPORT jlong JNICALL
 Java_com_google_android_filament_gltfio_FilamentAsset_nGetTriangleCount(JNIEnv*, jclass,
         jlong nativeAsset) {
     FilamentAsset* asset = (FilamentAsset*) nativeAsset;
-    return (jint) asset->getTriangleCount();
+    return (jlong) asset->getTriangleCount();
 }
 
 extern "C" JNIEXPORT jstring JNICALL
