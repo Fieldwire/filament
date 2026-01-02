@@ -191,15 +191,15 @@ public class FilamentAsset {
      * Returns the total number of triangles in the asset.
      *
      * <p>This counts all triangles across all primitives in all meshes by querying the
-     * RenderableManager. This method works even after {@link #releaseSourceData()} has been
-     * called, making it suitable for runtime statistics and debugging.</p>
+    /**
+     * Gets the total number of triangles in all renderables.
      *
      * <p>Only primitives of type TRIANGLES are counted. The count is computed on-demand
      * by iterating through all renderable entities and their primitives.</p>
      *
      * @return Total triangle count across all renderables in the asset.
      */
-    public int getTriangleCount() {
+    public long getTriangleCount() {
         return nGetTriangleCount(mNativeObject);
     }
 
@@ -260,7 +260,7 @@ public class FilamentAsset {
     private static native int nPopRenderable(long nativeAsset);
     private static native int nPopRenderables(long nativeAsset, int[] result);
 
-    private static native int nGetTriangleCount(long nativeAsset);
+    private static native long nGetTriangleCount(long nativeAsset);
 
     private static native int nGetEntityCount(long nativeAsset);
     private static native void nGetEntities(long nativeAsset, int[] result);
