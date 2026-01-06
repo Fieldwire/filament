@@ -875,6 +875,7 @@ int main(int argc, char** argv) {
                 ImGui::Indent();
                 ImGui::Text("%zu entities in the asset", app.asset->getEntityCount());
                 ImGui::Text("%zu renderables (excluding UI)", scene->getRenderableCount());
+                ImGui::Text("%zu triangles", app.asset->getTriangleCount());
                 ImGui::Text("%zu skipped frames", FilamentApp::get().getSkippedFrameCount());
                 ImGui::Unindent();
             }

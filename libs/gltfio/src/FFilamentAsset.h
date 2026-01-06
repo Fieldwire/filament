@@ -210,6 +210,8 @@ struct FFilamentAsset : public FilamentAsset {
         return mSourceAsset.get() ? mSourceAsset->hierarchy : nullptr;
     }
 
+    size_t getTriangleCount() const noexcept;
+
     FilamentInstance** getAssetInstances() noexcept {
         return (FilamentInstance**) mInstances.data();
     }
