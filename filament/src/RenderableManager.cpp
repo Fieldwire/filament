@@ -139,9 +139,13 @@ AttributeBitset RenderableManager::getEnabledAttributesAt(Instance const instanc
     return downcast(this)->getEnabledAttributesAt(instance, 0, primitiveIndex);
 }
 
-void RenderableManager::setGeometryAt(Instance const instance, size_t const primitiveIndex,
-        PrimitiveType const type, VertexBuffer* vertices, IndexBuffer* indices,
-        size_t const offset, size_t const count) noexcept {
+size_t RenderableManager::getIndexCountAt(Instance const instance, size_t const primitiveIndex) const noexcept {
+    return downcast(this)->getIndexCountAt(instance, 0, primitiveIndex);
+}
+
+void RenderableManager::setGeometryAt(Instance instance, size_t primitiveIndex,
+        PrimitiveType type, VertexBuffer* vertices, IndexBuffer* indices,
+        size_t offset, size_t count) noexcept {
     downcast(this)->setGeometryAt(instance, 0, primitiveIndex,
             type, downcast(vertices), downcast(indices), offset, count);
 }
