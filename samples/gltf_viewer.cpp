@@ -61,8 +61,10 @@
 #include <algorithm>
 #include <array>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <set>
+#include <sstream>
 #include <string>
 #include <thread>
 
@@ -139,6 +141,8 @@ struct App {
 
     AutomationSpec* automationSpec = nullptr;
     AutomationEngine* automationEngine = nullptr;
+    bool screenshot = false;
+    uint8_t screenshotSeq = 0;
 };
 
 static const char* DEFAULT_IBL = "assets/ibl/lightroom_14b";
@@ -879,16 +883,22 @@ int main(int argc, char** argv) {
                 ImGui::Indent();
                 ImGui::Text("%zu entities in the asset", app.asset->getEntityCount());
                 ImGui::Text("%zu renderables (excluding UI)", scene->getRenderableCount());
+                ImGui::Text("%zu triangles", app.asset->getTriangleCount());
                 ImGui::Text("%zu skipped frames", FilamentApp::get().getSkippedFrameCount());
                 ImGui::Unindent();
             }
 
             if (ImGui::CollapsingHeader("Debug")) {
                 auto& debug = engine->getDebugRegistry();
-                if (ImGui::Button("Capture frame")) {
-                    bool* captureFrame =
-                            debug.getPropertyAddress<bool>("d.renderer.doFrameCapture");
-                    *captureFrame = true;
+                if (engine->getBackend() == Engine::Backend::METAL) {
+                    if (ImGui::Button("Capture frame")) {
+                        bool* captureFrame =
+                                debug.getPropertyAddress<bool>("d.renderer.doFrameCapture");
+                        *captureFrame = true;
+                    }
+                }
+                if (ImGui::Button("Screenshot")) {
+                    app.screenshot = true;
                 }
                 ImGui::Checkbox("Disable buffer padding",
                         debug.getPropertyAddress<bool>("d.renderer.disable_buffer_padding"));
@@ -902,6 +912,10 @@ int main(int argc, char** argv) {
                         debug.getPropertyAddress<bool>("d.shadowmap.far_uses_shadowcasters"));
                 ImGui::Checkbox("Focus shadow casters",
                         debug.getPropertyAddress<bool>("d.shadowmap.focus_shadowcasters"));
+                ImGui::Checkbox("Disable light frustum alignment",
+                        debug.getPropertyAddress<bool>("d.shadowmap.disable_light_frustum_align"));
+                ImGui::Checkbox("Depth clamp",
+                        debug.getPropertyAddress<bool>("d.shadowmap.depth_clamp"));
 
                 bool debugDirectionalShadowmap;
                 if (debug.getProperty("d.shadowmap.debug_directional_shadowmap",
@@ -1182,6 +1196,14 @@ int main(int argc, char** argv) {
     };
 
     auto postRender = [&app](Engine* engine, View* view, Scene*, Renderer* renderer) {
+        if (app.screenshot) {
+            std::ostringstream stringStream;
+            stringStream << "screenshot" << std::setfill('0') << std::setw(2) << +app.screenshotSeq;
+            AutomationEngine::exportScreenshot(
+                    view, renderer, stringStream.str() + ".ppm", false, app.automationEngine);
+            ++app.screenshotSeq;
+            app.screenshot = false;
+        }
         if (app.automationEngine->shouldClose()) {
             FilamentApp::get().close();
             return;

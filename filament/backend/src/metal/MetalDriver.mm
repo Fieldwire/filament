@@ -834,6 +834,10 @@ bool MetalDriver::isProtectedTexturesSupported() {
     return false;
 }
 
+bool MetalDriver::isDepthClampSupported() {
+    return true;
+}
+
 bool MetalDriver::isWorkaroundNeeded(Workaround workaround) {
     switch (workaround) {
         case Workaround::SPLIT_EASU:
@@ -1751,6 +1755,13 @@ void MetalDriver::bindPipeline(PipelineState const& ps) {
         [mContext->currentRenderPassEncoder setFrontFacingWinding:winding];
     }
 
+    // depth clip mode
+    MTLDepthClipMode depthClipMode = rs.depthClamp ? MTLDepthClipModeClamp : MTLDepthClipModeClip;
+    mContext->depthClampState.updateState(depthClipMode);
+    if (mContext->depthClampState.stateChanged()) {
+        [mContext->currentRenderPassEncoder setDepthClipMode:depthClipMode];
+    }
+
     // Set the depth-stencil state, if a state change is needed.
     DepthStencilState depthState;
     if (depthAttachment) {
@@ -2059,6 +2070,10 @@ void MetalDriver::enumerateBoundBuffers(BufferObjectBinding bindingType,
 }
 
 void MetalDriver::resetState(int) {
+}
+
+void MetalDriver::setDebugTag(HandleBase::HandleId handleId, utils::CString tag) {
+    mHandleAllocator.associateTagToHandle(handleId, std::move(tag));
 }
 
 void MetalDriver::runAtNextTick(const std::function<void()>& fn) noexcept {

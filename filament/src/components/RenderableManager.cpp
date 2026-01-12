@@ -588,6 +588,9 @@ void FRenderableManager::create(
             // full size of the UBO.
             instances.handle = driver.createBufferObject(sizeof(PerRenderableUib),
                     BufferObjectBinding::UNIFORM, backend::BufferUsage::DYNAMIC);
+            if (auto name = instances.buffer->getName(); !name.empty()) {
+                driver.setDebugTag(instances.handle.getId(), std::move(name));
+            }
         }
 
         const uint32_t boneCount = builder->mSkinningBoneCount;
@@ -849,6 +852,17 @@ AttributeBitset FRenderableManager::getEnabledAttributesAt(
         }
     }
     return AttributeBitset{};
+}
+
+size_t FRenderableManager::getIndexCountAt(
+        Instance const instance, uint8_t const level, size_t const primitiveIndex) const noexcept {
+    if (instance) {
+        Slice<FRenderPrimitive> const& primitives = getRenderPrimitives(instance, level);
+        if (primitiveIndex < primitives.size()) {
+            return primitives[primitiveIndex].getIndexCount();
+        }
+    }
+    return 0;
 }
 
 void FRenderableManager::setGeometryAt(Instance instance, uint8_t level, size_t primitiveIndex,

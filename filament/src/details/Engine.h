@@ -351,6 +351,23 @@ public:
     bool isValid(const FView* p) const;
     bool isValid(const FInstanceBuffer* p) const;
 
+    size_t getBufferObjectCount() const noexcept;
+    size_t getViewCount() const noexcept;
+    size_t getSceneCount() const noexcept;
+    size_t getSwapChainCount() const noexcept;
+    size_t getStreamCount() const noexcept;
+    size_t getIndexBufferCount() const noexcept;
+    size_t getSkinningBufferCount() const noexcept;
+    size_t getMorphTargetBufferCount() const noexcept;
+    size_t getInstanceBufferCount() const noexcept;
+    size_t getVertexBufferCount() const noexcept;
+    size_t getIndirectLightCount() const noexcept;
+    size_t getMaterialCount() const noexcept;
+    size_t getTextureCount() const noexcept;
+    size_t getSkyboxeCount() const noexcept;
+    size_t getColorGradingCount() const noexcept;
+    size_t getRenderTargetCount() const noexcept;
+
     void destroy(utils::Entity e);
 
     bool isPaused() const noexcept;
@@ -573,7 +590,8 @@ private:
     Config mConfig;
 
 public:
-    // these are the debug properties used by FDebug. They're accessed directly by modules who need them.
+    // These are the debug properties used by FDebug.
+    // They're accessed directly by modules who need them.
     struct {
         struct {
             bool debug_directional_shadowmap = false;
@@ -581,7 +599,8 @@ public:
             bool far_uses_shadowcasters = true;
             bool focus_shadowcasters = true;
             bool visualize_cascades = false;
-            bool tightly_bound_scene = true;
+            bool disable_light_frustum_align = false;
+            bool depth_clamp = true;
             float dzn = -1.0f;
             float dzf =  1.0f;
             float display_shadow_texture_scale = 0.25f;

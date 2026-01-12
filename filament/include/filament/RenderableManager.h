@@ -857,6 +857,20 @@ public:
      */
     AttributeBitset getEnabledAttributesAt(Instance instance, size_t primitiveIndex) const noexcept;
 
+    /**
+     * Gets the number of indices in the given primitive.
+     *
+     * This returns the index count that was set via setGeometryAt() or Builder::geometry().
+     * For triangle primitives, the triangle count is indexCount / 3.
+     *
+     * @param instance the renderable of interest
+     * @param primitiveIndex the primitive of interest
+     * @return The number of indices in this primitive
+     *
+     * @see setGeometryAt()
+     */
+    size_t getIndexCountAt(Instance instance, size_t primitiveIndex) const noexcept;
+
     /*! \cond PRIVATE */
     template<typename T>
     struct is_supported_vector_type {

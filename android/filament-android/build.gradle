@@ -14,11 +14,6 @@ android {
                 jniLibs.keepDebugSymbols += "**/*.so"
             }
         }
-        release {
-            packaging {
-                jniLibs.keepDebugSymbols += "**/*.so"
-            }
-        }
     }
 }
 
