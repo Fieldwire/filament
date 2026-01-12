@@ -131,6 +131,10 @@ struct App {
         std::array<MaterialInstance*, OVERDRAW_LAYERS> overdrawMaterialInstances;
         VertexBuffer* fullScreenTriangleVertexBuffer;
         IndexBuffer* fullScreenTriangleIndexBuffer;
+
+        // Highlight material for triangle picking
+        Material* highlightMaterial = nullptr;
+        MaterialInstance* highlightMaterialInstance = nullptr;
     } scene;
 
     ColorGradingSettings lastColorGradingOptions = { .enabled = false };
@@ -147,6 +151,12 @@ struct App {
     bool screenshot = false;
     uint8_t screenshotSeq = 0;
     bool screenshotAsPPM = false;
+
+    // Triangle highlighting state
+    Entity highlightedEntity;
+    size_t highlightedTriangle = ~0u;
+    std::vector<MaterialInstance*> originalMaterialInstances; // Store all original materials for all primitives
+    bool highlightNeighbors = false;  // Toggle to highlight neighbors
 };
 
 static const char* DEFAULT_IBL = "assets/ibl/lightroom_14b";
@@ -583,6 +593,55 @@ static void onClick(App& app, View* view, ImVec2 pos) {
             oss << " dist=" << std::fixed << std::setprecision(3) << hit.distance
                 << " bary=(" << hit.bary.x << "," << hit.bary.y << "," << hit.bary.z << ")";
             app.notificationText = oss.str();
+
+            // Highlight the entity by modifying material parameters (better approach)
+            auto& renderableManager = engine->getRenderableManager();
+            auto instance = renderableManager.getInstance(hit.entity);
+            if (instance) {
+                // Clear previous highlight first (restore original materials)
+                if (app.highlightedEntity && !app.originalMaterialInstances.empty()) {
+                    auto prevInstance = renderableManager.getInstance(app.highlightedEntity);
+                    if (prevInstance) {
+                        // Restore all original materials
+                        for (size_t primIdx = 0; primIdx < app.originalMaterialInstances.size(); primIdx++) {
+                            renderableManager.setMaterialInstanceAt(prevInstance, primIdx,
+                                                                   app.originalMaterialInstances[primIdx]);
+                        }
+                    }
+                    app.originalMaterialInstances.clear();
+                }
+
+                // Highlight all primitives by CLONING their materials and tinting RED
+                size_t primitiveCount = renderableManager.getPrimitiveCount(instance);
+                app.originalMaterialInstances.clear();
+                app.originalMaterialInstances.reserve(primitiveCount);
+
+                for (size_t primIdx = 0; primIdx < primitiveCount; primIdx++) {
+                    // Store original material for this primitive
+                    auto* originalMaterial = renderableManager.getMaterialInstanceAt(instance, primIdx);
+                    app.originalMaterialInstances.push_back(originalMaterial);
+
+                    // Clone the material and modify it to be RED
+                    auto* highlightedMaterial = originalMaterial->getMaterial()->createInstance();
+
+                    // Try to set RED color using common material parameters
+                    try {
+                        // Try baseColorFactor (most common in PBR materials)
+                        highlightedMaterial->setParameter("baseColorFactor", math::float4(1.0f, 0.0f, 0.0f, 1.0f));
+                    } catch (...) {}
+
+                    // Apply the modified material
+                    renderableManager.setMaterialInstanceAt(instance, primIdx, highlightedMaterial);
+                }
+
+                // Update tracking state
+                app.highlightedEntity = hit.entity;
+                app.highlightedTriangle = hit.triangle;
+
+                // Debug: Print that highlighting was applied
+                std::cout << "Highlighted entity " << hit.entity.getId()
+                          << " with " << primitiveCount << " primitives in RED" << std::endl;
+            }
         }
     }
 }
@@ -914,6 +973,30 @@ int main(int argc, char** argv) {
                 ImGui::PopStyleColor();
                 ImGui::PopTextWrapPos();
                 ImGui::Spacing();
+
+                // Add Clear Highlight button
+                if (app.highlightedEntity && app.highlightedTriangle != ~0u) {
+                    if (ImGui::Button("Clear Highlight")) {
+                        auto& renderableManager = engine->getRenderableManager();
+                        auto instance = renderableManager.getInstance(app.highlightedEntity);
+
+                        // Restore all original materials
+                        if (instance && !app.originalMaterialInstances.empty()) {
+                            for (size_t primIdx = 0; primIdx < app.originalMaterialInstances.size(); primIdx++) {
+                                renderableManager.setMaterialInstanceAt(instance, primIdx,
+                                                                       app.originalMaterialInstances[primIdx]);
+                            }
+                        }
+
+                        // Clear tracking state
+                        app.highlightedEntity = {};
+                        app.highlightedTriangle = ~0u;
+                        app.originalMaterialInstances.clear();
+                        app.notificationText.clear();
+
+                        std::cout << "Highlight cleared" << std::endl;
+                    }
+                }
             }
 
             float const progress = app.resourceLoader->asyncGetLoadProgress();
