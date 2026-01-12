@@ -29,8 +29,8 @@ void* SwapChain::getNativeWindow() const noexcept {
 }
 
 void SwapChain::setFrameScheduledCallback(
-        backend::CallbackHandler* handler, FrameScheduledCallback&& callback) {
-    downcast(this)->setFrameScheduledCallback(handler, std::move(callback));
+        backend::CallbackHandler* handler, FrameScheduledCallback&& callback, uint64_t const flags) {
+    downcast(this)->setFrameScheduledCallback(handler, std::move(callback), flags);
 }
 
 bool SwapChain::isFrameScheduledCallbackSet() const noexcept {
@@ -44,6 +44,10 @@ void SwapChain::setFrameCompletedCallback(backend::CallbackHandler* handler,
 
 bool SwapChain::isSRGBSwapChainSupported(Engine& engine) noexcept {
     return FSwapChain::isSRGBSwapChainSupported(downcast(engine));
+}
+
+bool SwapChain::isMSAASwapChainSupported(Engine& engine, uint32_t samples) noexcept {
+    return FSwapChain::isMSAASwapChainSupported(downcast(engine), samples);
 }
 
 bool SwapChain::isProtectedContentSupported(Engine& engine) noexcept {

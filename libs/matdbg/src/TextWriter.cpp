@@ -107,6 +107,12 @@ static bool printMaterial(ostream& text, const ChunkContainer& container) {
         text << name.c_str() << endl;
     }
 
+    CString compilationParameters;
+    if (read(container, MaterialCompilationParameters, &compilationParameters)) {
+        text << "    " << setw(alignment) << left << "Compilation Parameters: ";
+        text << compilationParameters.c_str() << endl;
+    }
+
     text << endl;
 
     text << "Shading:" << endl;
@@ -120,6 +126,7 @@ static bool printMaterial(ostream& text, const ChunkContainer& container) {
     printFloatChunk(text, container, MaterialSpecularAntiAliasingVariance, "    Variance: ");
     printFloatChunk(text, container, MaterialSpecularAntiAliasingThreshold, "    Threshold: ");
     printChunk<bool, bool>(text, container, MaterialClearCoatIorChange, "Clear coat IOR change: ");
+    printChunk<bool, bool>(text, container, MaterialHasCustomDepthShader, "Has custom depth: ");
 
     text << endl;
 
@@ -151,6 +158,61 @@ static bool printMaterial(ostream& text, const ChunkContainer& container) {
             text << endl;
         }
     }
+
+    return true;
+}
+
+static bool printDescriptorSetLayout(ostream& text, const ChunkContainer& container) {
+    if (!container.hasChunk(ChunkType::MaterialDescriptorSetLayoutInfo)) {
+        return true;
+    }
+
+    auto [startDsli, endDsli] = container.getChunkRange(ChunkType::MaterialDescriptorSetLayoutInfo);
+    Unflattener dsli(startDsli, endDsli);
+
+    uint8_t descriptorCount;
+    if (!dsli.read(&descriptorCount)) {
+        return false;
+    }
+
+    text << "Descriptors:" << endl;
+
+    for (int i = 0; i < descriptorCount; i++) {
+        uint8_t type;
+        uint8_t stages;
+        uint8_t binding;
+        uint8_t flags;
+
+        if (!dsli.read(&type)) {
+            return false;
+        }
+
+        if (!dsli.read(&stages)) {
+            return false;
+        }
+
+        if (!dsli.read(&binding)) {
+            return false;
+        }
+
+        if (!dsli.read(&flags)) {
+            return false;
+        }
+
+        uint16_t padding;
+        if (!dsli.read(&padding)) {
+            return false;
+        }
+
+        text << "    "
+                  << setw(alignment) << toString(DescriptorType(type))
+                  << setw(alignment) << toString(ShaderStageFlags(stages))
+                  << setw(shortAlignment) << static_cast<int>(binding)
+                  << setw(alignment) << toString(DescriptorFlags(flags))
+                  << endl;
+    }
+
+    text << endl;
 
     return true;
 }
@@ -196,6 +258,7 @@ static bool printParametersInfo(ostream& text, const ChunkContainer& container) 
         uint64_t fieldSize;
         uint8_t fieldType;
         uint8_t fieldPrecision;
+        uint8_t fieldAssociatedSampler;
 
         if (!uib.read(&fieldName)) {
             return false;
@@ -213,8 +276,12 @@ static bool printParametersInfo(ostream& text, const ChunkContainer& container) 
             return false;
         }
 
+        if (!uib.read(&fieldAssociatedSampler)) {
+            return false;
+        }
+
         text << "    "
-                  << setw(alignment) << fieldName.c_str()
+                  << setw(alignment) << fieldName.c_str_safe()
                   << setw(shortAlignment) << toString(UniformType(fieldType))
                   << arraySizeToString(fieldSize)
                   << setw(shortAlignment) << toString(Precision(fieldPrecision))
@@ -223,12 +290,18 @@ static bool printParametersInfo(ostream& text, const ChunkContainer& container) 
 
     for (uint64_t i = 0; i < sibCount; i++) {
         CString fieldName;
+        uint8_t fieldBinding;
         uint8_t fieldType;
         uint8_t fieldFormat;
         uint8_t fieldPrecision;
+        bool fieldFilterable;
         bool fieldMultisample;
 
         if (!sib.read(&fieldName)) {
+            return false;
+        }
+
+        if (!sib.read(&fieldBinding)) {
             return false;
         }
 
@@ -243,12 +316,17 @@ static bool printParametersInfo(ostream& text, const ChunkContainer& container) 
             return false;
         }
 
+        if (!sib.read(&fieldFilterable)) {
+            return false;
+        }
+
         if (!sib.read(&fieldMultisample)) {
             return false;
         }
 
         text << "    "
-                << setw(alignment) << fieldName.c_str()
+                << setw(alignment) << fieldName.c_str_safe()
+                << setw(shortAlignment) << +fieldBinding
                 << setw(shortAlignment) << toString(SamplerType(fieldType))
                 << setw(shortAlignment) << toString(Precision(fieldPrecision))
                 << toString(SamplerFormat(fieldFormat))
@@ -286,7 +364,7 @@ static bool printConstantInfo(ostream& text, const ChunkContainer& container) {
         }
 
          text << "    "
-         << setw(alignment) << fieldName.c_str()
+         << setw(alignment) << fieldName.c_str_safe()
          << setw(shortAlignment) << toString(ConstantType(fieldType))
          << endl;
     }
@@ -423,7 +501,10 @@ static bool printShaderInfo(ostream& text, const ChunkContainer& container, Chun
             break;
         case ChunkType::MaterialMetalLibrary:
             text << "Metal precompiled shader libraries:" << endl;
-            break;
+        break;
+        case ChunkType::MaterialWgsl:
+            text << "WGSL precompiled shader libraries:" << endl;
+        break;
         default:
             assert(false && "Invalid shader ChunkType");
             break;
@@ -438,6 +519,9 @@ bool TextWriter::writeMaterialInfo(const filaflat::ChunkContainer& container) {
         return false;
     }
     if (!printParametersInfo(text, container)) {
+        return false;
+    }
+    if (!printDescriptorSetLayout(text, container)) {
         return false;
     }
     if (!printConstantInfo(text, container)) {
@@ -459,6 +543,9 @@ bool TextWriter::writeMaterialInfo(const filaflat::ChunkContainer& container) {
         return false;
     }
     if (!printShaderInfo(text, container, ChunkType::MaterialMetalLibrary)) {
+        return false;
+    }
+    if (!printShaderInfo(text, container, ChunkType::MaterialWgsl)) {
         return false;
     }
 

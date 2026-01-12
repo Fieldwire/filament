@@ -49,7 +49,8 @@ std::unordered_map<std::string, Property> Enums::mStringToProperty = {
         { "microThickness",      Property::MICRO_THICKNESS },
         { "bentNormal",          Property::BENT_NORMAL },
         { "specularFactor",      Property::SPECULAR_FACTOR },
-        { "specularColorFactor",  Property::SPECULAR_COLOR_FACTOR }
+        { "specularColorFactor", Property::SPECULAR_COLOR_FACTOR },
+        { "shadowStrength",       Property::SHADOW_STRENGTH }
 };
 
 template <>
@@ -172,6 +173,17 @@ std::unordered_map<std::string, ConstantType > Enums::mStringToConstantType = {
 template <>
 std::unordered_map<std::string, ConstantType>& Enums::getMap<ConstantType>() noexcept {
     return mStringToConstantType;
+};
+
+std::unordered_map<std::string, ShaderStageType> Enums::mStringToShaderStageType = {
+        { "fragment", ShaderStageType::FRAGMENT },
+        { "vertex",   ShaderStageType::VERTEX },
+        { "compute",  ShaderStageType::COMPUTE },
+};
+
+template <>
+std::unordered_map<std::string, ShaderStageType>& Enums::getMap<ShaderStageType>() noexcept {
+    return mStringToShaderStageType;
 };
 
 } // namespace filamat

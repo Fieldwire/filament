@@ -392,11 +392,11 @@ Java_com_google_android_filament_Engine_nIsValidSwapChain(JNIEnv*, jclass,
     return (jboolean)engine->isValid((SwapChain*)nativeSwapChain);
 }
 
-extern "C" JNIEXPORT void JNICALL
+extern "C" JNIEXPORT jboolean JNICALL
 Java_com_google_android_filament_Engine_nFlushAndWait(JNIEnv*, jclass,
-        jlong nativeEngine) {
+        jlong nativeEngine, jlong timeout) {
     Engine* engine = (Engine*) nativeEngine;
-    engine->flushAndWait();
+    return engine->flushAndWait((uint64_t)timeout);
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -499,6 +499,37 @@ Java_com_google_android_filament_Engine_nGetActiveFeatureLevel(JNIEnv *, jclass,
     return (jint)engine->getActiveFeatureLevel();
 }
 
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_com_google_android_filament_Engine_nHasFeatureFlag(JNIEnv *env, jclass clazz,
+        jlong nativeEngine, jstring name_) {
+    Engine* engine = (Engine*) nativeEngine;
+    const char *name = env->GetStringUTFChars(name_, 0);
+    std::optional<bool> result = engine->getFeatureFlag(name);
+    env->ReleaseStringUTFChars(name_, name);
+    return result.has_value();
+}
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_com_google_android_filament_Engine_nSetFeatureFlag(JNIEnv *env, jclass clazz,
+        jlong nativeEngine, jstring name_, jboolean value) {
+    Engine* engine = (Engine*) nativeEngine;
+    const char *name = env->GetStringUTFChars(name_, 0);
+    jboolean result = engine->setFeatureFlag(name, (bool)value);
+    env->ReleaseStringUTFChars(name_, name);
+    return result;
+}
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_com_google_android_filament_Engine_nGetFeatureFlag(JNIEnv *env, jclass clazz,
+        jlong nativeEngine, jstring name_) {
+    Engine* engine = (Engine*) nativeEngine;
+    const char *name = env->GetStringUTFChars(name_, 0);
+    std::optional<bool> result = engine->getFeatureFlag(name);
+    env->ReleaseStringUTFChars(name_, name);
+    return result.value_or(false); // we should never fail here
+}
+
 extern "C" JNIEXPORT jlong JNICALL Java_com_google_android_filament_Engine_nCreateBuilder(JNIEnv*,
         jclass) {
     Engine::Builder* builder = new Engine::Builder{};
@@ -520,13 +551,14 @@ extern "C" JNIEXPORT void JNICALL Java_com_google_android_filament_Engine_nSetBu
 extern "C" JNIEXPORT void JNICALL Java_com_google_android_filament_Engine_nSetBuilderConfig(JNIEnv*,
         jclass, jlong nativeBuilder, jlong commandBufferSizeMB, jlong perRenderPassArenaSizeMB,
         jlong driverHandleArenaSizeMB, jlong minCommandBufferSizeMB, jlong perFrameCommandsSizeMB,
-        jlong jobSystemThreadCount,
-        jlong textureUseAfterFreePoolSize, jboolean disableParallelShaderCompile,
+        jlong jobSystemThreadCount, jboolean disableParallelShaderCompile,
         jint stereoscopicType, jlong stereoscopicEyeCount,
         jlong resourceAllocatorCacheSizeMB, jlong resourceAllocatorCacheMaxAge,
         jboolean disableHandleUseAfterFreeCheck,
         jint preferredShaderLanguage,
-        jboolean forceGLES2Context) {
+        jboolean forceGLES2Context, jboolean assertNativeWindowIsValid,
+        jint gpuContextPriority,
+        jlong sharedUboInitialSizeInBytes) {
     Engine::Builder* builder = (Engine::Builder*) nativeBuilder;
     Engine::Config config = {
             .commandBufferSizeMB = (uint32_t) commandBufferSizeMB,
@@ -535,7 +567,6 @@ extern "C" JNIEXPORT void JNICALL Java_com_google_android_filament_Engine_nSetBu
             .minCommandBufferSizeMB = (uint32_t) minCommandBufferSizeMB,
             .perFrameCommandsSizeMB = (uint32_t) perFrameCommandsSizeMB,
             .jobSystemThreadCount = (uint32_t) jobSystemThreadCount,
-            .textureUseAfterFreePoolSize = (uint32_t) textureUseAfterFreePoolSize,
             .disableParallelShaderCompile = (bool) disableParallelShaderCompile,
             .stereoscopicType = (Engine::StereoscopicType) stereoscopicType,
             .stereoscopicEyeCount = (uint8_t) stereoscopicEyeCount,
@@ -544,6 +575,9 @@ extern "C" JNIEXPORT void JNICALL Java_com_google_android_filament_Engine_nSetBu
             .disableHandleUseAfterFreeCheck = (bool) disableHandleUseAfterFreeCheck,
             .preferredShaderLanguage = (Engine::Config::ShaderLanguage) preferredShaderLanguage,
             .forceGLES2Context = (bool) forceGLES2Context,
+            .assertNativeWindowIsValid = (bool) assertNativeWindowIsValid,
+            .gpuContextPriority = (Engine::GpuContextPriority) gpuContextPriority,
+            .sharedUboInitialSizeInBytes = (uint32_t) sharedUboInitialSizeInBytes,
     };
     builder->config(&config);
 }
@@ -564,6 +598,16 @@ extern "C" JNIEXPORT void JNICALL Java_com_google_android_filament_Engine_nSetBu
         JNIEnv*, jclass, jlong nativeBuilder, jboolean paused) {
     Engine::Builder* builder = (Engine::Builder*) nativeBuilder;
     builder->paused((bool) paused);
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_google_android_filament_Engine_nSetBuilderFeature(JNIEnv *env, jclass clazz,
+        jlong nativeBuilder, jstring name_, jboolean value) {
+    Engine::Builder* builder = (Engine::Builder*) nativeBuilder;
+    const char *name = env->GetStringUTFChars(name_, 0);
+    builder->feature(name, (bool)value);
+    env->ReleaseStringUTFChars(name_, name);
 }
 
 extern "C" JNIEXPORT jlong JNICALL

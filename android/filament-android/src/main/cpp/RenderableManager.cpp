@@ -450,6 +450,13 @@ Java_com_google_android_filament_RenderableManager_nGetPrimitiveCount(JNIEnv*, j
     return (jint) rm->getPrimitiveCount((RenderableManager::Instance) i);
 }
 
+extern "C" JNIEXPORT jint JNICALL
+Java_com_google_android_filament_RenderableManager_nGetInstanceCount(JNIEnv*, jclass,
+        jlong nativeRenderableManager, jint i) {
+    RenderableManager *rm = (RenderableManager *) nativeRenderableManager;
+    return (jint) rm->getInstanceCount((RenderableManager::Instance) i);
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_google_android_filament_RenderableManager_nSetMaterialInstanceAt(JNIEnv*, jclass,
         jlong nativeRenderableManager, jint i, jint primitiveIndex, jlong nativeMaterialInstance) {
@@ -457,6 +464,13 @@ Java_com_google_android_filament_RenderableManager_nSetMaterialInstanceAt(JNIEnv
     const MaterialInstance *materialInstance = (const MaterialInstance *) nativeMaterialInstance;
     rm->setMaterialInstanceAt((RenderableManager::Instance) i, (size_t) primitiveIndex,
             materialInstance);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_google_android_filament_RenderableManager_nClearMaterialInstanceAt(JNIEnv*, jclass,
+        jlong nativeRenderableManager, jint i, jint primitiveIndex) {
+    RenderableManager *rm = (RenderableManager *) nativeRenderableManager;
+    rm->clearMaterialInstanceAt((RenderableManager::Instance) i, (size_t) primitiveIndex);
 }
 
 extern "C" JNIEXPORT jlong JNICALL

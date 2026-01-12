@@ -9,9 +9,9 @@ set(PUBLIC_HDR_DIR include)
 # ==================================================================================================
 set(HDRS
         include/filamat/Enums.h
-        include/filamat/IncludeCallback.h
         include/filamat/MaterialBuilder.h
-        include/filamat/Package.h)
+        include/filamat/Package.h
+)
 
 set(COMMON_PRIVATE_HDRS
         src/eiff/Chunk.h
@@ -23,7 +23,6 @@ set(COMMON_PRIVATE_HDRS
         src/eiff/MaterialInterfaceBlockChunk.h
         src/eiff/ShaderEntry.h
         src/eiff/SimpleFieldChunk.h
-        src/Includes.h
         src/PushConstantDefinitions.h)
 
 set(COMMON_SRCS
@@ -39,10 +38,8 @@ set(COMMON_SRCS
         src/shaders/SibGenerator.cpp
         src/shaders/UibGenerator.cpp
         src/Enums.cpp
-        src/Includes.cpp
         src/MaterialBuilder.cpp
         src/MaterialVariants.cpp
-        src/SamplerBindingMap.cpp
 )
 
 # Sources and headers for filamat
@@ -84,7 +81,11 @@ include_directories(${CMAKE_BINARY_DIR})
 add_library(${TARGET} STATIC ${HDRS} ${PRIVATE_HDRS} ${SRCS})
 target_include_directories(${TARGET} PUBLIC ${PUBLIC_HDR_DIR})
 set_target_properties(${TARGET} PROPERTIES FOLDER Libs)
-target_link_libraries(${TARGET} shaders filabridge utils smol-v)
+target_link_libraries(${TARGET} backend_headers shaders filabridge utils smol-v)
+
+if (FILAMENT_SUPPORTS_WEBGPU)
+    target_link_libraries(${TARGET} libtint)
+endif ()
 
 # We are being naughty and accessing private headers here
 # For spirv-tools, we're just following glslang's example
@@ -123,7 +124,6 @@ endif()
 # requires us to explicitly list the dependencies below, as CMake doesn't have a way to recursively
 # query dependencies.
 set(FILAMAT_DEPS
-        OGLCompiler
         OSDependent
         SPIRV
         SPIRV-Tools
@@ -142,22 +142,26 @@ set(FILAMAT_LIB_NAME ${CMAKE_STATIC_LIBRARY_PREFIX}filamat${CMAKE_STATIC_LIBRARY
 install(FILES "${FILAMAT_COMBINED_OUTPUT}" DESTINATION lib/${DIST_DIR} RENAME ${FILAMAT_LIB_NAME})
 install(DIRECTORY ${PUBLIC_HDR_DIR}/filamat DESTINATION include)
 
+# Need to install libtint for filamat on Android.
+# See libs/filamat/CMakeLists.txt and android/filamat-android/CMakeLists.txt.
+if (ANDROID AND FILAMENT_SUPPORTS_WEBGPU)
+   target_link_libraries(${TARGET} libtint_combined)
+endif()
+
 # ==================================================================================================
 # Tests
 # ==================================================================================================
-project(test_filamat)
-set(TARGET test_filamat)
-set(SRCS
-        tests/test_filamat.cpp
-        tests/test_argBufferFixup.cpp
-        tests/test_clipDistanceFixup.cpp
-        tests/test_includes.cpp)
+if (IS_HOST_PLATFORM)
+    project(test_filamat)
+    set(TARGET test_filamat)
+    set(SRCS
+            tests/test_filamat.cpp
+            tests/test_argBufferFixup.cpp
+            tests/test_clipDistanceFixup.cpp
+            tests/test_line_dictionary.cpp)
 
-add_executable(${TARGET} ${SRCS})
-
-target_include_directories(${TARGET} PRIVATE src)
-
-target_link_libraries(${TARGET} filamat gtest)
-
-set_target_properties(${TARGET} PROPERTIES FOLDER Tests)
-
+    add_executable(${TARGET} ${SRCS})
+    target_include_directories(${TARGET} PRIVATE src)
+    target_link_libraries(${TARGET} filamat gtest)
+    set_target_properties(${TARGET} PROPERTIES FOLDER Tests)
+endif()

@@ -100,6 +100,9 @@ class ModelViewer(
     val renderer: Renderer
     @Entity val light: Int
 
+    var indirectLightCubemap: Texture? = null
+    var skyboxCubemap: Texture? = null
+
     private lateinit var displayHelper: DisplayHelper
     private lateinit var cameraManipulator: Manipulator
     private lateinit var gestureDetector: GestureDetector
@@ -117,6 +120,10 @@ class ModelViewer(
     private val eyePos = DoubleArray(3)
     private val target = DoubleArray(3)
     private val upward = DoubleArray(3)
+
+    // Public accessors for current camera eye and target (copies to avoid external mutation).
+    val eyePosition: DoubleArray get() = eyePos.copyOf()
+    val targetPosition: DoubleArray get() = target.copyOf()
 
     init {
         renderer = engine.createRenderer()
@@ -367,6 +374,16 @@ class ModelViewer(
         materialProvider.destroyMaterials()
         materialProvider.destroy()
         resourceLoader.destroy()
+
+        if (indirectLightCubemap != null) {
+            engine.destroyTexture(indirectLightCubemap!!)
+            indirectLightCubemap = null
+        }
+
+        if (skyboxCubemap != null) {
+            engine.destroyTexture(skyboxCubemap!!)
+            skyboxCubemap = null
+        }
 
         logg("engineResourcesDestroy")
         engine.destroyEntity(light)

@@ -26,6 +26,7 @@
 #include <backend/DriverEnums.h>
 
 #include <utils/compiler.h>
+#include <utils/StaticString.h>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -170,8 +171,20 @@ public:
          * @param name A string to identify this VertexBuffer
          * @param len Length of name, should be less than or equal to 128
          * @return This Builder, for chaining calls.
+         * @deprecated Use name(utils::StaticString const&) instead.
          */
-        // Builder& name(const char* UTILS_NONNULL name, size_t len) noexcept; // inherited
+        UTILS_DEPRECATED
+        Builder& name(const char* UTILS_NONNULL name, size_t len) noexcept;
+
+        /**
+         * Associate an optional name with this VertexBuffer for debugging purposes.
+         *
+         * name will show in error messages and should be kept as short as possible.
+         *
+         * @param name A string literal to identify this VertexBuffer
+         * @return This Builder, for chaining calls.
+         */
+        Builder& name(utils::StaticString const& name) noexcept;
 
         /**
          * Creates the VertexBuffer object and returns a pointer to it.
@@ -208,7 +221,7 @@ public:
      *               index \p bufferIndex. BufferDescriptor points to raw, untyped data that will
      *               be copied as-is into the buffer.
      * @param byteOffset Offset in *bytes* into the buffer at index \p bufferIndex of this vertex
-     *                   buffer set.
+     *                   buffer set.  Must be multiple of 4.
      */
     void setBufferAt(Engine& engine, uint8_t bufferIndex, BufferDescriptor&& buffer,
             uint32_t byteOffset = 0);

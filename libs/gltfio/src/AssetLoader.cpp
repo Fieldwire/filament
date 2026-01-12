@@ -44,17 +44,19 @@
 #include <math/vec3.h>
 #include <math/vec4.h>
 
+#include <private/utils/Tracing.h>
+
 #include <utils/compiler.h>
 #include <utils/EntityManager.h>
 #include <utils/FixedCapacityVector.h>
 #include <utils/Log.h>
 #include <utils/Panic.h>
 #include <utils/NameComponentManager.h>
-#include <utils/Systrace.h>
 
 #include <tsl/robin_map.h>
 
 #include <cgltf.h>
+#include <gltfio/Picking.h>
 
 #include "downcast.h"
 
@@ -267,7 +269,7 @@ struct FAssetLoader : public AssetLoader {
             mEngine(*config.engine),
             mDefaultNodeName(config.defaultNodeName) {
         if (config.ext) {
-            FILAMENT_CHECK_PRECONDITION(AssetConfigurationExtended::isSupported())
+            FILAMENT_CHECK_POSTCONDITION(AssetConfigurationExtended::isSupported())
                     << "Extend asset loading is not supported on this platform";
             mLoaderExtended = std::make_unique<AssetLoaderExtended>(
                     *config.ext, config.engine, mMaterials);
@@ -476,7 +478,7 @@ FilamentInstance* FAssetLoader::createInstance(FFilamentAsset* fAsset) {
 }
 
 FFilamentAsset* FAssetLoader::createRootAsset(const cgltf_data* srcAsset) {
-    SYSTRACE_CALL();
+    FILAMENT_TRACING_CALL(FILAMENT_TRACING_CATEGORY_GLTFIO);
     #if !GLTFIO_DRACO_SUPPORTED
     for (cgltf_size i = 0; i < srcAsset->extensions_required_count; i++) {
         if (!strcmp(srcAsset->extensions_required[i], "KHR_draco_mesh_compression")) {
@@ -893,6 +895,16 @@ void FAssetLoader::createRenderable(const cgltf_node* node, Entity entity, const
         .receiveShadows(true)
         .build(mEngine, entity);
 
+    // Picking registration now uses free helper buildMeshDataForPicking.
+    {
+        MeshData meshData = buildMeshDataForPicking(mesh);
+        if (!meshData.positions.empty() && !meshData.indices.empty()) {
+            meshData.localBounds.min = aabb.min;
+            meshData.localBounds.max = aabb.max;
+            fAsset->mPickingRegistry.registerMesh(entity, std::move(meshData));
+        }
+    }
+
     // According to the spec, the mesh may or may not specify default weights, regardless of whether
     // it actually has morph targets. If it has morphing enabled then the default weights are 0. If
     // node weights are provided, they override the ones specified on the mesh.
@@ -993,6 +1005,7 @@ bool FAssetLoader::createPrimitive(const cgltf_primitive& inPrim, const char* na
     vbb.enableBufferObjects();
 
     bool hasUv0 = false, hasUv1 = false, hasVertexColor = false, hasNormals = false;
+    int8_t currentCustomIndex = -1;
     uint32_t vertexCount = 0;
 
     const size_t firstSlot = slots->size();
@@ -1003,6 +1016,7 @@ bool FAssetLoader::createPrimitive(const cgltf_primitive& inPrim, const char* na
         const int index = attribute.index;
         const cgltf_attribute_type atype = attribute.type;
         const cgltf_accessor* accessor = attribute.data;
+        int8_t customIndex = -1;
 
         // The glTF tangent data is ignored here, but honored in ResourceLoader.
         if (atype == cgltf_attribute_type_tangent) {
@@ -1020,12 +1034,19 @@ bool FAssetLoader::createPrimitive(const cgltf_primitive& inPrim, const char* na
         }
 
         if (atype == cgltf_attribute_type_color) {
-            hasVertexColor = true;
+            if (hasVertexColor) {
+                // We already had a vertex color before, we need to store this is as a custom
+                // attribute.
+                customIndex = ++currentCustomIndex;
+            } else {
+                hasVertexColor = true;
+            }
         }
 
         // Translate the cgltf attribute enum into a Filament enum.
         VertexAttribute semantic;
-        if (!getVertexAttrType(atype, &semantic)) {
+        if (!getCustomVertexAttrType(customIndex, &semantic) &&
+                !getVertexAttrType(atype, &semantic)) {
             utils::slog.e << "Unrecognized vertex semantic in " << name << utils::io::endl;
             return false;
         }

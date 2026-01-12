@@ -36,6 +36,14 @@
 
 #include <functional>
 
+#if FILAMENT_ENABLE_FGVIEWER
+#include <fgviewer/FrameGraphInfo.h>
+#else
+namespace filament::fgviewer {
+    class FrameGraphInfo{};
+} // namespace filament::fgviewer
+#endif
+
 namespace filament {
 
 class ResourceAllocatorInterface;
@@ -65,7 +73,7 @@ public:
          * @param desc  Descriptor for the FrameGraphRenderPass.
          * @return      An index to retrieve the concrete FrameGraphRenderPass in the execute phase.
          */
-        uint32_t declareRenderPass(const char* name,
+        uint32_t declareRenderPass(utils::StaticString name,
                 FrameGraphRenderPass::Descriptor const& desc);
 
         /**
@@ -96,7 +104,7 @@ public:
          * @return          A typed resource handle
          */
         template<typename RESOURCE>
-        FrameGraphId<RESOURCE> create(const char* name,
+        FrameGraphId<RESOURCE> create(utils::StaticString name,
                 typename RESOURCE::Descriptor const& desc = {}) noexcept {
             return mFrameGraph.create<RESOURCE>(name, desc);
         }
@@ -114,7 +122,7 @@ public:
          */
         template<typename RESOURCE>
         inline FrameGraphId<RESOURCE> createSubresource(FrameGraphId<RESOURCE> parent,
-                const char* name,
+                utils::StaticString name,
                 typename RESOURCE::SubResourceDescriptor const& desc = {}) noexcept {
             return mFrameGraph.createSubresource<RESOURCE>(parent, name, desc);
         }
@@ -183,7 +191,7 @@ public:
          * @param handle    Handle to a virtual resource
          * @return          C string to the name of the resource
          */
-        const char* getName(FrameGraphHandle handle) const noexcept;
+        utils::StaticString getName(FrameGraphHandle handle) const noexcept;
 
 
         /**
@@ -193,7 +201,7 @@ public:
          * @param desc      Descriptor for this resources
          * @return          A typed resource handle
          */
-        FrameGraphId<FrameGraphTexture> createTexture(const char* name,
+        FrameGraphId<FrameGraphTexture> createTexture(utils::StaticString name,
                 FrameGraphTexture::Descriptor const& desc = {}) noexcept {
             return create<FrameGraphTexture>(name, desc);
         }
@@ -204,7 +212,7 @@ public:
          * @return          A new handle to the FrameGraphTexture.
          *                  The input handle is no-longer valid.
          */
-        FrameGraphId<FrameGraphTexture> sample(FrameGraphId<FrameGraphTexture> input) {
+        FrameGraphId<FrameGraphTexture> sample(FrameGraphId<FrameGraphTexture> const input) {
             return read(input, FrameGraphTexture::Usage::SAMPLEABLE);
         }
 
@@ -367,7 +375,7 @@ public:
      * @return              A handle that can be used normally in the frame graph
      */
     template<typename RESOURCE>
-    FrameGraphId<RESOURCE> import(const char* name,
+    FrameGraphId<RESOURCE> import(utils::StaticString name,
             typename RESOURCE::Descriptor const& desc,
             typename RESOURCE::Usage usage,
             const RESOURCE& resource) noexcept;
@@ -383,7 +391,7 @@ public:
      * @param target    handle to the concrete FrameGraphRenderPass to import
      * @return          A handle to a FrameGraphTexture
      */
-    FrameGraphId<FrameGraphTexture> import(const char* name,
+    FrameGraphId<FrameGraphTexture> import(utils::StaticString name,
             FrameGraphRenderPass::ImportDescriptor const& desc,
             backend::Handle<backend::HwRenderTarget> target);
 
@@ -432,7 +440,13 @@ public:
     bool isAcyclic() const noexcept;
 
     //! export a graphviz view of the graph
-    void export_graphviz(utils::io::ostream& out, const char* name = nullptr);
+    void export_graphviz(utils::io::ostream& out, const char* name = nullptr) const noexcept;
+
+    /**
+     * Export a fgviewer::FrameGraphInfo for current graph.
+     * Note that this function should be called after FrameGraph::compile().
+     */
+    fgviewer::FrameGraphInfo getFrameGraphInfo(const char *viewName) const;
 
 private:
     friend class FrameGraphResources;
@@ -469,12 +483,12 @@ private:
     void assertValid(FrameGraphHandle handle) const;
 
     template<typename RESOURCE>
-    FrameGraphId<RESOURCE> create(char const* name,
+    FrameGraphId<RESOURCE> create(utils::StaticString name,
             typename RESOURCE::Descriptor const& desc) noexcept;
 
     template<typename RESOURCE>
     FrameGraphId<RESOURCE> createSubresource(FrameGraphId<RESOURCE> parent,
-            char const* name, typename RESOURCE::SubResourceDescriptor const& desc) noexcept;
+            utils::StaticString name, typename RESOURCE::SubResourceDescriptor const& desc) noexcept;
 
     template<typename RESOURCE>
     FrameGraphId<RESOURCE> read(PassNode* passNode,
@@ -484,36 +498,36 @@ private:
     FrameGraphId<RESOURCE> write(PassNode* passNode,
             FrameGraphId<RESOURCE> input, typename RESOURCE::Usage usage);
 
-    ResourceSlot& getResourceSlot(FrameGraphHandle handle) noexcept {
+    ResourceSlot& getResourceSlot(FrameGraphHandle const handle) noexcept {
         assert_invariant((size_t)handle.index < mResourceSlots.size());
         assert_invariant((size_t)mResourceSlots[handle.index].rid < mResources.size());
         assert_invariant((size_t)mResourceSlots[handle.index].nid < mResourceNodes.size());
         return mResourceSlots[handle.index];
     }
 
-    ResourceSlot const& getResourceSlot(FrameGraphHandle handle) const noexcept {
+    ResourceSlot const& getResourceSlot(FrameGraphHandle const handle) const noexcept {
         return const_cast<FrameGraph*>(this)->getResourceSlot(handle);
     }
 
-    VirtualResource* getResource(FrameGraphHandle handle) noexcept {
+    VirtualResource* getResource(FrameGraphHandle const handle) noexcept {
         assert_invariant(handle.isInitialized());
         ResourceSlot const& slot = getResourceSlot(handle);
         assert_invariant((size_t)slot.rid < mResources.size());
         return mResources[slot.rid];
     }
 
-    ResourceNode* getActiveResourceNode(FrameGraphHandle handle) noexcept {
+    ResourceNode* getActiveResourceNode(FrameGraphHandle const handle) noexcept {
         assert_invariant(handle);
         ResourceSlot const& slot = getResourceSlot(handle);
         assert_invariant((size_t)slot.nid < mResourceNodes.size());
         return mResourceNodes[slot.nid];
     }
 
-    VirtualResource const* getResource(FrameGraphHandle handle) const noexcept {
+    VirtualResource const* getResource(FrameGraphHandle const handle) const noexcept {
         return const_cast<FrameGraph*>(this)->getResource(handle);
     }
 
-    ResourceNode const* getResourceNode(FrameGraphHandle handle) const noexcept {
+    ResourceNode const* getResourceNode(FrameGraphHandle const handle) const noexcept {
         return const_cast<FrameGraph*>(this)->getActiveResourceNode(handle);
     }
 
@@ -560,7 +574,7 @@ FrameGraphPass<Data>& FrameGraph::addPass(char const* name, Setup setup) {
 
 template<typename Execute>
 void FrameGraph::addTrivialSideEffectPass(char const* name, Execute&& execute) {
-    addPass<Empty>(name, [](FrameGraph::Builder& builder, auto&) { builder.sideEffect(); },
+    addPass<Empty>(name, [](Builder& builder, auto&) { builder.sideEffect(); },
             [execute](FrameGraphResources const&, auto const&, backend::DriverApi& driver) {
                 execute(driver);
             });
@@ -573,7 +587,7 @@ void FrameGraph::present(FrameGraphId<RESOURCE> input) {
 }
 
 template<typename RESOURCE>
-FrameGraphId<RESOURCE> FrameGraph::create(char const* name,
+FrameGraphId<RESOURCE> FrameGraph::create(utils::StaticString name,
         typename RESOURCE::Descriptor const& desc) noexcept {
     VirtualResource* vresource(mArena.make<Resource<RESOURCE>>(name, desc));
     return FrameGraphId<RESOURCE>(addResourceInternal(vresource));
@@ -581,14 +595,14 @@ FrameGraphId<RESOURCE> FrameGraph::create(char const* name,
 
 template<typename RESOURCE>
 FrameGraphId<RESOURCE> FrameGraph::createSubresource(FrameGraphId<RESOURCE> parent,
-        char const* name, typename RESOURCE::SubResourceDescriptor const& desc) noexcept {
+        utils::StaticString name, typename RESOURCE::SubResourceDescriptor const& desc) noexcept {
     auto* parentResource = static_cast<Resource<RESOURCE>*>(getResource(parent));
     VirtualResource* vresource(mArena.make<Resource<RESOURCE>>(parentResource, name, desc));
     return FrameGraphId<RESOURCE>(addSubResourceInternal(parent, vresource));
 }
 
 template<typename RESOURCE>
-FrameGraphId<RESOURCE> FrameGraph::import(char const* name,
+FrameGraphId<RESOURCE> FrameGraph::import(utils::StaticString name,
         typename RESOURCE::Descriptor const& desc,
         typename RESOURCE::Usage usage,
         RESOURCE const& resource) noexcept {
@@ -651,13 +665,13 @@ FrameGraphId<RESOURCE> FrameGraph::forwardResource(char const* name,
 
 extern template void FrameGraph::present(FrameGraphId<FrameGraphTexture> input);
 
-extern template FrameGraphId<FrameGraphTexture> FrameGraph::create(char const* name,
+extern template FrameGraphId<FrameGraphTexture> FrameGraph::create(utils::StaticString name,
         FrameGraphTexture::Descriptor const& desc) noexcept;
 
 extern template FrameGraphId<FrameGraphTexture> FrameGraph::createSubresource(FrameGraphId<FrameGraphTexture> parent,
-        char const* name, FrameGraphTexture::SubResourceDescriptor const& desc) noexcept;
+        utils::StaticString name, FrameGraphTexture::SubResourceDescriptor const& desc) noexcept;
 
-extern template FrameGraphId<FrameGraphTexture> FrameGraph::import(char const* name,
+extern template FrameGraphId<FrameGraphTexture> FrameGraph::import(utils::StaticString name,
         FrameGraphTexture::Descriptor const& desc, FrameGraphTexture::Usage usage, FrameGraphTexture const& resource) noexcept;
 
 extern template FrameGraphId<FrameGraphTexture> FrameGraph::read(PassNode* passNode,

@@ -37,7 +37,6 @@
 using namespace utils;
 
 namespace filament::viewer {
-
 std::string_view to_string(color::ColorSpace const& colorspace) noexcept {
     using namespace color;
     if (colorspace == Rec709-Linear-D65) {
@@ -412,21 +411,30 @@ static int parse(jsmntok_t const* tokens, int i, const char* jsonChunk,
             out->cascadeSplitPositions[0] = splitsVector[0];
             out->cascadeSplitPositions[1] = splitsVector[1];
             out->cascadeSplitPositions[2] = splitsVector[2];
-        // TODO: constantBias
-        // TODO: normalBias
-        // TODO: shadowFar
-        // TODO: shadowNearHint
-        // TODO: shadowFarHint
+        } else if (compare(tok, jsonChunk, "constantBias") == 0) {
+            i = parse(tokens, i + 1, jsonChunk, &out->constantBias);
+        } else if (compare(tok, jsonChunk, "normalBias") == 0) {
+            i = parse(tokens, i + 1, jsonChunk, &out->normalBias);
+        } else if (compare(tok, jsonChunk, "shadowFar") == 0) {
+            i = parse(tokens, i + 1, jsonChunk, &out->shadowFar);
+        } else if (compare(tok, jsonChunk, "shadowNearHint") == 0) {
+            i = parse(tokens, i + 1, jsonChunk, &out->shadowNearHint);
+        } else if (compare(tok, jsonChunk, "shadowFarHint") == 0) {
+            i = parse(tokens, i + 1, jsonChunk, &out->shadowFarHint);
         } else if (compare(tok, jsonChunk, "stable") == 0) {
             i = parse(tokens, i + 1, jsonChunk, &out->stable);
         } else if (compare(tok, jsonChunk, "lispsm") == 0) {
             i = parse(tokens, i + 1, jsonChunk, &out->lispsm);
-        // TODO: polygonOffsetConstant
-        // TODO: polygonOffsetSlope
+        } else if (compare(tok, jsonChunk, "polygonOffsetConstant") == 0) {
+            i = parse(tokens, i + 1, jsonChunk, &out->polygonOffsetConstant);
+        } else if (compare(tok, jsonChunk, "polygonOffsetSlope") == 0) {
+            i = parse(tokens, i + 1, jsonChunk, &out->polygonOffsetSlope);
         } else if (compare(tok, jsonChunk, "screenSpaceContactShadows") == 0) {
             i = parse(tokens, i + 1, jsonChunk, &out->screenSpaceContactShadows);
-        // TODO: stepCount
-        // TODO: maxShadowDistance
+        } else if (compare(tok, jsonChunk, "stepCount") == 0) {
+            i = parse(tokens, i + 1, jsonChunk, &out->stepCount);
+        } else if (compare(tok, jsonChunk, "maxShadowDistance") == 0) {
+            i = parse(tokens, i + 1, jsonChunk, &out->maxShadowDistance);
         } else if (compare(tok, jsonChunk, "vsm") == 0) {
             i = parse(tokens, i + 1, jsonChunk, &out->vsm);
         } else if (compare(tok, jsonChunk, "shadowBulbRadius") == 0) {
@@ -535,6 +543,26 @@ static int parse(jsmntok_t const* tokens, int i, const char* jsonChunk, ViewerOp
     return i;
 }
 
+static int parse(jsmntok_t const* tokens, int i, const char* jsonChunk, DebugOptions* out) {
+    CHECK_TOKTYPE(tokens[i], JSMN_OBJECT);
+    int size = tokens[i++].size;
+    for (int j = 0; j < size; ++j) {
+        const jsmntok_t tok = tokens[i];
+        CHECK_KEY(tok);
+        if (compare(tok, jsonChunk, "skipFrames") == 0) {
+            i = parse(tokens, i + 1, jsonChunk, &out->skipFrames);
+        } else {
+            slog.w << "Invalid debug options key: '" << STR(tok, jsonChunk) << "'" << io::endl;
+            i = parse(tokens, i + 1);
+        }
+        if (i < 0) {
+            slog.e << "Invalid debug options value: '" << STR(tok, jsonChunk) << "'" << io::endl;
+            return i;
+        }
+    }
+    return i;
+}
+
 int parse(jsmntok_t const* tokens, int i, const char* jsonChunk, Settings* out) {
     CHECK_TOKTYPE(tokens[i], JSMN_OBJECT);
     int size = tokens[i++].size;
@@ -549,6 +577,8 @@ int parse(jsmntok_t const* tokens, int i, const char* jsonChunk, Settings* out) 
             i = parse(tokens, i + 1, jsonChunk, &out->lighting);
         } else if (compare(tok, jsonChunk, "viewer") == 0) {
             i = parse(tokens, i + 1, jsonChunk, &out->viewer);
+        } else if (compare(tok, jsonChunk, "debug") == 0) {
+            i = parse(tokens, i + 1, jsonChunk, &out->debug);
         } else {
             slog.w << "Invalid group key: '" << STR(tok, jsonChunk) << "'" << io::endl;
             i = parse(tokens, i + 1);
@@ -669,6 +699,12 @@ void applySettings(Engine* engine, const ViewerOptions& settings, Camera* camera
     const mat4 modelMatrices[2] = { rightEye, leftEye };
     for (int i = 0; i < eyeCount; i++) {
         camera->setEyeModelMatrix(i, modelMatrices[i % 2]);
+    }
+}
+
+void applySettings(Engine* engine, const DebugOptions& settings, Renderer* renderer) {
+    if (!renderer->getFrameToSkipCount()) {
+        renderer->skipNextFrames(settings.skipFrames);
     }
 }
 
@@ -810,10 +846,19 @@ static std::ostream& operator<<(std::ostream& out, const LightManager::ShadowOpt
         << "},\n"
         << "\"mapSize\": " << in.mapSize << ",\n"
         << "\"shadowCascades\": " << int(in.shadowCascades) << ",\n"
-        << "\"cascadeSplitPositions\": " << (splitsVector) << "\n"
+        << "\"cascadeSplitPositions\": " << splitsVector << "\n"
+        << "\"constantBias\": " << in.constantBias << ",\n"
+        << "\"normalBias\": " << in.normalBias << ",\n"
+        << "\"shadowFar\": " << in.shadowFar << ",\n"
+        << "\"shadowNearHint\": " << in.shadowNearHint << ",\n"
+        << "\"shadowFarHint\": " << in.shadowFarHint << ",\n"
         << "\"stable\": " << to_string(in.stable) << ",\n"
         << "\"lispsm\": " << to_string(in.lispsm) << ",\n"
+        << "\"polygonOffsetConstant\": " << in.polygonOffsetConstant << ",\n"
+        << "\"polygonOffsetSlope\": " << in.polygonOffsetSlope << ",\n"
         << "\"screenSpaceContactShadows\": " << to_string(in.screenSpaceContactShadows) << ",\n"
+        << "\"stepCount\": " << +in.stepCount << ",\n"
+        << "\"maxShadowDistance\": " << in.maxShadowDistance << ",\n"
         << "\"shadowBulbRadius\": " << in.shadowBulbRadius << ",\n"
         << "\"transform\": " << in.transform.xyzw << ",\n"
         << "}";
@@ -896,6 +941,12 @@ static std::ostream& operator<<(std::ostream& out, const ViewerOptions& in) {
         << "}";
 }
 
+static std::ostream& operator<<(std::ostream& out, const DebugOptions& in) {
+    return out << "{\n"
+        << "\"skipFrames\": " << (in.skipFrames) << "\n"
+        << "}";
+}
+
 static std::ostream& operator<<(std::ostream& out, const DynamicLightingSettings& in) {
     return out << "{\n"
         << "\"zLightNear\": " << (in.zLightNear) << ",\n"
@@ -932,7 +983,8 @@ static std::ostream& operator<<(std::ostream& out, const Settings& in) {
         << "\"view\": " << (in.view) << ",\n"
         << "\"material\": " << (in.material) << ",\n"
         << "\"lighting\": " << (in.lighting) << ",\n"
-        << "\"viewer\": " << (in.viewer)
+        << "\"viewer\": " << (in.viewer) << ",\n"
+        << "\"debug\": " << (in.debug)
         << "}";
 }
 

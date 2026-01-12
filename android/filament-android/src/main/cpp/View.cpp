@@ -148,6 +148,15 @@ Java_com_google_android_filament_View_nSetDynamicResolutionOptions(JNIEnv*, jcla
 }
 
 extern "C" JNIEXPORT void JNICALL
+Java_com_google_android_filament_View_nGetLastDynamicResolutionScale(JNIEnv *env, jclass, jlong nativeView, jfloatArray out_) {
+    jfloat* out = env->GetFloatArrayElements(out_, nullptr);
+    View *view = (View *) nativeView;
+    math::float2 result = view->getLastDynamicResolutionScale();
+    std::copy_n(result.v, 2, out);
+    env->ReleaseFloatArrayElements(out_, out, 0);
+}
+
+extern "C" JNIEXPORT void JNICALL
 Java_com_google_android_filament_View_nSetShadowType(JNIEnv*, jclass, jlong nativeView, jint type) {
     View* view = (View*) nativeView;
     view->setShadowType((View::ShadowType) type);
@@ -220,6 +229,20 @@ Java_com_google_android_filament_View_nIsFrontFaceWindingInverted(JNIEnv*,
         jclass, jlong nativeView) {
     View* view = (View*) nativeView;
     return static_cast<jboolean>(view->isFrontFaceWindingInverted());
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_google_android_filament_View_nSetTransparentPickingEnabled(JNIEnv*,
+        jclass, jlong nativeView, jboolean enabled) {
+    View* view = (View*) nativeView;
+    view->setTransparentPickingEnabled(enabled);
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_google_android_filament_View_nIsTransparentPickingEnabled(JNIEnv*,
+        jclass, jlong nativeView) {
+    View* view = (View*) nativeView;
+    return static_cast<jboolean>(view->isTransparentPickingEnabled());
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -341,6 +364,7 @@ Java_com_google_android_filament_View_nSetFogOptions(JNIEnv *, jclass , jlong na
     };
     view->setFogOptions(options);
 }
+
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_google_android_filament_View_nSetBlendMode(JNIEnv *, jclass , jlong nativeView, jint blendMode) {
@@ -539,4 +563,21 @@ Java_com_google_android_filament_View_nClearFrameHistory(JNIEnv *env, jclass cla
     View *view = (View *) nativeView;
     Engine *engine = (Engine *) nativeEngine;
     view->clearFrameHistory(*engine);
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_google_android_filament_View_nSetChannelDepthClearEnabled(JNIEnv *, jclass ,
+        jlong nativeView, jint channel, jboolean enabled) {
+    View* view = (View*) nativeView;
+    view->setChannelDepthClearEnabled((uint8_t) channel, (bool) enabled);
+}
+
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_com_google_android_filament_View_nIsChannelDepthClearEnabled(JNIEnv *env, jclass clazz,
+        jlong nativeView, jint channel) {
+    // TODO: implement nIsChannelDepthClearEnabled()
+    View* view = (View*) nativeView;
+    return (jboolean)view->isChannelDepthClearEnabled((uint8_t) channel);
 }

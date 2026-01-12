@@ -20,6 +20,7 @@ set(MATERIAL_DIR  "${GENERATION_ROOT}/generated/material")
 set(PUBLIC_HDRS
         include/filamentapp/Config.h
         include/filamentapp/Cube.h
+        include/filamentapp/Grid.h
         include/filamentapp/FilamentApp.h
         include/filamentapp/IBL.h
         include/filamentapp/IcoSphere.h
@@ -30,11 +31,13 @@ set(PUBLIC_HDRS
 
 set(SRCS
         src/Cube.cpp
+        src/Grid.cpp
         src/FilamentApp.cpp
         src/IBL.cpp
         src/IcoSphere.cpp
         src/MeshAssimp.cpp
         src/Sphere.cpp
+        src/VulkanPlatformHelper.cpp
 )
 
 set(LIBS
@@ -47,6 +50,7 @@ set(LIBS
         geometry
         getopt
         image
+        imageio
         imgui
         ktxreader
         math
@@ -64,23 +68,30 @@ set(MATERIAL_SRCS
 
 if (APPLE)
     list(APPEND SRCS src/NativeWindowHelperCocoa.mm)
+    list(APPEND SRCS src/VulkanPlatformHelperApple.mm)
     list(APPEND LIBS "-framework Cocoa -framework QuartzCore")
 endif()
 
 if (LINUX)
     list(APPEND SRCS src/NativeWindowHelperLinux.cpp)
+    list(APPEND SRCS src/VulkanPlatformHelperLinux.cpp)
 endif()
 
 if (WIN32)
     list(APPEND SRCS src/NativeWindowHelperWindows.cpp)
+    list(APPEND SRCS src/VulkanPlatformHelperWindows.cpp)
     list(APPEND LIBS sdl2main)
+endif()
+
+if (ANDROID)
+    list(APPEND SRCS src/VulkanPlatformHelperAndroid.cpp)
 endif()
 
 # ==================================================================================================
 # Compile resources
 # ==================================================================================================
 
-if (CMAKE_CROSSCOMPILING)
+if (CMAKE_CROSSCOMPILING OR FILAMENT_IMPORT_PREBUILT_EXECUTABLES)
     include(${IMPORT_EXECUTABLES})
 endif()
 
@@ -139,6 +150,10 @@ set_target_properties(filamentapp-resources PROPERTIES FOLDER Samples/Resources)
 include_directories(${PUBLIC_HDR_DIR})
 
 add_library(${TARGET} STATIC ${PUBLIC_HDRS} ${SRCS})
+
+if (FILAMENT_SUPPORTS_WEBGPU)
+target_link_libraries(${TARGET} PRIVATE dawncpp_headers)
+endif()
 
 target_link_libraries(${TARGET} PUBLIC ${LIBS} filamentapp-resources)
 

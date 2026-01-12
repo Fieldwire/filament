@@ -21,12 +21,13 @@
 
 #include "details/MaterialInstance.h"
 
+#include "ds/DescriptorSetLayout.h"
+
 #include <filament/Material.h>
 #include <filament/MaterialEnums.h>
 
 #include <private/filament/EngineEnums.h>
 #include <private/filament/BufferInterfaceBlock.h>
-#include <private/filament/SamplerBindingsInfo.h>
 #include <private/filament/SamplerInterfaceBlock.h>
 #include <private/filament/SubpassInfo.h>
 #include <private/filament/Variant.h>
@@ -45,14 +46,8 @@
 #include <utils/Mutex.h>
 
 #include <array>
-#include <atomic>
-#include <memory>
-#include <mutex>
-#include <new>
 #include <optional>
 #include <string_view>
-#include <unordered_map>
-#include <utility>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -69,11 +64,11 @@ class  FEngine;
 
 class FMaterial : public Material {
 public:
-    FMaterial(FEngine& engine, const Material::Builder& builder,
-            std::unique_ptr<MaterialParser> materialParser);
+    FMaterial(FEngine& engine, const Builder& builder,
+            MaterialDefinition const& definition);
     ~FMaterial() noexcept;
 
-    class DefaultMaterialBuilder : public Material::Builder {
+    class DefaultMaterialBuilder : public Builder {
     public:
         DefaultMaterialBuilder();
     };
@@ -83,20 +78,37 @@ public:
 
     // return the uniform interface block for this material
     const BufferInterfaceBlock& getUniformInterfaceBlock() const noexcept {
-        return mUniformInterfaceBlock;
+        return mDefinition.uniformInterfaceBlock;
     }
 
-    // return the uniform interface block for this material
-    const SamplerInterfaceBlock& getSamplerInterfaceBlock() const noexcept {
-        return mSamplerInterfaceBlock;
+    DescriptorSetLayout const& getPerViewDescriptorSetLayout() const noexcept {
+        assert_invariant(mDefinition.materialDomain == MaterialDomain::POST_PROCESS);
+        return mDefinition.perViewDescriptorSetLayout;
+    }
+
+    DescriptorSetLayout const& getPerViewDescriptorSetLayout(
+            Variant const variant, bool const useVsmDescriptorSetLayout) const noexcept;
+
+    // Returns the layout that should be used when this material is bound to the pipeline for the
+    // given variant. Shared variants use the Engine's default material's variants, so we should
+    // also use the default material's layout.
+    DescriptorSetLayout const& getDescriptorSetLayout(Variant variant = {}) const noexcept {
+        if (!isSharedVariant(variant)) {
+            return mDefinition.descriptorSetLayout;
+        }
+        FMaterial const* const pDefaultMaterial = mEngine.getDefaultMaterial();
+        if (UTILS_UNLIKELY(!pDefaultMaterial)) {
+            return mDefinition.descriptorSetLayout;
+        }
+        return pDefaultMaterial->getDescriptorSetLayout();
     }
 
     void compile(CompilerPriorityQueue priority,
-            UserVariantFilterMask variantFilter,
+            UserVariantFilterMask variantSpec,
             backend::CallbackHandler* handler,
             utils::Invocable<void(Material*)>&& callback) noexcept;
 
-    // Create an instance of this material
+    // Creates an instance of this material, specifying the batching mode.
     FMaterialInstance* createInstance(const char* name) const noexcept;
 
     bool hasParameter(const char* name) const noexcept;
@@ -109,13 +121,11 @@ public:
         return const_cast<FMaterial*>(this)->getDefaultInstance();
     }
 
-    FMaterialInstance* getDefaultInstance() noexcept {
-        return std::launder(reinterpret_cast<FMaterialInstance*>(&mDefaultInstanceStorage));
-    }
+    FMaterialInstance* getDefaultInstance() noexcept;
 
     FEngine& getEngine() const noexcept  { return mEngine; }
 
-    bool isCached(Variant variant) const noexcept {
+    bool isCached(Variant const variant) const noexcept {
         return bool(mCachedPrograms[variant.key]);
     }
 
@@ -124,8 +134,8 @@ public:
     // prepareProgram creates the program for the material's given variant at the backend level.
     // Must be called outside of backend render pass.
     // Must be called before getProgram() below.
-    void prepareProgram(Variant variant,
-            backend::CompilerPriorityQueue priorityQueue = CompilerPriorityQueue::HIGH) const noexcept {
+    void prepareProgram(Variant const variant,
+            backend::CompilerPriorityQueue const priorityQueue) const noexcept {
         // prepareProgram() is called for each RenderPrimitive in the scene, so it must be efficient.
         if (UTILS_UNLIKELY(!isCached(variant))) {
             prepareProgramSlow(variant, priorityQueue);
@@ -134,68 +144,97 @@ public:
 
     // getProgram returns the backend program for the material's given variant.
     // Must be called after prepareProgram().
-    [[nodiscard]] backend::Handle<backend::HwProgram> getProgram(Variant variant) const noexcept {
+    [[nodiscard]]
+    backend::Handle<backend::HwProgram> getProgram(Variant const variant) const noexcept {
 #if FILAMENT_ENABLE_MATDBG
-        assert_invariant((size_t)variant.key < VARIANT_COUNT);
-        std::unique_lock<utils::Mutex> lock(mActiveProgramsLock);
-        mActivePrograms.set(variant.key);
-        lock.unlock();
+        return getProgramWithMATDBG(variant);
 #endif
         assert_invariant(mCachedPrograms[variant.key]);
         return mCachedPrograms[variant.key];
     }
 
-    bool isVariantLit() const noexcept { return mIsVariantLit; }
+    // MaterialInstance::use() binds descriptor sets before drawing. For shared variants,
+    // however, the material instance will call useShared() to bind the default material's sets
+    // instead.
+    // Returns true if this is a shared variant.
+    bool useShared(backend::DriverApi& driver, Variant variant) const noexcept {
+        if (!isSharedVariant(variant)) {
+            return false;
+        }
+        FMaterial const* const pDefaultMaterial = mEngine.getDefaultMaterial();
+        if (UTILS_UNLIKELY(!pDefaultMaterial)) {
+            return false;
+        }
+        FMaterialInstance const* const pDefaultInstance = pDefaultMaterial->getDefaultInstance();
+        pDefaultInstance->use(driver, variant);
+        return true;
+    }
 
-    const utils::CString& getName() const noexcept { return mName; }
-    backend::FeatureLevel getFeatureLevel() const noexcept { return mFeatureLevel; }
-    backend::RasterState getRasterState() const noexcept  { return mRasterState; }
+    [[nodiscard]]
+    backend::Handle<backend::HwProgram> getProgramWithMATDBG(Variant variant) const noexcept;
+
+    bool isVariantLit() const noexcept { return mDefinition.isVariantLit; }
+
+    const utils::CString& getName() const noexcept { return mDefinition.name; }
+    backend::FeatureLevel getFeatureLevel() const noexcept { return mDefinition.featureLevel; }
+    backend::RasterState getRasterState() const noexcept  { return mDefinition.rasterState; }
     uint32_t getId() const noexcept { return mMaterialId; }
 
     UserVariantFilterMask getSupportedVariants() const noexcept {
-        return UserVariantFilterMask(UserVariantFilterBit::ALL) & ~mVariantFilterMask;
+        return UserVariantFilterMask(UserVariantFilterBit::ALL) & ~mDefinition.variantFilterMask;
     }
 
-    Shading getShading() const noexcept { return mShading; }
-    Interpolation getInterpolation() const noexcept { return mInterpolation; }
-    BlendingMode getBlendingMode() const noexcept { return mBlendingMode; }
-    VertexDomain getVertexDomain() const noexcept { return mVertexDomain; }
-    MaterialDomain getMaterialDomain() const noexcept { return mMaterialDomain; }
-    CullingMode getCullingMode() const noexcept { return mCullingMode; }
-    TransparencyMode getTransparencyMode() const noexcept { return mTransparencyMode; }
-    bool isColorWriteEnabled() const noexcept { return mRasterState.colorWrite; }
-    bool isDepthWriteEnabled() const noexcept { return mRasterState.depthWrite; }
+    Shading getShading() const noexcept { return mDefinition.shading; }
+    Interpolation getInterpolation() const noexcept { return mDefinition.interpolation; }
+    BlendingMode getBlendingMode() const noexcept { return mDefinition.blendingMode; }
+    VertexDomain getVertexDomain() const noexcept { return mDefinition.vertexDomain; }
+    MaterialDomain getMaterialDomain() const noexcept { return mDefinition.materialDomain; }
+    CullingMode getCullingMode() const noexcept { return mDefinition.cullingMode; }
+    TransparencyMode getTransparencyMode() const noexcept { return mDefinition.transparencyMode; }
+    bool isColorWriteEnabled() const noexcept { return mDefinition.rasterState.colorWrite; }
+    bool isDepthWriteEnabled() const noexcept { return mDefinition.rasterState.depthWrite; }
     bool isDepthCullingEnabled() const noexcept {
-        return mRasterState.depthFunc != backend::RasterState::DepthFunc::A;
+        return mDefinition.rasterState.depthFunc != backend::RasterState::DepthFunc::A;
     }
-    bool isDoubleSided() const noexcept { return mDoubleSided; }
-    bool hasDoubleSidedCapability() const noexcept { return mDoubleSidedCapability; }
-    bool isAlphaToCoverageEnabled() const noexcept { return mRasterState.alphaToCoverage; }
-    float getMaskThreshold() const noexcept { return mMaskThreshold; }
-    bool hasShadowMultiplier() const noexcept { return mHasShadowMultiplier; }
-    AttributeBitset getRequiredAttributes() const noexcept { return mRequiredAttributes; }
-    RefractionMode getRefractionMode() const noexcept { return mRefractionMode; }
-    RefractionType getRefractionType() const noexcept { return mRefractionType; }
-    ReflectionMode getReflectionMode() const noexcept { return mReflectionMode; }
+    bool isDoubleSided() const noexcept { return mDefinition.doubleSided; }
+    bool hasDoubleSidedCapability() const noexcept { return mDefinition.doubleSidedCapability; }
+    bool isAlphaToCoverageEnabled() const noexcept { return mDefinition.rasterState.alphaToCoverage; }
+    float getMaskThreshold() const noexcept { return mDefinition.maskThreshold; }
+    bool hasShadowMultiplier() const noexcept { return mDefinition.hasShadowMultiplier; }
+    AttributeBitset getRequiredAttributes() const noexcept { return mDefinition.requiredAttributes; }
+    RefractionMode getRefractionMode() const noexcept { return mDefinition.refractionMode; }
+    RefractionType getRefractionType() const noexcept { return mDefinition.refractionType; }
+    ReflectionMode getReflectionMode() const noexcept { return mDefinition.reflectionMode; }
 
-    bool hasSpecularAntiAliasing() const noexcept { return mSpecularAntiAliasing; }
-    float getSpecularAntiAliasingVariance() const noexcept { return mSpecularAntiAliasingVariance; }
-    float getSpecularAntiAliasingThreshold() const noexcept { return mSpecularAntiAliasingThreshold; }
+    bool hasSpecularAntiAliasing() const noexcept { return mDefinition.specularAntiAliasing; }
+    float getSpecularAntiAliasingVariance() const noexcept { return mDefinition.specularAntiAliasingVariance; }
+    float getSpecularAntiAliasingThreshold() const noexcept { return mDefinition.specularAntiAliasingThreshold; }
+
+    backend::descriptor_binding_t getSamplerBinding(
+            std::string_view const& name) const;
+
+    const char* getParameterTransformName(std::string_view samplerName) const noexcept;
 
     bool hasMaterialProperty(Property property) const noexcept {
-        return bool(mMaterialProperties & uint64_t(property));
+        return bool(mDefinition.materialProperties & uint64_t(property));
+    }
+
+    SamplerInterfaceBlock const& getSamplerInterfaceBlock() const noexcept {
+        return mDefinition.samplerInterfaceBlock;
     }
 
     size_t getParameterCount() const noexcept {
-        return mUniformInterfaceBlock.getFieldInfoList().size() +
-               mSamplerInterfaceBlock.getSamplerInfoList().size() +
-               (mSubpassInfo.isValid ? 1 : 0);
+        return mDefinition.uniformInterfaceBlock.getFieldInfoList().size() +
+               mDefinition.samplerInterfaceBlock.getSamplerInfoList().size() +
+               (mDefinition.subpassInfo.isValid ? 1 : 0);
     }
     size_t getParameters(ParameterInfo* parameters, size_t count) const noexcept;
 
     uint32_t generateMaterialInstanceId() const noexcept { return mMaterialInstanceId++; }
 
-    void destroyPrograms(FEngine& engine);
+    void destroyPrograms(FEngine& engine,
+            Variant::type_t variantMask = 0,
+            Variant::type_t variantValue = 0);
 
     // return the id of a specialization constant specified by name for this material
     std::optional<uint32_t> getSpecializationConstantId(std::string_view name) const noexcept ;
@@ -204,6 +243,10 @@ public:
     // Return true is the value was changed.
     template<typename T, typename = Builder::is_supported_constant_parameter_t<T>>
     bool setConstant(uint32_t id, T value) noexcept;
+
+    uint8_t getPerViewLayoutIndex() const noexcept {
+        return mDefinition.perViewLayoutIndex;
+    }
 
 #if FILAMENT_ENABLE_MATDBG
     void applyPendingEdits() noexcept;
@@ -238,6 +281,8 @@ public:
 #endif
 
 private:
+    MaterialParser const& getMaterialParser() const noexcept;
+
     bool hasVariant(Variant variant) const noexcept;
     void prepareProgramSlow(Variant variant,
             CompilerPriorityQueue priorityQueue) const noexcept;
@@ -246,84 +291,30 @@ private:
     void getPostProcessProgramSlow(Variant variant,
             CompilerPriorityQueue priorityQueue) const noexcept;
     backend::Program getProgramWithVariants(Variant variant,
-            Variant vertexVariant, Variant fragmentVariant) const noexcept;
+            Variant vertexVariant, Variant fragmentVariant) const;
 
-    void processBlendingMode(MaterialParser const* parser);
+    utils::FixedCapacityVector<backend::Program::SpecializationConstant>
+            processSpecializationConstants(Builder const& builder);
 
-    void processSpecializationConstants(FEngine& engine, Material::Builder const& builder,
-            MaterialParser const* parser);
-
-    void processPushConstants(FEngine& engine, MaterialParser const* parser);
-
-    void processDepthVariants(FEngine& engine, MaterialParser const* parser);
+    void precacheDepthVariants(FEngine& engine);
 
     void createAndCacheProgram(backend::Program&& p, Variant variant) const noexcept;
 
-    // try to order by frequency of use
+    inline bool isSharedVariant(Variant const variant) const {
+        return (mDefinition.materialDomain == MaterialDomain::SURFACE) && !mIsDefaultMaterial &&
+               !mDefinition.hasCustomDepthShader && Variant::isValidDepthVariant(variant);
+    }
+
     mutable std::array<backend::Handle<backend::HwProgram>, VARIANT_COUNT> mCachedPrograms;
+    MaterialDefinition const& mDefinition;
 
-    backend::RasterState mRasterState;
-    TransparencyMode mTransparencyMode = TransparencyMode::DEFAULT;
-    bool mIsVariantLit = false;
-    backend::FeatureLevel mFeatureLevel = backend::FeatureLevel::FEATURE_LEVEL_1;
-    Shading mShading = Shading::UNLIT;
-
-    BlendingMode mBlendingMode = BlendingMode::OPAQUE;
-    std::array<backend::BlendFunction, 4> mCustomBlendFunctions = {};
-    Interpolation mInterpolation = Interpolation::SMOOTH;
-    VertexDomain mVertexDomain = VertexDomain::OBJECT;
-    MaterialDomain mMaterialDomain = MaterialDomain::SURFACE;
-    CullingMode mCullingMode = CullingMode::NONE;
-    AttributeBitset mRequiredAttributes;
-    UserVariantFilterMask mVariantFilterMask = 0;
-    RefractionMode mRefractionMode = RefractionMode::NONE;
-    RefractionType mRefractionType = RefractionType::SOLID;
-    ReflectionMode mReflectionMode = ReflectionMode::DEFAULT;
-    uint64_t mMaterialProperties = 0;
-
-    float mMaskThreshold = 0.4f;
-    float mSpecularAntiAliasingVariance = 0.0f;
-    float mSpecularAntiAliasingThreshold = 0.0f;
-
-    bool mDoubleSided = false;
-    bool mDoubleSidedCapability = false;
-    bool mHasShadowMultiplier = false;
-    bool mHasCustomDepthShader = false;
     bool mIsDefaultMaterial = false;
-    bool mSpecularAntiAliasing = false;
 
     // reserve some space to construct the default material instance
-    std::aligned_storage<sizeof(FMaterialInstance), alignof(FMaterialInstance)>::type mDefaultInstanceStorage;
-    static_assert(sizeof(mDefaultInstanceStorage) >= sizeof(mDefaultInstanceStorage));
+    mutable FMaterialInstance* mDefaultMaterialInstance = nullptr;
 
-    SamplerInterfaceBlock mSamplerInterfaceBlock;
-    BufferInterfaceBlock mUniformInterfaceBlock;
-    SubpassInfo mSubpassInfo;
-    utils::FixedCapacityVector<std::pair<utils::CString, uint8_t>> mUniformBlockBindings;
-    utils::FixedCapacityVector<Variant> mDepthVariants; // only populated with default material
-
-    using BindingUniformInfoContainer = utils::FixedCapacityVector<
-            std::pair<filament::UniformBindingPoints, backend::Program::UniformInfo>>;
-
-    BindingUniformInfoContainer mBindingUniformInfo;
-
-    using AttributeInfoContainer = utils::FixedCapacityVector<std::pair<utils::CString, uint8_t>>;
-
-    AttributeInfoContainer mAttributeInfo;
-
-    SamplerGroupBindingInfoList mSamplerGroupBindingInfoList;
-    SamplerBindingToNameMap mSamplerBindingToNameMap;
-    // Constants defined by this Material
-    utils::FixedCapacityVector<MaterialConstant> mMaterialConstants;
-    // A map from the Constant name to the mMaterialConstant index
-    std::unordered_map<std::string_view, uint32_t> mSpecializationConstantsNameToIndex;
     // current specialization constants for the HwProgram
     utils::FixedCapacityVector<backend::Program::SpecializationConstant> mSpecializationConstants;
-
-    // current push constants for the HwProgram
-    std::array<utils::FixedCapacityVector<backend::Program::PushConstant>,
-            backend::Program::SHADER_TYPE_COUNT>
-            mPushConstants;
 
 #if FILAMENT_ENABLE_MATDBG
     matdbg::MaterialKey mDebuggerId;
@@ -331,17 +322,15 @@ private:
     mutable VariantList mActivePrograms;
     mutable utils::Mutex mPendingEditsLock;
     std::unique_ptr<MaterialParser> mPendingEdits;
+    std::unique_ptr<MaterialParser> mEditedMaterialParser;
     void setPendingEdits(std::unique_ptr<MaterialParser> pendingEdits) noexcept;
-    bool hasPendingEdits() noexcept;
+    bool hasPendingEdits() const noexcept;
     void latchPendingEdits() noexcept;
 #endif
 
-    utils::CString mName;
     FEngine& mEngine;
     const uint32_t mMaterialId;
-    uint64_t mCacheId = 0;
     mutable uint32_t mMaterialInstanceId = 0;
-    std::unique_ptr<MaterialParser> mMaterialParser;
 };
 
 

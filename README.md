@@ -18,7 +18,7 @@ Filament release archives contains host-side tools that are required to generate
 Make sure you always use tools from the same release as the runtime library. This is particularly
 important for `matc` (material compiler).
 
-If you'd rather build Filament yourself, please refer to our [build manual](BUILDING.md).
+If you'd rather build Filament yourself, please refer to our [build manual](/BUILDING.md).
 
 ### Android
 
@@ -31,7 +31,7 @@ repositories {
 }
 
 dependencies {
-    implementation 'com.google.android.filament:filament-android:1.54.0'
+    implementation 'com.google.android.filament:filament-android:1.67.0'
 }
 ```
 
@@ -51,18 +51,8 @@ Here are all the libraries available in the group `com.google.android.filament`:
 iOS projects can use CocoaPods to install the latest release:
 
 ```shell
-pod 'Filament', '~> 1.54.0'
+pod 'Filament', '~> 1.67.0'
 ```
-
-### Snapshots
-
-If you prefer to live on the edge, you can download a continuous build by following the following
-steps:
-
-1. Find the [commit](https://github.com/google/filament/commits/main) you're interested in.
-2. Click the green check mark under the commit message.
-3. Click on the _Details_ link for the platform you're interested in.
-4. On the top left click _Summary_, then in the _Artifacts_ section choose the desired artifact.
 
 ## Documentation
 
@@ -73,7 +63,7 @@ steps:
 - [Materials](https://google.github.io/filament/Materials.html), the full reference
   documentation for our material system. This document explains our different material models, how
   to use the material compiler `matc` and how to write custom materials.
-- [Material Properties](https://google.github.io/filament/Material%20Properties.pdf), a reference
+- [Material Properties](https://google.github.io/filament/notes/material_properties.html), a reference
   sheet for the standard material model.
 
 ## Examples
@@ -232,7 +222,7 @@ MaterialInstance* materialInstance = material->createInstance();
 ```
 
 To learn more about materials and `matc`, please refer to the
-[materials documentation](./docs/Materials.md.html).
+[materials documentation](https://google.github.io/filament/Materials.html).
 
 To render, simply pass the `View` to the `Renderer`:
 
@@ -250,7 +240,7 @@ in the `samples/` directory. These samples are all based on `libs/filamentapp/` 
 code that creates a native window with SDL2 and initializes the Filament engine, renderer and views.
 
 For more information on how to prepare environment maps for image-based lighting please refer to
-[BUILDING.md](https://github.com/google/filament/blob/main/BUILDING.md#running-the-native-samples).
+[BUILDING.md](/BUILDING.md#running-the-native-samples).
 
 ### Android
 
@@ -282,7 +272,7 @@ To get started you can use the textures and environment maps found respectively 
 refer to their respective `URL.txt` files to know more about the original authors.
 
 Environments must be pre-processed using
-[`cmgen`](https://github.com/google/filament/blob/main/BUILDING.md#running-the-native-samples) or
+[`cmgen`](/BUILDING.md#running-the-native-samples) or
 using the `libiblprefilter` library.
 
 ## How to make contributions
@@ -341,6 +331,7 @@ and tools.
   - `filamesh`:               Mesh converter
   - `glslminifier`:           Minifies GLSL source code
   - `matc`:                   Material compiler
+  - `filament-matp`:          Material parser
   - `matinfo`                 Displays information about materials compiled with `matc`
   - `mipgen`                  Generates a series of miplevels from a source image
   - `normal-blending`:        Tool to blend normal maps

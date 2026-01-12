@@ -60,9 +60,18 @@ public:
     struct RenderPrimitive {
         static_assert(MAX_VERTEX_ATTRIBUTE_COUNT <= 16);
 
-        GLuint vao[2] = {};                                     // 4
+        GLuint vao[2] = {};                                     // 8
         GLuint elementArray = 0;                                // 4
+        GLenum indicesType = 0;                                 // 4
+
+        // The optional 32-bit handle to a GLVertexBuffer is necessary only if the referenced
+        // VertexBuffer supports buffer objects. If this is zero, then the VBO handles array is
+        // immutable.
+        Handle<HwVertexBuffer> vertexBufferWithObjects;         // 4
+
         mutable utils::bitset<uint16_t> vertexAttribArray;      // 2
+
+        uint8_t reserved[2] = {};                               // 2
 
         // if this differs from vertexBufferWithObjects->bufferObjectsVersion, this VAO needs to
         // be updated (see OpenGLDriver::updateVertexArrayObject())
@@ -76,16 +85,11 @@ public:
         // See OpenGLContext::bindVertexArray()
         uint8_t nameVersion = 0;                                // 1
 
-        // Size in bytes of indices in the index buffer
-        uint8_t indicesSize = 0;                                // 1
-
-        // The optional 32-bit handle to a GLVertexBuffer is necessary only if the referenced
-        // VertexBuffer supports buffer objects. If this is zero, then the VBO handles array is
-        // immutable.
-        Handle<HwVertexBuffer> vertexBufferWithObjects;         // 4
+        // Size in bytes of indices in the index buffer (1 or 2)
+        uint8_t indicesShift = 0;                                // 1
 
         GLenum getIndicesType() const noexcept {
-            return indicesSize == 4 ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT;
+            return indicesType;
         }
     } gl;
 
@@ -127,7 +131,7 @@ public:
     }
 
     inline bool isES2() const noexcept {
-#if defined(BACKEND_OPENGL_VERSION_GLES) && !defined(IOS)
+#if defined(BACKEND_OPENGL_VERSION_GLES) && !defined(FILAMENT_IOS)
 #   ifndef BACKEND_OPENGL_LEVEL_GLES30
             return true;
 #   else
@@ -149,7 +153,7 @@ public:
 
           void pixelStore(GLenum, GLint) noexcept;
     inline void activeTexture(GLuint unit) noexcept;
-    inline void bindTexture(GLuint unit, GLuint target, GLuint texId) noexcept;
+    inline void bindTexture(GLuint unit, GLuint target, GLuint texId, bool external) noexcept;
 
            void unbindTexture(GLenum target, GLuint id) noexcept;
            void unbindTextureUnit(GLuint unit) noexcept;
@@ -186,10 +190,10 @@ public:
     inline void viewport(GLint left, GLint bottom, GLsizei width, GLsizei height) noexcept;
     inline void depthRange(GLclampf near, GLclampf far) noexcept;
 
-    void deleteBuffers(GLsizei n, const GLuint* buffers, GLenum target) noexcept;
+    void deleteBuffer(GLuint buffer, GLenum target) noexcept;
     void deleteVertexArray(GLuint vao) noexcept;
 
-    void destroyWithContext(size_t index, std::function<void(OpenGLContext&)> const& closure) noexcept;
+    void destroyWithContext(size_t index, std::function<void(OpenGLContext&)> const& closure);
 
     // glGet*() values
     struct Gets {
@@ -199,6 +203,10 @@ public:
         GLint max_renderbuffer_size;
         GLint max_samples;
         GLint max_texture_image_units;
+        GLint max_texture_size;
+        GLint max_cubemap_texture_size;
+        GLint max_3d_texture_size;
+        GLint max_array_texture_layers;
         GLint max_transform_feedback_separate_attribs;
         GLint max_uniform_block_size;
         GLint max_uniform_buffer_bindings;
@@ -312,9 +320,26 @@ public:
         // a glFinish. So we must delay the destruction until we know the GPU is finished.
         bool delay_fbo_destruction;
 
+        // Mesa and Mozilla(web) sometimes clear the generic buffer binding when *another* buffer
+        // is destroyed, if that other buffer is bound on an *indexed* buffer binding.
+        bool rebind_buffer_after_deletion;
+
         // Force feature level 0. Typically used for low end ES3 devices with significant driver
         // bugs or performance issues.
         bool force_feature_level0;
+
+        // Some browsers, such as Firefox on Mac, struggle with slow shader compile/link times when
+        // creating programs for the default material, leading to startup stutters. This workaround
+        // prevents these stutters by not precaching depth variants of the default material for
+        // those particular browsers.
+        bool disable_depth_precache_for_default_material;
+
+        // On llvmpipe (mesa), enabling framebuffer fetch causes a crash in draw2
+        //   'OpenGL error 0x502 (GL_INVALID_OPERATION) in "draw2" at line 4389'
+        // This coincides with the use of framebuffer fetch (ColorGradingAsSubpass). We disable
+        // framebuffer fetch in the case of llvmpipe.
+        // Some Mali drivers also have problems with this (b/445721121)
+        bool disable_framebuffer_fetch_extension;
 
     } bugs = {};
 
@@ -473,13 +498,7 @@ public:
     } procs{};
 
     void unbindEverything() noexcept;
-    void synchronizeStateAndCache(size_t index) noexcept;
-    void setEs2UniformBinding(size_t index, GLuint id, void const* data, uint16_t age) noexcept {
-        mUniformBindings[index] = { id, data, age };
-    }
-    auto getEs2UniformBinding(size_t index) const noexcept {
-        return mUniformBindings[index];
-    }
+    void synchronizeStateAndCache(size_t index);
 
 #ifndef FILAMENT_SILENCE_NOT_SUPPORTED_BY_ES2
     GLuint getSamplerSlow(SamplerParams sp) const noexcept;
@@ -506,9 +525,6 @@ private:
     std::vector<std::function<void(OpenGLContext&)>> mDestroyWithNormalContext;
     RenderPrimitive mDefaultVAO;
     std::optional<GLuint> mDefaultFbo[2];
-    std::array<
-            std::tuple<GLuint, void const*, uint16_t>,
-            CONFIG_UNIFORM_BINDING_COUNT> mUniformBindings = {};
     mutable tsl::robin_map<SamplerParams, GLuint,
             SamplerParams::Hasher, SamplerParams::EqualTo> mSamplerMap;
 
@@ -559,8 +575,17 @@ private:
             {   bugs.delay_fbo_destruction,
                     "delay_fbo_destruction",
                     ""},
+            {   bugs.rebind_buffer_after_deletion,
+                    "rebind_buffer_after_deletion",
+                    ""},
             {   bugs.force_feature_level0,
                     "force_feature_level0",
+                    ""},
+            {   bugs.disable_depth_precache_for_default_material,
+                    "disable_depth_precache_for_default_material",
+                    ""},
+            {   bugs.disable_framebuffer_fetch_extension,
+                    "disable_framebuffer_fetch_extension",
                     ""},
     }};
 
@@ -591,6 +616,8 @@ private:
 
     static void initProcs(Procs* procs,
             Extensions const& exts, GLint major, GLint minor) noexcept;
+
+    static void initWorkarounds(Bugs const& bugs, Extensions* ext);
 
     static FeatureLevel resolveFeatureLevel(GLint major, GLint minor,
             Extensions const& exts,
@@ -758,7 +785,9 @@ void OpenGLContext::bindBufferRange(GLenum target, GLuint index, GLuint buffer,
 #endif
 }
 
-void OpenGLContext::bindTexture(GLuint unit, GLuint target, GLuint texId) noexcept {
+void OpenGLContext::bindTexture(GLuint unit, GLuint target, GLuint texId, bool external) noexcept {
+    //  another texture is bound to the same unit with a different target,
+    //  unbind the texture from the current target
     update_state(state.textures.units[unit].target, target, [&]() {
         activeTexture(unit);
         glBindTexture(state.textures.units[unit].target, 0);
@@ -766,7 +795,7 @@ void OpenGLContext::bindTexture(GLuint unit, GLuint target, GLuint texId) noexce
     update_state(state.textures.units[unit].id, texId, [&]() {
         activeTexture(unit);
         glBindTexture(target, texId);
-    }, target == GL_TEXTURE_EXTERNAL_OES);
+    }, external);
 }
 
 void OpenGLContext::useProgram(GLuint program) noexcept {

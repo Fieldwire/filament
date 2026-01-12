@@ -19,6 +19,8 @@ package com.google.android.filament.gltf
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.*
 import android.view.GestureDetector
@@ -30,6 +32,8 @@ import com.google.android.filament.IndirectLight
 import com.google.android.filament.Material
 import com.google.android.filament.Skybox
 import com.google.android.filament.View
+import com.google.android.filament.View.OnPickCallback
+import com.google.android.filament.gltfio.FilamentAsset
 import com.google.android.filament.utils.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -85,10 +89,10 @@ class MainActivity : Activity() {
         doubleTapDetector = GestureDetector(applicationContext, doubleTapListener)
         singleTapDetector = GestureDetector(applicationContext, singleTapListener)
 
-        modelViewer = ModelViewer(
-            surfaceView,
-            engine = Engine.Builder().config(
+        modelViewer = ModelViewer(surfaceView,
+            engine = Engine.Builder().backend(Engine.Backend.VULKAN).config(
                 Engine.Config().apply {
+                    // Remember to change the configs in release/config file
                     commandBufferSizeMB = 2 * multiplier * 3
                     perRenderPassArenaSizeMB = 2 * multiplier + 2
                     minCommandBufferSizeMB = 2 * multiplier
@@ -97,6 +101,7 @@ class MainActivity : Activity() {
                 }
             ).build()
         )
+
         viewerContent.view = modelViewer.view
         viewerContent.sunlight = modelViewer.light
         viewerContent.lightManager = modelViewer.engine.lightManager
@@ -154,13 +159,13 @@ class MainActivity : Activity() {
     }
 
     private fun createDefaultRenderables() {
-//        val buffer = assets.open("models/100_MB.glb").use { input ->
-        val buffer = assets.open("models/100_dup_objects_large.glb").use { input ->
+        val buffer = assets.open("models/21_KB.glb").use { input ->
             val bytes = ByteArray(input.available())
             input.read(bytes)
             ByteBuffer.wrap(bytes)
         }
 
+//        modelViewer.loadModelGltfAsync(buffer) { uri -> readCompressedAsset("models/$uri") }
         modelViewer.loadModelGlb(buffer)
         updateRootTransform()
     }
@@ -170,12 +175,12 @@ class MainActivity : Activity() {
         val scene = modelViewer.scene
         val ibl = "default_env"
         readCompressedAsset("envs/$ibl/${ibl}_ibl.ktx").let {
-            scene.indirectLight = KTX1Loader.createIndirectLight(engine, it)
+            scene.indirectLight = KTX1Loader.createIndirectLight(engine, it).indirectLight
             scene.indirectLight!!.intensity = 30_000.0f
             viewerContent.indirectLight = modelViewer.scene.indirectLight
         }
         readCompressedAsset("envs/$ibl/${ibl}_skybox.ktx").let {
-            scene.skybox = KTX1Loader.createSkybox(engine, it)
+            scene.skybox = KTX1Loader.createSkybox(engine, it).skybox
         }
     }
 
@@ -395,10 +400,14 @@ class MainActivity : Activity() {
         }
     }
 
+    private val handler = Handler(Looper.getMainLooper())
+
     inner class FrameCallback : Choreographer.FrameCallback {
         private val startTime = System.nanoTime()
         override fun doFrame(frameTimeNanos: Long) {
-            choreographer.postFrameCallback(this)
+            handler.postDelayed({
+                choreographer.postFrameCallback(this)
+            }, 100)
 
             loadStartFence?.let {
                 if (it.wait(Fence.Mode.FLUSH, 0) == Fence.FenceStatus.CONDITION_SATISFIED) {
@@ -485,14 +494,29 @@ class MainActivity : Activity() {
     // Just for testing purposes
     inner class SingleTapListener : GestureDetector.SimpleOnGestureListener() {
         override fun onSingleTapUp(event: MotionEvent): Boolean {
+            // GPU picking remains for renderable entity.
             modelViewer.view.pick(
                 event.x.toInt(),
                 surfaceView.height - event.y.toInt(),
                 surfaceView.handler, {
-                    val name = modelViewer.asset!!.getName(it.renderable)
-                    Log.v("Filament", "Picked ${it.renderable}: " + name)
+                    val name = modelViewer.asset?.getName(it.renderable)
+                    Log.v("Filament", "Picked (GPU) ${it.renderable}: $name")
                 },
             )
+
+            // CPU triangle picking using native screen-coordinate conversion (no Java unprojection).
+            modelViewer.asset?.let { asset ->
+                val hit = asset.pickScreen(modelViewer.view, event.x.toInt(), event.y.toInt()) // Updated usage: removed redundant asset parameter
+                if (hit != null) {
+                    val pickedName = asset.getName(hit.entity)
+                    Log.v(
+                        "Filament",
+                        "Ray-picked entity=${hit.entity} name=${pickedName} tri=${hit.triangle} dist=${hit.distance} bary=(${hit.u},${hit.v},${hit.w})"
+                    )
+                } else {
+                    Log.v("Filament", "Ray pick: no intersection")
+                }
+            }
             return super.onSingleTapUp(event)
         }
     }

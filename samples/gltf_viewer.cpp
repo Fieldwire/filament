@@ -14,6 +14,9 @@
  * limitations under the License.
  */
 
+#include "common/arguments.h"
+#include "common/configuration.h"
+
 #include <filamentapp/Config.h>
 #include <filamentapp/FilamentApp.h>
 #include <filamentapp/IBL.h>
@@ -32,6 +35,7 @@
 
 #include <gltfio/AssetLoader.h>
 #include <gltfio/FilamentAsset.h>
+#include <gltfio/Picking.h>
 #include <gltfio/ResourceLoader.h>
 #include <gltfio/TextureProvider.h>
 
@@ -52,6 +56,7 @@
 #include <math/vec4.h>
 #include <math/mat3.h>
 #include <math/norm.h>
+#include <cmath>
 
 #include <imgui.h>
 #include <filagui/ImGuiExtensions.h>
@@ -128,6 +133,10 @@ struct App {
         std::array<MaterialInstance*, OVERDRAW_LAYERS> overdrawMaterialInstances;
         VertexBuffer* fullScreenTriangleVertexBuffer;
         IndexBuffer* fullScreenTriangleIndexBuffer;
+
+        // Highlight material for triangle picking
+        Material* highlightMaterial = nullptr;
+        MaterialInstance* highlightMaterialInstance = nullptr;
     } scene;
 
     ColorGradingSettings lastColorGradingOptions = { .enabled = false };
@@ -143,6 +152,13 @@ struct App {
     AutomationEngine* automationEngine = nullptr;
     bool screenshot = false;
     uint8_t screenshotSeq = 0;
+    bool screenshotAsPPM = false;
+
+    // Triangle highlighting state
+    Entity highlightedEntity;
+    size_t highlightedTriangle = ~0u;
+    std::vector<MaterialInstance*> originalMaterialInstances; // Store all original materials for all primitives
+    bool highlightNeighbors = false;  // Toggle to highlight neighbors
 };
 
 static const char* DEFAULT_IBL = "assets/ibl/lightroom_14b";
@@ -156,19 +172,7 @@ static void printUsage(char* name) {
         "Options:\n"
         "   --help, -h\n"
         "       Prints this message\n\n"
-        "   --api, -a\n"
-        "       Specify the backend API: "
-
-// Matches logic in filament/backend/src/PlatformFactory.cpp for Backend::DEFAULT
-#if defined(IOS) || defined(__APPLE__)
-        "opengl, vulkan, or metal (default)"
-#elif defined(FILAMENT_DRIVER_SUPPORTS_VULKAN)
-        "opengl, vulkan (default), or metal"
-#else
-        "opengl (default), vulkan, or metal"
-#endif
-        "\n\n"
-
+        "API_USAGE"
         "   --feature-level=<1|2|3>, -f <1|2|3>\n"
         "       Specify the feature level to use. The default is the highest supported feature level.\n\n"
         "   --batch=<path to JSON file or 'default'>, -b\n"
@@ -204,10 +208,19 @@ static void printUsage(char* name) {
         "       Vulkan backend allows user to choose their GPU.\n"
         "       You can provide the index of the GPU or\n"
         "       a substring to match against the device name\n\n"
+        "   --screenshot-as-ppm, -d\n"
+        "       export PPM as oppose to TIFF screenshots\n\n"
+        "   --webgpu-backend=<backend>, -w\n"
+        "       You can force WebGPU to select a backend of your choice. Provided that the platform\n"
+        "       supports this backend. (See -a for argument options).\n\n"
     );
     const std::string from("SHOWCASE");
     for (size_t pos = usage.find(from); pos != std::string::npos; pos = usage.find(from, pos)) {
         usage.replace(pos, from.length(), exec_name);
+    }
+    const std::string apiUsage("API_USAGE");
+    for (size_t pos = usage.find(apiUsage); pos != std::string::npos; pos = usage.find(apiUsage, pos)) {
+        usage.replace(pos, apiUsage.length(), samples::getBackendAPIArgumentsUsage());
     }
     std::cout << usage;
 }
@@ -218,22 +231,24 @@ static std::ifstream::pos_type getFileSize(const char* filename) {
 }
 
 static int handleCommandLineArguments(int argc, char* argv[], App* app) {
-    static constexpr const char* OPTSTR = "ha:f:i:usc:rt:b:evg:";
+    static constexpr const char* OPTSTR = "ha:f:i:usc:rt:y:b:evg:dw:";
     static const struct option OPTIONS[] = {
-        { "help",            no_argument,          nullptr, 'h' },
-        { "api",             required_argument,    nullptr, 'a' },
-        { "feature-level",   required_argument,    nullptr, 'f' },
-        { "batch",           required_argument,    nullptr, 'b' },
-        { "headless",        no_argument,          nullptr, 'e' },
-        { "ibl",             required_argument,    nullptr, 'i' },
-        { "ubershader",      no_argument,          nullptr, 'u' },
-        { "actual-size",     no_argument,          nullptr, 's' },
-        { "camera",          required_argument,    nullptr, 'c' },
-        { "eyes",            required_argument,    nullptr, 'y' },
-        { "recompute-aabb",  no_argument,          nullptr, 'r' },
-        { "settings",        required_argument,    nullptr, 't' },
-        { "split-view",      no_argument,          nullptr, 'v' },
-        { "vulkan-gpu-hint", required_argument,    nullptr, 'g' },
+        { "help",              no_argument,          nullptr, 'h' },
+        { "api",               required_argument,    nullptr, 'a' },
+        { "feature-level",     required_argument,    nullptr, 'f' },
+        { "batch",             required_argument,    nullptr, 'b' },
+        { "headless",          no_argument,          nullptr, 'e' },
+        { "ibl",               required_argument,    nullptr, 'i' },
+        { "ubershader",        no_argument,          nullptr, 'u' },
+        { "actual-size",       no_argument,          nullptr, 's' },
+        { "camera",            required_argument,    nullptr, 'c' },
+        { "eyes",              required_argument,    nullptr, 'y' },
+        { "recompute-aabb",    no_argument,          nullptr, 'r' },
+        { "settings",          required_argument,    nullptr, 't' },
+        { "split-view",        no_argument,          nullptr, 'v' },
+        { "vulkan-gpu-hint",   required_argument,    nullptr, 'g' },
+        { "screenshot-as-ppm", no_argument,          nullptr, 'd' },
+        { "webgpu-backend",    required_argument,    nullptr, 'w' },
         { nullptr, 0, nullptr, 0 }
     };
     int opt;
@@ -246,15 +261,7 @@ static int handleCommandLineArguments(int argc, char* argv[], App* app) {
                 printUsage(argv[0]);
                 exit(0);
             case 'a':
-                if (arg == "opengl") {
-                    app->config.backend = Engine::Backend::OPENGL;
-                } else if (arg == "vulkan") {
-                    app->config.backend = Engine::Backend::VULKAN;
-                } else if (arg == "metal") {
-                    app->config.backend = Engine::Backend::METAL;
-                } else {
-                    std::cerr << "Unrecognized backend. Must be 'opengl'|'vulkan'|'metal'.\n";
-                }
+                app->config.backend = samples::parseArgumentsForBackend(arg);
                 break;
             case 'f':
                 if (arg == "1") {
@@ -317,6 +324,14 @@ static int handleCommandLineArguments(int argc, char* argv[], App* app) {
             }
             case 'g': {
                 app->config.vulkanGPUHint = arg;
+                break;
+            }
+            case 'd': {
+                app->screenshotAsPPM = true;
+                break;
+            }
+            case 'w': {
+                app->config.forcedWebGPUBackend = samples::parseArgumentsForBackend(arg);
                 break;
             }
         }
@@ -506,18 +521,138 @@ static void createOverdrawVisualizerEntities(Engine* engine, Scene* scene, App& 
 }
 
 static void onClick(App& app, View* view, ImVec2 pos) {
+    // existing pixel-based GPU picking
     view->pick(pos.x, pos.y, [&app](View::PickingQueryResult const& result){
-        if (const char* name = app.asset->getName(result.renderable); name) {
-            app.notificationText = name;
+        /*if (const char* name = app.asset->getName(result.renderable); name) {
+            app.notificationText = name; // will be augmented by CPU picking below
         } else {
             app.notificationText.clear();
-        }
+        }*/
     });
+
+    // CPU-side triangle picking using ray from camera.
+    Camera* cam = &view->getCamera();
+    const Viewport& vp = view->getViewport();
+    // Convert pixel to NDC (-1..1) where origin is bottom-left after y flip already applied.
+    double nx = (double(pos.x) / double(vp.width)) * 2.0 - 1.0;
+    double ny = (double(pos.y) / double(vp.height)) * 2.0 - 1.0;
+
+    // Perspective vs Ortho heuristic: perspective projection matrix has m[3][3] == 0.
+    mat4 proj = cam->getProjectionMatrix();
+    bool isPerspective = std::abs(proj[3][3]) < 1e-6;
+
+    mat4 invProj = Camera::inverseProjection(proj);
+    mat4 viewM = cam->getViewMatrix();
+    mat4 invView = inverse(viewM);
+
+    float3 rayOrigin;
+    float3 rayDir;
+    if (isPerspective) {
+        // Unproject a point on the near plane in view space.
+        double4 clip{ nx, ny, -1.0, 1.0 }; // z=-1 near
+        double4 viewSpace = invProj * clip;
+        // For perspective, direction is from origin toward the unprojected point.
+        float3 viewPoint = float3( (float)viewSpace.x, (float)viewSpace.y, (float)viewSpace.z );
+        float3 dirView = normalize(viewPoint);
+        float3 dirWorld = normalize( (invView * float4(dirView, 0)).xyz );
+        rayOrigin = cam->getPosition();
+        rayDir = dirWorld;
+    } else {
+        // Orthographic: generate world position of cursor on near plane then forward direction.
+        double4 clip{ nx, ny, -1.0, 1.0 }; // near
+        double4 viewSpace = invProj * clip;
+        float3 viewPoint = float3( (float)viewSpace.x, (float)viewSpace.y, (float)viewSpace.z );
+        float3 worldPoint = (invView * float4(viewPoint, 1)).xyz;
+        rayOrigin = worldPoint;
+        rayDir = normalize(cam->getForwardVector());
+    }
+
+    auto reg = app.asset->getPickingRegistry();
+    if (reg) {
+        // Update transforms for accuracy (could be done once per frame elsewhere).
+        Engine* engine = app.engine; // guaranteed set
+        auto& tcm = engine->getTransformManager();
+        const utils::Entity* renderables = app.asset->getRenderableEntities();
+        size_t rc = app.asset->getRenderableEntityCount();
+        if (renderables) {
+            for (size_t i = 0; i < rc; ++i) {
+                auto inst = tcm.getInstance(renderables[i]);
+                if (inst) {
+                    reg->updateTransform(renderables[i], tcm.getWorldTransform(inst));
+                }
+            }
+        }
+        auto hit = reg->pick(rayOrigin, rayDir);
+        if (hit.entity.getId() != 0 && hit.triangle >= 0) {
+            const char* name = app.asset->getName(hit.entity);
+            std::ostringstream oss;
+            if (name) {
+                oss << name << " (triangle " << hit.triangle << ")";
+            } else {
+                oss << "Entity " << hit.entity.getId() << " (triangle " << hit.triangle << ")";
+            }
+            // Include barycentric and distance for debugging.
+            oss << " dist=" << std::fixed << std::setprecision(3) << hit.distance
+                << " bary=(" << hit.bary.x << "," << hit.bary.y << "," << hit.bary.z << ")";
+            app.notificationText = oss.str();
+
+            // Highlight the entity by modifying material parameters (better approach)
+            auto& renderableManager = engine->getRenderableManager();
+            auto instance = renderableManager.getInstance(hit.entity);
+            if (instance) {
+                // Clear previous highlight first (restore original materials)
+                if (app.highlightedEntity && !app.originalMaterialInstances.empty()) {
+                    auto prevInstance = renderableManager.getInstance(app.highlightedEntity);
+                    if (prevInstance) {
+                        // Restore all original materials
+                        for (size_t primIdx = 0; primIdx < app.originalMaterialInstances.size(); primIdx++) {
+                            renderableManager.setMaterialInstanceAt(prevInstance, primIdx,
+                                                                   app.originalMaterialInstances[primIdx]);
+                        }
+                    }
+                    app.originalMaterialInstances.clear();
+                }
+
+                // Highlight all primitives by CLONING their materials and tinting RED
+                size_t primitiveCount = renderableManager.getPrimitiveCount(instance);
+                app.originalMaterialInstances.clear();
+                app.originalMaterialInstances.reserve(primitiveCount);
+
+                for (size_t primIdx = 0; primIdx < primitiveCount; primIdx++) {
+                    // Store original material for this primitive
+                    auto* originalMaterial = renderableManager.getMaterialInstanceAt(instance, primIdx);
+                    app.originalMaterialInstances.push_back(originalMaterial);
+
+                    // Clone the material and modify it to be RED
+                    auto* highlightedMaterial = originalMaterial->getMaterial()->createInstance();
+
+                    // Try to set RED color using common material parameters
+                    try {
+                        // Try baseColorFactor (most common in PBR materials)
+                        highlightedMaterial->setParameter("baseColorFactor", math::float4(1.0f, 0.0f, 0.0f, 1.0f));
+                    } catch (...) {}
+
+                    // Apply the modified material
+                    renderableManager.setMaterialInstanceAt(instance, primIdx, highlightedMaterial);
+                }
+
+                // Update tracking state
+                app.highlightedEntity = hit.entity;
+                app.highlightedTriangle = hit.triangle;
+
+                // Debug: Print that highlighting was applied
+                std::cout << "Highlighted entity " << hit.entity.getId()
+                          << " with " << primitiveCount << " primitives in RED" << std::endl;
+            }
+        }
+    }
 }
 
 static utils::Path getPathForIBLAsset(std::string_view string) {
     auto isIBL = [] (utils::Path file) -> bool {
-        return file.getExtension() == "ktx" || file.getExtension() == "hdr";
+        return file.getExtension() == "ktx" || file.getExtension() == "hdr" ||
+            file.getExtension() == "exr";
+
     };
 
     utils::Path filename{ string };
@@ -636,7 +771,7 @@ int main(int argc, char** argv) {
         // pre-compile all material variants
         std::set<Material*> materials;
         RenderableManager const& rcm = app.engine->getRenderableManager();
-        Slice<Entity> const renderables{
+        Slice<const Entity> const renderables{
                 app.asset->getRenderableEntities(), app.asset->getRenderableEntityCount() };
         for (Entity const e: renderables) {
             auto ri = rcm.getInstance(e);
@@ -673,7 +808,15 @@ int main(int argc, char** argv) {
         buffer.shrink_to_fit();
     };
 
-    auto loadResources = [&app] (const utils::Path& filename) {
+    auto setupIBL = [&app]() {
+        auto ibl = FilamentApp::get().getIBL();
+        if (ibl) {
+            app.viewer->setIndirectLight(ibl->getIndirectLight(), ibl->getSphericalHarmonics());
+            app.viewer->getSettings().view.fogSettings.fogColorTexture = ibl->getFogTexture();
+        }
+    };
+
+    auto loadResources = [&app, &setupIBL] (const utils::Path& filename) {
         // Load external textures and buffers.
         std::string const gltfPath = filename.getAbsolutePath();
         ResourceConfiguration configuration = {};
@@ -710,12 +853,7 @@ int main(int argc, char** argv) {
             instances[mi]->setStencilWrite(true);
             instances[mi]->setStencilOpDepthStencilPass(MaterialInstance::StencilOperation::INCR);
         }
-
-        auto ibl = FilamentApp::get().getIBL();
-        if (ibl) {
-            app.viewer->setIndirectLight(ibl->getIndirectLight(), ibl->getSphericalHarmonics());
-            app.viewer->getSettings().view.fogSettings.fogColorTexture = ibl->getFogTexture();
-        }
+        setupIBL();
     };
 
     auto setup = [&](Engine* engine, View* view, Scene* scene) {
@@ -764,6 +902,9 @@ int main(int argc, char** argv) {
             options.sleepDuration = 0.0;
             options.exportScreenshots = true;
             options.exportSettings = true;
+            options.exportFormat = app.screenshotAsPPM
+                                           ? AutomationEngine::Options::ExportFormat::PPM
+                                           : AutomationEngine::Options::ExportFormat::TIFF;
             app.automationEngine->setOptions(options);
             app.viewer->stopAnimation();
         }
@@ -777,17 +918,23 @@ int main(int argc, char** argv) {
             }
         }
 
-        app.materials = (app.materialSource == JITSHADER) ?
-                createJitShaderProvider(engine, OPTIMIZE_MATERIALS) :
-                createUbershaderProvider(engine, UBERARCHIVE_DEFAULT_DATA, UBERARCHIVE_DEFAULT_SIZE);
+        app.materials = (app.materialSource == JITSHADER)
+                                ? createJitShaderProvider(engine, OPTIMIZE_MATERIALS,
+                                          samples::getJitMaterialVariantFilter(app.config.backend))
+                                : createUbershaderProvider(engine, UBERARCHIVE_DEFAULT_DATA,
+                                          UBERARCHIVE_DEFAULT_SIZE);
 
-        app.assetLoader = AssetLoader::create({engine, app.materials, app.names });
-
-        // AssetConfigurationExtended ext {filename.c_str()};
-        // AssetConfiguration config = {engine, app.materials, app.names };
-        // config.ext = &ext;
-        // app.assetLoader = AssetLoader::create(config);
-
+        // app.assetLoader = AssetLoader::create({ engine, app.materials, app.names });
+        AssetConfigurationExtended ext = {
+                .gltfPath = filename.c_str(),
+            };
+        AssetConfiguration config = {
+                .engine = engine,
+                .materials = app.materials,
+                .names = app.names,
+                .ext = &ext,
+            };
+        app.assetLoader = AssetLoader::create(config);
         app.mainCamera = &view->getCamera();
         if (filename.isEmpty()) {
             app.asset = app.assetLoader->createAsset(
@@ -821,8 +968,37 @@ int main(int argc, char** argv) {
             const ImVec4 yellow(1.0f,1.0f,0.0f,1.0f);
 
             if (!app.notificationText.empty()) {
-                ImGui::TextColored(yellow, "Picked %s", app.notificationText.c_str());
+                // Word-wrap the picked notification within the available content region.
+                ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x);
+                ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetColorU32(yellow));
+                ImGui::TextWrapped("Picked %s", app.notificationText.c_str());
+                ImGui::PopStyleColor();
+                ImGui::PopTextWrapPos();
                 ImGui::Spacing();
+
+                // Add Clear Highlight button
+                if (app.highlightedEntity && app.highlightedTriangle != ~0u) {
+                    if (ImGui::Button("Clear Highlight")) {
+                        auto& renderableManager = engine->getRenderableManager();
+                        auto instance = renderableManager.getInstance(app.highlightedEntity);
+
+                        // Restore all original materials
+                        if (instance && !app.originalMaterialInstances.empty()) {
+                            for (size_t primIdx = 0; primIdx < app.originalMaterialInstances.size(); primIdx++) {
+                                renderableManager.setMaterialInstanceAt(instance, primIdx,
+                                                                       app.originalMaterialInstances[primIdx]);
+                            }
+                        }
+
+                        // Clear tracking state
+                        app.highlightedEntity = {};
+                        app.highlightedTriangle = ~0u;
+                        app.originalMaterialInstances.clear();
+                        app.notificationText.clear();
+
+                        std::cout << "Highlight cleared" << std::endl;
+                    }
+                }
             }
 
             float const progress = app.resourceLoader->asyncGetLoadProgress();
@@ -945,12 +1121,22 @@ int main(int argc, char** argv) {
                                     "d.shadowmap.display_shadow_texture_channel"), 0, 3);
                     ImGui::Unindent();
                 }
+
+                bool cameraFrustum = FilamentApp::get().isCameraFrustumEnabled();
+                ImGui::Checkbox("Show Camera Frustum", &cameraFrustum);
+                FilamentApp::get().setCameraFrustumEnabled(cameraFrustum);
+
+                bool shadowFrustum = FilamentApp::get().isDirectionalShadowFrustumEnabled();
+                ImGui::Checkbox("Show Shadow Frustum", &shadowFrustum);
+                FilamentApp::get().setDirectionalShadowFrustumEnabled(shadowFrustum);
+
                 bool debugFroxelVisualization;
                 if (debug.getProperty("d.lighting.debug_froxel_visualization",
                         &debugFroxelVisualization)) {
                     ImGui::Checkbox("Froxel Visualization", &debugFroxelVisualization);
                     debug.setProperty("d.lighting.debug_froxel_visualization",
                             debugFroxelVisualization);
+                    FilamentApp::get().setFroxelGridEnabled(debugFroxelVisualization);
                 }
 
                 auto dataSource = debug.getDataSource("d.view.frame_info");
@@ -1047,6 +1233,8 @@ int main(int argc, char** argv) {
         delete app.resourceLoader;
         delete app.stbDecoder;
         delete app.ktxDecoder;
+        delete app.automationSpec;
+        delete app.automationEngine;
 
         AssetLoader::destroy(&app.assetLoader);
     };
@@ -1167,6 +1355,10 @@ int main(int argc, char** argv) {
         Skybox* skybox = scene->getSkybox();
         applySettings(engine, app.viewer->getSettings().viewer, &camera, skybox, renderer);
 
+        // FIMXE: This applySettings() is done here instead of in AutomationEngine.cpp because
+        // we need access to the Renderer, which AutomationEngine does not provide.
+        applySettings(engine, app.viewer->getSettings().debug, renderer);
+
         // technically we don't need to do this each frame
         auto& tcm = engine->getTransformManager();
         TransformManager::Instance const& root = tcm.getInstance(app.rootTransformEntity);
@@ -1193,14 +1385,33 @@ int main(int argc, char** argv) {
         } else {
             view->setColorGrading(nullptr);
         }
+
+        // After updating transforms, refresh picking world transforms once per frame for all renderables.
+        if (app.asset) {
+            auto reg = app.asset->getPickingRegistry();
+            if (reg) {
+                auto& tcm = engine->getTransformManager();
+                const utils::Entity* renderables = app.asset->getRenderableEntities();
+                size_t rc = app.asset->getRenderableEntityCount();
+                if (renderables) {
+                    for (size_t i = 0; i < rc; ++i) {
+                        auto inst = tcm.getInstance(renderables[i]);
+                        if (inst) {
+                            reg->updateTransform(renderables[i], tcm.getWorldTransform(inst));
+                        }
+                    }
+                }
+            }
+        }
     };
 
     auto postRender = [&app](Engine* engine, View* view, Scene*, Renderer* renderer) {
         if (app.screenshot) {
             std::ostringstream stringStream;
             stringStream << "screenshot" << std::setfill('0') << std::setw(2) << +app.screenshotSeq;
+            std::string const ext = app.screenshotAsPPM ? ".ppm" : ".tif";
             AutomationEngine::exportScreenshot(
-                    view, renderer, stringStream.str() + ".ppm", false, app.automationEngine);
+                    view, renderer, stringStream.str() + ext, false, app.automationEngine);
             ++app.screenshotSeq;
             app.screenshot = false;
         }
@@ -1239,7 +1450,7 @@ int main(int argc, char** argv) {
         filename = getPathForIBLAsset(path);
         if (!filename.isEmpty()) {
             FilamentApp::get().loadIBL(path);
-            return;
+            setupIBL();
         }
     });
 

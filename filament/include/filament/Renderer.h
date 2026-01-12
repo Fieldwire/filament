@@ -88,24 +88,35 @@ public:
      * @see getFrameInfoHistory()
      */
     struct FrameInfo {
+        /** duration in nanosecond since epoch of std::steady_clock */
         using time_point_ns = int64_t;
+        /** duration in nanosecond on the std::steady_clock */
         using duration_ns = int64_t;
+        static constexpr time_point_ns INVALID = -1;    //!< value not supported
+        static constexpr time_point_ns PENDING = -2;    //!< value not yet available
         uint32_t frameId;                   //!< monotonically increasing frame identifier
-        duration_ns frameTime;              //!< frame duration on the GPU in nanosecond [ns]
-        duration_ns denoisedFrameTime;      //!< denoised frame duration on the GPU in [ns]
+        duration_ns gpuFrameDuration;       //!< frame duration on the GPU in nanosecond [ns]
+        duration_ns denoisedGpuFrameDuration; //!< denoised frame duration on the GPU in [ns]
         time_point_ns beginFrame;           //!< Renderer::beginFrame() time since epoch [ns]
         time_point_ns endFrame;             //!< Renderer::endFrame() time since epoch [ns]
         time_point_ns backendBeginFrame;    //!< Backend thread time of frame start since epoch [ns]
         time_point_ns backendEndFrame;      //!< Backend thread time of frame end since epoch [ns]
+        time_point_ns gpuFrameComplete;     //!< GPU thread time of frame end since epoch [ns] or 0
+        time_point_ns vsync;                //!< VSYNC time of this frame since epoch [ns]
+        time_point_ns displayPresent;       //!< Actual presentation time of this frame since epoch [ns]
+        time_point_ns presentDeadline;      //!< deadline for queuing a frame [ns]
+        duration_ns displayPresentInterval; //!< display refresh rate [ns]
+        duration_ns compositionToPresentLatency; //!< time between the start of composition and the expected present time [ns]
+        time_point_ns expectedPresentTime;  //!< system's expected presentation time since epoch [ns]
     };
 
     /**
-     * Retrieve an historic of frame timing information. The maximum frame history size is
+     * Retrieve a history of frame timing information. The maximum frame history size is
      * given by getMaxFrameHistorySize().
      * @param historySize requested history size. The returned vector could be smaller.
      * @return A vector of FrameInfo.
      */
-    utils::FixedCapacityVector<Renderer::FrameInfo> getFrameInfoHistory(
+    utils::FixedCapacityVector<FrameInfo> getFrameInfoHistory(
             size_t historySize = 1) const noexcept;
 
     /**
@@ -280,9 +291,23 @@ public:
     void skipFrame(uint64_t vsyncSteadyClockTimeNano = 0u);
 
     /**
-     * Set-up a frame for this Renderer.
+     * Returns true if the current frame should be rendered.
      *
-     * beginFrame() manages frame pacing, and returns whether or not a frame should be drawn. The
+     * This is a convenience method that returns the same value as beginFrame().
+     *
+     * @return
+     *      *false* the current frame should be skipped,
+     *      *true* the current frame can be rendered
+     *
+     * @see
+     * beginFrame()
+     */
+    bool shouldRenderFrame() const noexcept;
+
+    /**
+     * Set up a frame for this Renderer.
+     *
+     * beginFrame() manages frame-pacing, and returns whether a frame should be drawn. The
      * goal of this is to skip frames when the GPU falls behind in order to keep the frame
      * latency low.
      *
@@ -508,7 +533,7 @@ public:
      *
      *  Framebuffer as seen on User buffer (PixelBufferDescriptor&)
      *  screen
-     *  
+     *
      *      +--------------------+
      *      |                    |                .stride         .alignment
      *      |                    |         ----------------------->-->
@@ -537,6 +562,9 @@ public:
      * OpenGL only: if issuing a readPixels on a RenderTarget backed by a Texture that had data
      * uploaded to it via setImage, the data returned from readPixels will be y-flipped with respect
      * to the setImage call.
+     *
+     * Note: the texture that backs the COLOR attachment for `renderTarget` must have
+     * TextureUsage::BLIT_SRC as part of its usage.
      *
      * @remark
      * readPixels() is intended for debugging and testing. It will impact performance significantly.
@@ -628,6 +656,19 @@ public:
      * getUserTime()
      */
     void resetUserTime();
+
+
+    /**
+     * Requests the next frameCount frames to be skipped. For Debugging.
+     * @param frameCount number of frames to skip.
+     */
+    void skipNextFrames(size_t frameCount) const noexcept;
+
+    /**
+     * Remainder count of frame to be skipped
+     * @return remaining frames to be skipped
+     */
+    size_t getFrameToSkipCount() const noexcept;
 
 protected:
     // prevent heap allocation

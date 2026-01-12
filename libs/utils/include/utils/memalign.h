@@ -32,7 +32,7 @@ namespace utils {
 inline void* aligned_alloc(size_t size, size_t align) noexcept {
     // 'align' must be a power of two and a multiple of sizeof(void*)
     align = (align < sizeof(void*)) ? sizeof(void*) : align;
-    assert(align && !(align & align - 1));
+    assert(align && !(align & (align - 1)));
     assert((align % sizeof(void*)) == 0);
 
     void* p = nullptr;
@@ -40,7 +40,7 @@ inline void* aligned_alloc(size_t size, size_t align) noexcept {
 #if defined(WIN32)
     p = ::_aligned_malloc(size, align);
 #else
-    ::posix_memalign(&p, align, size);
+    (void) ::posix_memalign(&p, align, size);
 #endif
     return p;
 }

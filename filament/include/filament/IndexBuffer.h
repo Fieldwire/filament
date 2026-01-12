@@ -26,6 +26,7 @@
 #include <backend/BufferDescriptor.h>
 
 #include <utils/compiler.h>
+#include <utils/StaticString.h>
 
 #include <stdint.h>
 #include <stddef.h>
@@ -95,8 +96,20 @@ public:
          * @param name A string to identify this IndexBuffer
          * @param len Length of name, should be less than or equal to 128
          * @return This Builder, for chaining calls.
+         * @deprecated Use name(utils::StaticString const&) instead.
          */
-        // Builder& name(const char* UTILS_NONNULL name, size_t len) noexcept; // inherited
+        UTILS_DEPRECATED
+        Builder& name(const char* UTILS_NONNULL name, size_t len) noexcept;
+
+        /**
+         * Associate an optional name with this IndexBuffer for debugging purposes.
+         *
+         * name will show in error messages and should be kept as short as possible.
+         *
+         * @param name A string literal to identify this IndexBuffer
+         * @return This Builder, for chaining calls.
+         */
+        Builder& name(utils::StaticString const& name) noexcept;
 
         /**
          * Creates the IndexBuffer object and returns a pointer to it. After creation, the index
@@ -124,7 +137,7 @@ public:
      * @param buffer A BufferDescriptor representing the data used to initialize the IndexBuffer.
      *               BufferDescriptor points to raw, untyped data that will be interpreted as
      *               either 16-bit or 32-bits indices based on the Type of this IndexBuffer.
-     * @param byteOffset Offset in *bytes* into the IndexBuffer
+     * @param byteOffset Offset in *bytes* into the IndexBuffer. Must be multiple of 4.
      */
     void setBuffer(Engine& engine, BufferDescriptor&& buffer, uint32_t byteOffset = 0);
 

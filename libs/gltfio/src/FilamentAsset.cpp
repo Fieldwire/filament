@@ -17,6 +17,7 @@
 #include "FFilamentAsset.h"
 
 #include <gltfio/Animator.h>
+#include <gltfio/Picking.h>
 
 #include <filament/RenderableManager.h>
 #include <filament/Scene.h>
@@ -37,12 +38,8 @@ FFilamentAsset::~FFilamentAsset() {
     // Free transient load-time data if they haven't been freed yet.
     releaseSourceData();
 
-    // Destroy all instance objects. Instance entities / components are
-    // destroyed later in this method because they are owned by the asset
-    // (except for the root of the instance).
     for (FFilamentInstance* instance : mInstances) {
         mEntityManager->destroy(instance->mRoot);
-        delete instance;
     }
 
     delete mWireframe;
@@ -76,6 +73,12 @@ FFilamentAsset::~FFilamentAsset() {
         }
     }
 
+    // FilamentInstances need to be destroyed after the renderables have been destroyed
+    // so that there are no dangling MaterialInstance around
+    for (FFilamentInstance* instance : mInstances) {
+        delete instance;
+    }
+
     for (auto vb : mVertexBuffers) {
         mEngine->destroy(vb);
     }
@@ -107,7 +110,7 @@ void FFilamentAsset::addTextureBinding(MaterialInstance* materialInstance,
         TextureProvider::TextureFlags flags) {
     if (!srcTexture->image && !srcTexture->basisu_image) {
 #ifndef NDEBUG
-        slog.w << "Texture is missing image (" << srcTexture->name << ")." << io::endl;
+        slog.w << "Texture is missing image (" << srcTexture->name << ")." << utils::io::endl;
 #endif
         return;
     }
@@ -437,6 +440,11 @@ const char* FilamentAsset::getSceneName(size_t sceneIndex) const noexcept {
 void FilamentAsset::addEntitiesToScene(Scene& targetScene, const Entity* entities, size_t count,
         SceneMask sceneFilter) const {
     downcast(this)->addEntitiesToScene(targetScene, entities, count, sceneFilter);
+}
+
+PickingRegistry* FilamentAsset::getPickingRegistry() noexcept {
+    auto* impl = static_cast<FFilamentAsset*>(this);
+    return &impl->mPickingRegistry;
 }
 
 } // namespace filament::gltfio

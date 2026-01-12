@@ -32,6 +32,7 @@
 
 #include <unordered_map>
 #include <variant>
+#include <vector>
 
 namespace filament::gltfio {
 
@@ -319,6 +320,9 @@ bool AssetLoaderExtended::createPrimitive(Input* input, Output* out,
     bool const isUnlit = prim->material ? prim->material->unlit : false;
     uint8_t jobType = 0;
 
+    // Track position accessor for picking data population later.
+    const cgltf_accessor* positionAccessor = nullptr;
+
     // In glTF, each primitive may or may not have an index buffer.
     const cgltf_accessor* indexAccessor = prim->indices;
     if (indexAccessor || prim->attributes_count > 0) {
@@ -343,6 +347,11 @@ bool AssetLoaderExtended::createPrimitive(Input* input, Output* out,
         cgltf_accessor const* accessor = attribute.data;
 
         Attribute const cattr{atype, index};
+
+        // Store position accessor for picking support.
+        if (atype == cgltf_attribute_type_position) {
+            positionAccessor = accessor;
+        }
 
         // At a minimum, surface orientation requires normals to be present in the source data.
         // Here we re-purpose the normals slot to point to the quats that get computed later.
@@ -557,6 +566,9 @@ bool AssetLoaderExtended::createPrimitive(Input* input, Output* out,
     }
 
     outSlots.insert(outSlots.end(), slots.begin(), slots.end());
+
+    // Removed picking data population: Primitive no longer stores CPU picking arrays.
+
     return true;
 }
 

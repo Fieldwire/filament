@@ -23,6 +23,9 @@
 #include <backend/CallbackHandler.h>
 
 #include <utils/compiler.h>
+#include <utils/StaticString.h>
+
+#include <math/mat3.h>
 
 #include <stdint.h>
 
@@ -148,8 +151,20 @@ public:
          * @param name A string to identify this Stream
          * @param len Length of name, should be less than or equal to 128
          * @return This Builder, for chaining calls.
+         * @deprecated Use name(utils::StaticString const&) instead.
          */
-        // Builder& name(const char* UTILS_NONNULL name, size_t len) noexcept; // inherited
+        UTILS_DEPRECATED
+        Builder& name(const char* UTILS_NONNULL name, size_t len) noexcept;
+
+        /**
+         * Associate an optional name with this Stream for debugging purposes.
+         *
+         * name will show in error messages and should be kept as short as possible.
+         *
+         * @param name A string literal to identify this Stream
+         * @return This Builder, for chaining calls.
+         */
+        Builder& name(utils::StaticString const& name) noexcept;
 
         /**
          * Creates the Stream object and returns a pointer to it.
@@ -189,9 +204,10 @@ public:
      *                   The callback tales two arguments: the AHardwareBuffer and the userdata.
      * @param userdata   Optional closure data. Filament will pass this into the callback when it
      *                   releases the image.
+     * @param transform  Optional transform matrix to apply to the image.
      */
     void setAcquiredImage(void* UTILS_NONNULL image,
-            Callback UTILS_NONNULL callback, void* UTILS_NULLABLE userdata) noexcept;
+            Callback UTILS_NONNULL callback, void* UTILS_NULLABLE userdata, math::mat3f const& transform = math::mat3f()) noexcept;
 
     /**
      * @see setAcquiredImage(void*, Callback, void*)
@@ -202,10 +218,11 @@ public:
      *                   It callback tales two arguments: the AHardwareBuffer and the userdata.
      * @param userdata   Optional closure data. Filament will pass this into the callback when it
      *                   releases the image.
+     * @param transform  Optional transform matrix to apply to the image.
      */
     void setAcquiredImage(void* UTILS_NONNULL image,
             backend::CallbackHandler* UTILS_NULLABLE handler,
-            Callback UTILS_NONNULL callback, void* UTILS_NULLABLE userdata) noexcept;
+            Callback UTILS_NONNULL callback, void* UTILS_NULLABLE userdata, math::mat3f const& transform = math::mat3f()) noexcept;
 
     /**
      * Updates the size of the incoming stream. Whether this value is used is

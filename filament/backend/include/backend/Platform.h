@@ -25,8 +25,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <atomic>
+
 namespace filament::backend {
 
+class CallbackHandler;
 class Driver;
 
 /**
@@ -40,6 +43,160 @@ public:
     struct SwapChain {};
     struct Fence {};
     struct Stream {};
+    struct Sync {};
+
+    using SyncCallback = void(*)(Sync* UTILS_NONNULL sync, void* UTILS_NULLABLE userData);
+
+    class ExternalImageHandle;
+
+    class ExternalImage {
+        friend class ExternalImageHandle;
+        std::atomic_uint32_t mRefCount{0};
+    protected:
+        virtual ~ExternalImage() noexcept;
+    };
+
+    class ExternalImageHandle {
+        ExternalImage* UTILS_NULLABLE mTarget = nullptr;
+        static void incref(ExternalImage* UTILS_NULLABLE p) noexcept;
+        static void decref(ExternalImage* UTILS_NULLABLE p) noexcept;
+
+    public:
+        ExternalImageHandle() noexcept;
+        ~ExternalImageHandle() noexcept;
+        explicit ExternalImageHandle(ExternalImage* UTILS_NULLABLE p) noexcept;
+        ExternalImageHandle(ExternalImageHandle const& rhs) noexcept;
+        ExternalImageHandle(ExternalImageHandle&& rhs) noexcept;
+        ExternalImageHandle& operator=(ExternalImageHandle const& rhs) noexcept;
+        ExternalImageHandle& operator=(ExternalImageHandle&& rhs) noexcept;
+
+        explicit operator bool() const noexcept { return mTarget != nullptr; }
+
+        ExternalImage* UTILS_NULLABLE get() noexcept { return mTarget; }
+        ExternalImage const* UTILS_NULLABLE get() const noexcept { return mTarget; }
+
+        ExternalImage* UTILS_NULLABLE operator->() noexcept { return mTarget; }
+        ExternalImage const* UTILS_NULLABLE operator->() const noexcept { return mTarget; }
+
+        ExternalImage& operator*() noexcept { return *mTarget; }
+        ExternalImage const& operator*() const noexcept { return *mTarget; }
+
+        void clear() noexcept;
+        void reset(ExternalImage* UTILS_NULLABLE p) noexcept;
+
+    private:
+        friend utils::io::ostream& operator<<(utils::io::ostream& out,
+                ExternalImageHandle const& handle);
+    };
+
+    using ExternalImageHandleRef = ExternalImageHandle const&;
+
+    struct CompositorTiming {
+        /** duration in nanosecond since epoch of std::steady_clock */
+        using time_point_ns = int64_t;
+        /** duration in nanosecond on the std::steady_clock */
+        using duration_ns = int64_t;
+        static constexpr time_point_ns INVALID = -1;    //!< value not supported
+        /**
+         * The timestamp [ns] since epoch of the next time the compositor will begin composition.
+         * This is effectively the deadline for when the compositor must receive a newly queued
+         * frame.
+         */
+        time_point_ns compositeDeadline;
+
+        /**
+         * The time delta [ns] between subsequent composition events.
+         */
+        duration_ns compositeInterval;
+
+        /**
+         * The time delta [ns] between the start of composition and the expected present time of
+         * that composition. This can be used to estimate the latency of the actual present time.
+         */
+        duration_ns compositeToPresentLatency;
+
+        /**
+         * The timestamp [ns] since epoch of the system's expected presentation time.
+         * INVALID if not supported.
+         */
+        time_point_ns expectedPresentTime;
+
+        /**
+         * The timestamp [ns] since epoch of the current frame's start (i.e. vsync)
+         * INVALID if not supported.
+         */
+        time_point_ns frameTime;
+
+        /**
+         * The timestamp [ns] since epoch of the current frame's deadline
+         * INVALID if not supported.
+         */
+        time_point_ns frameTimelineDeadline;
+    };
+
+    struct FrameTimestamps {
+        /** duration in nanosecond since epoch of std::steady_clock */
+        using time_point_ns = int64_t;
+        static constexpr time_point_ns INVALID = -1;    //!< value not supported
+        static constexpr time_point_ns PENDING = -2;    //!< value not yet available
+
+        /**
+         * The time the application requested this frame be presented.
+         * If the application does not request a presentation time explicitly,
+         * this will correspond to buffer's queue time.
+         */
+        time_point_ns requestedPresentTime;
+
+        /**
+         * The time when all the application's rendering to the surface was completed.
+         */
+        time_point_ns acquireTime;
+
+        /**
+         * The time when the compositor selected this frame as the one to use for the next
+         * composition. This is the earliest indication that the frame was submitted in time.
+         */
+        time_point_ns latchTime;
+
+        /**
+         * The first time at which the compositor began preparing composition for this frame.
+         * Zero if composition was handled by the display and the compositor didn't do any
+         * rendering.
+         */
+        time_point_ns firstCompositionStartTime;
+
+        /**
+         * The last time at which the compositor began preparing composition for this frame, for
+         * frames composited more than once. Zero if composition was handled by the display and the
+         * compositor didn't do any rendering.
+         */
+        time_point_ns lastCompositionStartTime;
+
+        /**
+         * The time at which the compositor's rendering work for this frame finished. This will be
+         * INVALID if composition was handled by the display and the compositor didn't do any
+         * rendering.
+         */
+        time_point_ns gpuCompositionDoneTime;
+
+        /**
+         * The time at which this frame started to scan out to the physical display.
+         */
+        time_point_ns displayPresentTime;
+
+        /**
+         * The time when the buffer became available for reuse as a buffer the client can target
+         * without blocking. This is generally the point when all read commands of the buffer have
+         * been submitted, but not necessarily completed.
+         */
+        time_point_ns dequeueReadyTime;
+
+        /**
+         * The time at which all reads for the purpose of display/composition were completed for
+         * this frame.
+         */
+        time_point_ns releaseTime;
+    };
 
     /**
      * The type of technique for stereoscopic rendering. (Note that the materials used will need to
@@ -61,19 +218,42 @@ public:
         MULTIVIEW,
     };
 
+    /**
+     * This controls the priority level for GPU work scheduling, which helps prioritize the
+     * submitted GPU work and enables preemption.
+     */
+    enum class GpuContextPriority : uint8_t {
+        /**
+         * Backend default GPU context priority (typically MEDIUM)
+         */
+        DEFAULT,
+        /**
+         * For non-interactive, deferrable workloads. This should not interfere with standard
+         * applications.
+         */
+        LOW,
+        /**
+         * The default priority level for standard applications.
+         */
+        MEDIUM,
+        /**
+         * For high-priority, latency-sensitive workloads that are more important than standard
+         * applications.
+         */
+        HIGH,
+        /**
+         * The highest priority, intended for system-critical, real-time applications where missing
+         * deadlines is unacceptable (e.g., VR/AR compositors or other system-critical tasks).
+         */
+        REALTIME,
+    };
+
     struct DriverConfig {
         /**
          * Size of handle arena in bytes. Setting to 0 indicates default value is to be used.
          * Driver clamps to valid values.
          */
         size_t handleArenaSize = 0;
-
-        /**
-         * This number of most-recently destroyed textures will be tracked for use-after-free.
-         * Throws an exception when a texture is freed but still bound to a SamplerGroup and used in
-         * a draw call. 0 disables completely. Currently only respected by the Metal backend.
-         */
-        size_t textureUseAfterFreePoolSize = 0;
 
         size_t metalUploadBufferSizeBytes = 512 * 1024;
 
@@ -84,9 +264,20 @@ public:
         bool disableParallelShaderCompile = false;
 
         /**
+         * Set to `true` to forcibly disable amortized shader compilation in the backend.
+         * Currently only honored by the GL backend.
+         */
+        bool disableAmortizedShaderCompile = true;
+
+        /**
          * Disable backend handles use-after-free checks.
          */
         bool disableHandleUseAfterFreeCheck = false;
+
+        /**
+         * Disable backend handles tags for heap allocated (fallback) handles
+         */
+        bool disableHeapHandleTags = false;
 
         /**
          * Force GLES2 context if supported, or pretend the context is ES2. Only meaningful on
@@ -98,6 +289,34 @@ public:
          * Sets the technique for stereoscopic rendering.
          */
         StereoscopicType stereoscopicType = StereoscopicType::NONE;
+
+        /**
+         * Assert the native window associated to a SwapChain is valid when calling makeCurrent().
+         * This is only supported for:
+         *      - PlatformEGLAndroid
+         */
+        bool assertNativeWindowIsValid = false;
+
+        /**
+         * The action to take if a Drawable cannot be acquired. If true, the
+         * frame is aborted instead of panic. This is only supported for:
+         *      - PlatformMetal
+         */
+        bool metalDisablePanicOnDrawableFailure = false;
+
+        /**
+         * GPU context priority level. Controls GPU work scheduling and preemption.
+         * This is only supported for:
+         *      - PlatformEGL
+         */
+        GpuContextPriority gpuContextPriority = GpuContextPriority::DEFAULT;
+
+        /**
+         * Bypass the staging buffer because the device is of Unified Memory Architecture.
+         * This is only supported for:
+         *      - VulkanPlatform
+         */
+        bool vulkanEnableStagingBufferBypass = false;
     };
 
     Platform() noexcept;
@@ -118,13 +337,13 @@ public:
      * @param sharedContext an optional shared context. This is not meaningful with all graphic
      *                      APIs and platforms.
      *                      For EGL platforms, this is an EGLContext.
-     * 
+     *
      * @param driverConfig  specifies driver initialization parameters
      *
      * @return nullptr on failure, or a pointer to the newly created driver.
      */
-    virtual backend::Driver* UTILS_NULLABLE createDriver(void* UTILS_NULLABLE sharedContext,
-            const DriverConfig& driverConfig) noexcept = 0;
+    virtual Driver* UTILS_NULLABLE createDriver(void* UTILS_NULLABLE sharedContext,
+            const DriverConfig& driverConfig) = 0;
 
     /**
      * Processes the platform's event queue when called from its primary event-handling thread.
@@ -134,6 +353,65 @@ public:
      * thread, or if the platform does not need to perform any special processing.
      */
     virtual bool pumpEvents() noexcept;
+
+    // --------------------------------------------------------------------------------------------
+    // Swapchain timing APIs
+
+    /**
+     * Whether this platform supports compositor timing querying.
+     *
+     * @return true if this Platform supports compositor timings, false otherwise [default]
+     * @see queryCompositorTiming()
+     * @see setPresentFrameId()
+     * @see queryFrameTimestamps()
+     */
+    virtual bool isCompositorTimingSupported() const noexcept;
+
+    /**
+     * If compositor timing is supported, fills the provided CompositorTiming structure
+     * with timing information form the compositor the swapchain's native window is using.
+     * The swapchain'snative window must be valid (i.e. not a headless swapchain).
+     * @param swapchain to query the compositor timing from
+     * @return true on success, false otherwise (e.g. if not supported)
+     * @see isCompositorTimingSupported()
+     */
+    virtual bool queryCompositorTiming(SwapChain const* UTILS_NONNULL swapchain,
+            CompositorTiming* UTILS_NONNULL outCompositorTiming) const noexcept;
+
+    /**
+     * Associate a generic frameId which must be monotonically increasing (albeit not strictly) with
+     * the next frame to be presented on the specified swapchain.
+     *
+     * This must be called from the backend thread.
+     *
+     * @param swapchain
+     * @param frameId
+     * @return true on success, false otherwise
+     * @see isCompositorTimingSupported()
+     * @see queryFrameTimestamps()
+     */
+    virtual bool setPresentFrameId(SwapChain const* UTILS_NONNULL swapchain,
+            uint64_t frameId) noexcept;
+
+    /**
+     * If compositor timing is supported, fills the provided FrameTimestamps structure
+     * with timing information of a given frame, identified by the frame id, of the specified
+     * swapchain. The system only keeps a limited history of frames timings.
+     *
+     * This API is thread safe and can be called from any thread.
+     *
+     * @param swapchain swapchain to query the timestamps of
+     * @param frameId frame we're interested it
+     * @param outFrameTimestamps output structure receiving the timestamps
+     * @return true if successful, false otherwise
+     * @see isCompositorTimingSupported()
+     * @see setPresentFrameId()
+     */
+    virtual bool queryFrameTimestamps(SwapChain const* UTILS_NONNULL swapchain,
+            uint64_t frameId, FrameTimestamps* UTILS_NONNULL outFrameTimestamps) const noexcept;
+
+    // --------------------------------------------------------------------------------------------
+    // Caching APIs
 
     /**
      * InsertBlobFunc is an Invocable to an application-provided function that a
@@ -226,6 +504,9 @@ public:
      */
     size_t retrieveBlob(const void* UTILS_NONNULL key, size_t keySize,
             void* UTILS_NONNULL value, size_t valueSize);
+
+    // --------------------------------------------------------------------------------------------
+    // Debugging APIs
 
     using DebugUpdateStatFunc = utils::Invocable<void(const char* UTILS_NONNULL key, uint64_t value)>;
 

@@ -20,6 +20,7 @@ set(PUBLIC_HDRS
         include/gltfio/ResourceLoader.h
         include/gltfio/TextureProvider.h
         include/gltfio/math.h
+        include/gltfio/Picking.h
 )
 
 set(SRCS
@@ -60,6 +61,8 @@ set(SRCS
         src/extended/TangentsJobExtended.h
         src/extended/TangentSpaceMeshWrapper.cpp
         src/extended/TangentSpaceMeshWrapper.h
+        src/Picking.cpp
+        src/PickingUtility.cpp  # moved buildMeshDataForPicking here
 )
 
 # ==================================================================================================
@@ -68,7 +71,7 @@ set(SRCS
 
 set(RESOURCE_DIR ${CMAKE_CURRENT_BINARY_DIR})
 
-if (CMAKE_CROSSCOMPILING)
+if (CMAKE_CROSSCOMPILING OR FILAMENT_IMPORT_PREBUILT_EXECUTABLES)
     include(${IMPORT_EXECUTABLES})
 endif()
 
@@ -196,10 +199,7 @@ if (WEBGL_PTHREADS)
     target_compile_definitions(gltfio_core PUBLIC -DFILAMENT_WASM_THREADS)
 endif()
 
-set(GLTFIO_WARNINGS -Wall -Werror)
-if (NOT MSVC)
-    target_compile_options(gltfio_core PRIVATE ${GLTFIO_WARNINGS})
-endif()
+target_compile_options(gltfio_core PRIVATE ${FILAMENT_WARNINGS})
 
 if (NOT WEBGL AND NOT ANDROID AND NOT IOS)
 

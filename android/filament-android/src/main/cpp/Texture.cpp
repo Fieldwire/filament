@@ -23,15 +23,19 @@
 #include <android/bitmap.h>
 #endif
 
-#include <backend/BufferDescriptor.h>
 #include <filament/Engine.h>
 #include <filament/Stream.h>
 #include <filament/Texture.h>
+
+#include <filament-generatePrefilterMipmap/generatePrefilterMipmap.h>
+
+#include <backend/BufferDescriptor.h>
 
 #include "common/CallbackUtils.h"
 #include "common/NioUtils.h"
 
 #include "private/backend/VirtualMachineEnv.h"
+
 
 using namespace filament;
 using namespace backend;
@@ -54,10 +58,43 @@ Java_com_google_android_filament_Texture_nIsTextureFormatSupported(JNIEnv*, jcla
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
+Java_com_google_android_filament_Texture_nIsTextureFormatMipmappable(JNIEnv*, jclass,
+        jlong nativeEngine, jint internalFormat) {
+    Engine *engine = (Engine *) nativeEngine;
+    return (jboolean) Texture::isTextureFormatMipmappable(*engine,
+            (Texture::InternalFormat) internalFormat);
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
 Java_com_google_android_filament_Texture_nIsTextureSwizzleSupported(JNIEnv*, jclass,
         jlong nativeEngine) {
     Engine *engine = (Engine *) nativeEngine;
     return (jboolean) Texture::isTextureSwizzleSupported(*engine);
+}
+
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_google_android_filament_Texture_nGetMaxTextureSize(JNIEnv *, jclass,
+        jlong nativeEngine, jint sampler) {
+    Engine *engine = (Engine *) nativeEngine;
+    return Texture::getMaxTextureSize(*engine, (Texture::Sampler)sampler);
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_google_android_filament_Texture_nGetMaxArrayTextureLayers(JNIEnv *, jclass,
+        jlong nativeEngine) {
+    Engine *engine = (Engine *) nativeEngine;
+    return Texture::getMaxArrayTextureLayers(*engine);
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_google_android_filament_Texture_nValidatePixelFormatAndType(JNIEnv*, jclass,
+        jint internalFormat, jint pixelDataFormat, jint pixelDataType) {
+    return (jboolean) Texture::validatePixelFormatAndType(
+        (Texture::InternalFormat) internalFormat,
+        (Texture::Format) pixelDataFormat,
+        (Texture::Type) pixelDataType
+    );
 }
 
 // Texture::Builder...
@@ -136,6 +173,13 @@ JNIEXPORT void JNICALL
 Java_com_google_android_filament_Texture_nBuilderImportTexture(JNIEnv*, jclass, jlong nativeBuilder, jlong id) {
     Texture::Builder *builder = (Texture::Builder *) nativeBuilder;
     builder->import((intptr_t)id);
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_google_android_filament_Texture_nBuilderExternal(JNIEnv*, jclass, jlong nativeBuilder) {
+    Texture::Builder *builder = (Texture::Builder *) nativeBuilder;
+    builder->external();
 }
 
 extern "C" JNIEXPORT jlong JNICALL
@@ -381,7 +425,7 @@ Java_com_google_android_filament_Texture_nGeneratePrefilterMipmap(JNIEnv *env, j
     Engine *engine = (Engine *) nativeEngine;
 
     jint *faceOffsetsInBytes = env->GetIntArrayElements(faceOffsetsInBytes_, nullptr);
-    Texture::FaceOffsets faceOffsets;
+    filament::FaceOffsets faceOffsets;
     std::copy_n(faceOffsetsInBytes, 6, faceOffsets.offsets);
     env->ReleaseIntArrayElements(faceOffsetsInBytes_, faceOffsetsInBytes, JNI_ABORT);
 
@@ -404,10 +448,11 @@ Java_com_google_android_filament_Texture_nGeneratePrefilterMipmap(JNIEnv *env, j
             (uint32_t) left, (uint32_t) top, (uint32_t) stride,
             callback->getHandler(), &JniBufferCallback::postToJavaAndDestroy, callback);
 
-    Texture::PrefilterOptions options;
+    filament::PrefilterOptions options;
     options.sampleCount = sampleCount;
     options.mirror = mirror;
-    texture->generatePrefilterMipmap(*engine, std::move(desc), faceOffsets, &options);
+
+    filament::generatePrefilterMipmap(texture, *engine, std::move(desc), faceOffsets, &options);
 
     return 0;
 }
