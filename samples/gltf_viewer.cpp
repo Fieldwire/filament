@@ -76,6 +76,8 @@
 #include "generated/resources/gltf_demo.h"
 #include "materials/uberarchive.h"
 #include "utils/ThreadUtils.h"
+// Add resources header for simple unlit material
+#include "generated/resources/resources.h"
 
 #if FILAMENT_DISABLE_MATOPT
 #   define OPTIMIZE_MATERIALS false
@@ -152,13 +154,11 @@ struct App {
     AutomationEngine* automationEngine = nullptr;
     bool screenshot = false;
     uint8_t screenshotSeq = 0;
-    bool screenshotAsPPM = false;
 
-    // Triangle highlighting state
-    Entity highlightedEntity;
-    size_t highlightedTriangle = ~0u;
-    std::vector<MaterialInstance*> originalMaterialInstances; // Store all original materials for all primitives
-    bool highlightNeighbors = false;  // Toggle to highlight neighbors
+    // Standalone renderable for the exact picked triangle
+    utils::Entity triangleHighlightRenderable{};
+    VertexBuffer* triangleVB = nullptr;
+    IndexBuffer* triangleIB = nullptr;
 };
 
 static const char* DEFAULT_IBL = "assets/ibl/lightroom_14b";
@@ -324,14 +324,6 @@ static int handleCommandLineArguments(int argc, char* argv[], App* app) {
             }
             case 'g': {
                 app->config.vulkanGPUHint = arg;
-                break;
-            }
-            case 'd': {
-                app->screenshotAsPPM = true;
-                break;
-            }
-            case 'w': {
-                app->config.forcedWebGPUBackend = samples::parseArgumentsForBackend(arg);
                 break;
             }
         }
@@ -596,53 +588,113 @@ static void onClick(App& app, View* view, ImVec2 pos) {
                 << " bary=(" << hit.bary.x << "," << hit.bary.y << "," << hit.bary.z << ")";
             app.notificationText = oss.str();
 
-            // Highlight the entity by modifying material parameters (better approach)
-            auto& renderableManager = engine->getRenderableManager();
-            auto instance = renderableManager.getInstance(hit.entity);
-            if (instance) {
-                // Clear previous highlight first (restore original materials)
-                if (app.highlightedEntity && !app.originalMaterialInstances.empty()) {
-                    auto prevInstance = renderableManager.getInstance(app.highlightedEntity);
-                    if (prevInstance) {
-                        // Restore all original materials
-                        for (size_t primIdx = 0; primIdx < app.originalMaterialInstances.size(); primIdx++) {
-                            renderableManager.setMaterialInstanceAt(prevInstance, primIdx,
-                                                                   app.originalMaterialInstances[primIdx]);
-                        }
+            // Build a standalone renderable for the exact picked triangle (world-space)
+            // Fetch model-space triangle vertices from the picking registry mesh
+            auto* md = reg->getMesh(hit.entity);
+            if (md) {
+                const uint32_t base = (uint32_t)hit.triangle * 3u;
+                const float3 v0 = md->positions[ md->indices[base + 0] ];
+                const float3 v1 = md->positions[ md->indices[base + 1] ];
+                const float3 v2 = md->positions[ md->indices[base + 2] ];
+
+                // Get world transform from TransformManager
+                auto instT = tcm.getInstance(hit.entity);
+                mat4f worldT = instT ? tcm.getWorldTransform(instT) : mat4f{};
+
+                // Also compute world-space for bounding box only
+                float3 w0 = (worldT * float4(v0, 1.0f)).xyz;
+                float3 w1 = (worldT * float4(v1, 1.0f)).xyz;
+                float3 w2 = (worldT * float4(v2, 1.0f)).xyz;
+
+                // Clean up previous triangle highlight entity if present
+                if (app.triangleHighlightRenderable) {
+                    // Remove from scene and destroy resources
+                    view->getScene()->remove(app.triangleHighlightRenderable);
+                    if (app.triangleVB) { engine->destroy(app.triangleVB); app.triangleVB = nullptr; }
+                    if (app.triangleIB) { engine->destroy(app.triangleIB); app.triangleIB = nullptr; }
+                    engine->destroy(app.triangleHighlightRenderable);
+                    app.triangleHighlightRenderable.clear();
+                }
+
+                // Ensure highlight material exists
+                if (!app.scene.highlightMaterial) {
+                    app.scene.highlightMaterial = Material::Builder()
+                            .package(RESOURCES_SANDBOXUNLIT_DATA, RESOURCES_SANDBOXUNLIT_SIZE)
+                            .build(*engine);
+                    app.scene.highlightMaterialInstance = app.scene.highlightMaterial->createInstance();
+                    app.scene.highlightMaterialInstance->setParameter("baseColor", RgbType::sRGB, float3{1.0f, 0.0f, 0.0f});
+                    app.scene.highlightMaterialInstance->setPolygonOffset(1.0f, 1.0f);
+                    // Ensure triangle is visible regardless of winding: disable back-face culling
+                    app.scene.highlightMaterialInstance->setCullingMode(MaterialInstance::CullingMode::NONE);
+                }
+
+                // Create vertex and index buffers for the triangle (WORLD-SPACE), with a tiny lift along normal
+                struct TriVertex { float3 pos; };
+                float3 n = normalize(cross(w1 - w0, w2 - w0));
+                float3 lift = n * 1e-4f;
+                auto* verts = new TriVertex[3]{ TriVertex{w0 + lift}, TriVertex{w1 + lift}, TriVertex{w2 + lift} };
+                auto* indices = new uint16_t[3]{ 0, 1, 2 };
+
+                app.triangleVB = VertexBuffer::Builder()
+                        .vertexCount(3)
+                        .bufferCount(1)
+                        .attribute(VertexAttribute::POSITION, 0, VertexBuffer::AttributeType::FLOAT3, 0, sizeof(TriVertex))
+                        .build(*engine);
+                app.triangleVB->setBufferAt(*engine, 0,
+                        VertexBuffer::BufferDescriptor(
+                                verts, sizeof(TriVertex) * 3,
+                                [](void* buffer, size_t, void*) { delete[] static_cast<TriVertex*>(buffer); }
+                        ));
+
+                app.triangleIB = IndexBuffer::Builder()
+                        .indexCount(3)
+                        .bufferType(IndexBuffer::IndexType::USHORT)
+                        .build(*engine);
+                app.triangleIB->setBuffer(*engine,
+                        IndexBuffer::BufferDescriptor(
+                                indices, sizeof(uint16_t) * 3,
+                                [](void* buffer, size_t, void*) { delete[] static_cast<uint16_t*>(buffer); }
+                        ));
+
+                // Create renderable entity
+                app.triangleHighlightRenderable = EntityManager::get().create();
+
+                // Ensure a transform component exists and parent to ROOT (to follow global transforms)
+                {
+                    auto& tman = engine->getTransformManager();
+                    if (!tman.hasComponent(app.triangleHighlightRenderable)) {
+                        tman.create(app.triangleHighlightRenderable);
                     }
-                    app.originalMaterialInstances.clear();
+                    auto rootInst = tman.getInstance(app.rootTransformEntity);
+                    auto overlayInst = tman.getInstance(app.triangleHighlightRenderable);
+                    if (rootInst && overlayInst) {
+                        tman.setParent(overlayInst, rootInst);
+                        tman.setTransform(overlayInst, mat4f{});
+                    }
                 }
 
-                // Highlight all primitives by CLONING their materials and tinting RED
-                size_t primitiveCount = renderableManager.getPrimitiveCount(instance);
-                app.originalMaterialInstances.clear();
-                app.originalMaterialInstances.reserve(primitiveCount);
+                // Compute a WORLD-space bounding box for culling (center / half-extent)
+                float3 bbmin = min(w0, min(w1, w2));
+                float3 bbmax = max(w0, max(w1, w2));
+                float3 center = (bbmin + bbmax) * 0.5f;
+                float3 halfExtent = max(bbmax - center, float3{ 1e-5f });
 
-                for (size_t primIdx = 0; primIdx < primitiveCount; primIdx++) {
-                    // Store original material for this primitive
-                    auto* originalMaterial = renderableManager.getMaterialInstanceAt(instance, primIdx);
-                    app.originalMaterialInstances.push_back(originalMaterial);
+                RenderableManager::Builder(1)
+                        .boundingBox({ center, halfExtent })
+                        .material(0, app.scene.highlightMaterialInstance)
+                        .geometry(0, RenderableManager::PrimitiveType::TRIANGLES, app.triangleVB, app.triangleIB, 0, 3)
+                        .culling(false)
+                        .priority(15u)
+                        .receiveShadows(false)
+                        .castShadows(false)
+                        .layerMask(0xFF, 0xFF)
+                        .build(*engine, app.triangleHighlightRenderable);
 
-                    // Clone the material and modify it to be RED
-                    auto* highlightedMaterial = originalMaterial->getMaterial()->createInstance();
+                // Add to the Scene via View for consistency with Stats panel
+                view->getScene()->addEntity(app.triangleHighlightRenderable);
 
-                    // Try to set RED color using common material parameters
-                    try {
-                        // Try baseColorFactor (most common in PBR materials)
-                        highlightedMaterial->setParameter("baseColorFactor", math::float4(1.0f, 0.0f, 0.0f, 1.0f));
-                    } catch (...) {}
-
-                    // Apply the modified material
-                    renderableManager.setMaterialInstanceAt(instance, primIdx, highlightedMaterial);
-                }
-
-                // Update tracking state
-                app.highlightedEntity = hit.entity;
-                app.highlightedTriangle = hit.triangle;
-
-                // Debug: Print that highlighting was applied
-                std::cout << "Highlighted entity " << hit.entity.getId()
-                          << " with " << primitiveCount << " primitives in RED" << std::endl;
+                std::cout << "Added triangle highlight (world-space) for triangle " << hit.triangle
+                          << ". Scene renderables now: " << view->getScene()->getRenderableCount() << std::endl;
             }
         }
     }
@@ -808,15 +860,7 @@ int main(int argc, char** argv) {
         buffer.shrink_to_fit();
     };
 
-    auto setupIBL = [&app]() {
-        auto ibl = FilamentApp::get().getIBL();
-        if (ibl) {
-            app.viewer->setIndirectLight(ibl->getIndirectLight(), ibl->getSphericalHarmonics());
-            app.viewer->getSettings().view.fogSettings.fogColorTexture = ibl->getFogTexture();
-        }
-    };
-
-    auto loadResources = [&app, &setupIBL] (const utils::Path& filename) {
+    auto loadResources = [&app] (const utils::Path& filename) {
         // Load external textures and buffers.
         std::string const gltfPath = filename.getAbsolutePath();
         ResourceConfiguration configuration = {};
@@ -853,7 +897,12 @@ int main(int argc, char** argv) {
             instances[mi]->setStencilWrite(true);
             instances[mi]->setStencilOpDepthStencilPass(MaterialInstance::StencilOperation::INCR);
         }
-        setupIBL();
+
+        auto ibl = FilamentApp::get().getIBL();
+        if (ibl) {
+            app.viewer->setIndirectLight(ibl->getIndirectLight(), ibl->getSphericalHarmonics());
+            app.viewer->getSettings().view.fogSettings.fogColorTexture = ibl->getFogTexture();
+        }
     };
 
     auto setup = [&](Engine* engine, View* view, Scene* scene) {
@@ -902,9 +951,6 @@ int main(int argc, char** argv) {
             options.sleepDuration = 0.0;
             options.exportScreenshots = true;
             options.exportSettings = true;
-            options.exportFormat = app.screenshotAsPPM
-                                           ? AutomationEngine::Options::ExportFormat::PPM
-                                           : AutomationEngine::Options::ExportFormat::TIFF;
             app.automationEngine->setOptions(options);
             app.viewer->stopAnimation();
         }
@@ -975,30 +1021,6 @@ int main(int argc, char** argv) {
                 ImGui::PopStyleColor();
                 ImGui::PopTextWrapPos();
                 ImGui::Spacing();
-
-                // Add Clear Highlight button
-                if (app.highlightedEntity && app.highlightedTriangle != ~0u) {
-                    if (ImGui::Button("Clear Highlight")) {
-                        auto& renderableManager = engine->getRenderableManager();
-                        auto instance = renderableManager.getInstance(app.highlightedEntity);
-
-                        // Restore all original materials
-                        if (instance && !app.originalMaterialInstances.empty()) {
-                            for (size_t primIdx = 0; primIdx < app.originalMaterialInstances.size(); primIdx++) {
-                                renderableManager.setMaterialInstanceAt(instance, primIdx,
-                                                                       app.originalMaterialInstances[primIdx]);
-                            }
-                        }
-
-                        // Clear tracking state
-                        app.highlightedEntity = {};
-                        app.highlightedTriangle = ~0u;
-                        app.originalMaterialInstances.clear();
-                        app.notificationText.clear();
-
-                        std::cout << "Highlight cleared" << std::endl;
-                    }
-                }
             }
 
             float const progress = app.resourceLoader->asyncGetLoadProgress();
@@ -1121,22 +1143,12 @@ int main(int argc, char** argv) {
                                     "d.shadowmap.display_shadow_texture_channel"), 0, 3);
                     ImGui::Unindent();
                 }
-
-                bool cameraFrustum = FilamentApp::get().isCameraFrustumEnabled();
-                ImGui::Checkbox("Show Camera Frustum", &cameraFrustum);
-                FilamentApp::get().setCameraFrustumEnabled(cameraFrustum);
-
-                bool shadowFrustum = FilamentApp::get().isDirectionalShadowFrustumEnabled();
-                ImGui::Checkbox("Show Shadow Frustum", &shadowFrustum);
-                FilamentApp::get().setDirectionalShadowFrustumEnabled(shadowFrustum);
-
                 bool debugFroxelVisualization;
                 if (debug.getProperty("d.lighting.debug_froxel_visualization",
                         &debugFroxelVisualization)) {
                     ImGui::Checkbox("Froxel Visualization", &debugFroxelVisualization);
                     debug.setProperty("d.lighting.debug_froxel_visualization",
                             debugFroxelVisualization);
-                    FilamentApp::get().setFroxelGridEnabled(debugFroxelVisualization);
                 }
 
                 auto dataSource = debug.getDataSource("d.view.frame_info");
@@ -1233,51 +1245,9 @@ int main(int argc, char** argv) {
         delete app.resourceLoader;
         delete app.stbDecoder;
         delete app.ktxDecoder;
-        delete app.automationSpec;
-        delete app.automationEngine;
 
         AssetLoader::destroy(&app.assetLoader);
     };
-
-    // Different thread
-    /*auto cleanup = [&app](Engine *engine, View *, Scene *) {
-        std::thread a([&]()-> void {
-            app.automationEngine->terminate();
-            app.resourceLoader->asyncCancelLoad();
-            app.assetLoader->destroyAsset(app.asset);
-            app.materials->destroyMaterials();
-
-            engine->destroy(app.scene.groundPlane);
-            engine->destroy(app.scene.groundVertexBuffer);
-            engine->destroy(app.scene.groundIndexBuffer);
-            engine->destroy(app.scene.groundMaterial);
-            engine->destroy(app.colorGrading);
-
-            engine->destroy(app.scene.fullScreenTriangleVertexBuffer);
-            engine->destroy(app.scene.fullScreenTriangleIndexBuffer);
-
-            auto &em = EntityManager::get();
-            for (auto e: app.scene.overdrawVisualizer) {
-                engine->destroy(e);
-                em.destroy(e);
-            }
-
-            for (auto mi: app.scene.overdrawMaterialInstances) {
-                engine->destroy(mi);
-            }
-            engine->destroy(app.scene.overdrawMaterial);
-
-            delete app.viewer;
-            delete app.materials;
-            delete app.names;
-            delete app.resourceLoader;
-            delete app.stbDecoder;
-            delete app.ktxDecoder;
-
-            AssetLoader::destroy(&app.assetLoader);
-        });
-        a.join();
-    };*/
 
     auto animate = [&app](Engine*, View*, double now) {
         app.resourceLoader->asyncUpdateLoad();
@@ -1355,10 +1325,6 @@ int main(int argc, char** argv) {
         Skybox* skybox = scene->getSkybox();
         applySettings(engine, app.viewer->getSettings().viewer, &camera, skybox, renderer);
 
-        // FIMXE: This applySettings() is done here instead of in AutomationEngine.cpp because
-        // we need access to the Renderer, which AutomationEngine does not provide.
-        applySettings(engine, app.viewer->getSettings().debug, renderer);
-
         // technically we don't need to do this each frame
         auto& tcm = engine->getTransformManager();
         TransformManager::Instance const& root = tcm.getInstance(app.rootTransformEntity);
@@ -1409,9 +1375,8 @@ int main(int argc, char** argv) {
         if (app.screenshot) {
             std::ostringstream stringStream;
             stringStream << "screenshot" << std::setfill('0') << std::setw(2) << +app.screenshotSeq;
-            std::string const ext = app.screenshotAsPPM ? ".ppm" : ".tif";
             AutomationEngine::exportScreenshot(
-                    view, renderer, stringStream.str() + ext, false, app.automationEngine);
+                    view, renderer, stringStream.str() + ".ppm", false, app.automationEngine);
             ++app.screenshotSeq;
             app.screenshot = false;
         }
@@ -1450,11 +1415,10 @@ int main(int argc, char** argv) {
         filename = getPathForIBLAsset(path);
         if (!filename.isEmpty()) {
             FilamentApp::get().loadIBL(path);
-            setupIBL();
+            return;
         }
     });
 
-    ThreadUtils::threadingEnabled = false;
     filamentApp.run(app.config, setup, cleanup, gui, preRender, postRender);
 
     return 0;
