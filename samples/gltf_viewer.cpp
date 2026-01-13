@@ -606,15 +606,6 @@ static void onClick(App& app, View* view, ImVec2 pos) {
                 const float3 v1 = md->positions[ md->indices[base + 1] ];
                 const float3 v2 = md->positions[ md->indices[base + 2] ];
 
-                // Get world transform from TransformManager
-                auto instT = tcm.getInstance(hit.entity);
-                mat4f worldT = instT ? tcm.getWorldTransform(instT) : mat4f{};
-
-                // Also compute world-space for bounding box only
-                float3 w0 = (worldT * float4(v0, 1.0f)).xyz;
-                float3 w1 = (worldT * float4(v1, 1.0f)).xyz;
-                float3 w2 = (worldT * float4(v2, 1.0f)).xyz;
-
                 // Clean up previous triangle highlight entity if present
                 if (app.triangleHighlightRenderable) {
                     // Remove from scene and destroy resources
@@ -637,11 +628,11 @@ static void onClick(App& app, View* view, ImVec2 pos) {
                     app.scene.highlightMaterialInstance->setCullingMode(MaterialInstance::CullingMode::NONE);
                 }
 
-                // Create vertex and index buffers for the triangle (WORLD-SPACE), with a tiny lift along normal
+                // Create vertex and index buffers for the triangle (MODEL-SPACE), with a tiny lift along local normal
                 struct TriVertex { float3 pos; };
-                float3 n = normalize(cross(w1 - w0, w2 - w0));
-                float3 lift = n * 1e-4f;
-                auto* verts = new TriVertex[3]{ TriVertex{w0 + lift}, TriVertex{w1 + lift}, TriVertex{w2 + lift} };
+                float3 nLocal = normalize(cross(v1 - v0, v2 - v0));
+                float3 liftLocal = nLocal * 1e-4f;
+                auto* verts = new TriVertex[3]{ TriVertex{v0 + liftLocal}, TriVertex{v1 + liftLocal}, TriVertex{v2 + liftLocal} };
                 auto* indices = new uint16_t[3]{ 0, 1, 2 };
 
                 app.triangleVB = VertexBuffer::Builder()
@@ -668,35 +659,25 @@ static void onClick(App& app, View* view, ImVec2 pos) {
                 // Create renderable entity
                 app.triangleHighlightRenderable = EntityManager::get().create();
 
-                // Ensure a transform component exists and parent to ROOT (to follow global transforms)
+                // Ensure a transform component exists and parent to the HIT ENTITY (so rotations persist)
                 {
-                    auto& tman = engine->getTransformManager();
-                    if (!tman.hasComponent(app.triangleHighlightRenderable)) {
-                        tman.create(app.triangleHighlightRenderable);
+                    if (!tcm.hasComponent(app.triangleHighlightRenderable)) {
+                        tcm.create(app.triangleHighlightRenderable);
                     }
-                    auto rootInst = tman.getInstance(app.rootTransformEntity);
-                    auto overlayInst = tman.getInstance(app.triangleHighlightRenderable);
-                    if (rootInst && overlayInst) {
-                        tman.setParent(overlayInst, rootInst);
-                        tman.setTransform(overlayInst, mat4f{});
+                    auto hitInst = tcm.getInstance(hit.entity);
+                    auto overlayInst = tcm.getInstance(app.triangleHighlightRenderable);
+                    if (hitInst && overlayInst) {
+                        tcm.setParent(overlayInst, hitInst);
                     }
                 }
 
-                // Compute a WORLD-space bounding box for culling (center / half-extent)
-                float3 bbmin = min(w0, min(w1, w2));
-                float3 bbmax = max(w0, max(w1, w2));
-                float3 center = (bbmin + bbmax) * 0.5f;
-                float3 halfExtent = max(bbmax - center, float3{ 1e-5f });
-
                 RenderableManager::Builder(1)
-                        .boundingBox({ center, halfExtent })
                         .material(0, app.scene.highlightMaterialInstance)
                         .geometry(0, RenderableManager::PrimitiveType::TRIANGLES, app.triangleVB, app.triangleIB, 0, 3)
                         .culling(false)
                         .priority(15u)
                         .receiveShadows(false)
                         .castShadows(false)
-                        .layerMask(0xFF, 0xFF)
                         .build(*engine, app.triangleHighlightRenderable);
 
                 // Add to the Scene via View for consistency with Stats panel
