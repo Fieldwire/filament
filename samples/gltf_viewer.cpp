@@ -172,7 +172,19 @@ static void printUsage(char* name) {
         "Options:\n"
         "   --help, -h\n"
         "       Prints this message\n\n"
-        "API_USAGE"
+        "   --api, -a\n"
+        "       Specify the backend API: "
+
+// Matches logic in filament/backend/src/PlatformFactory.cpp for Backend::DEFAULT
+#if defined(IOS) || defined(__APPLE__)
+        "opengl, vulkan, or metal (default)"
+#elif defined(FILAMENT_DRIVER_SUPPORTS_VULKAN)
+        "opengl, vulkan (default), or metal"
+#else
+        "opengl (default), vulkan, or metal"
+#endif
+        "\n\n"
+
         "   --feature-level=<1|2|3>, -f <1|2|3>\n"
         "       Specify the feature level to use. The default is the highest supported feature level.\n\n"
         "   --batch=<path to JSON file or 'default'>, -b\n"
@@ -208,19 +220,10 @@ static void printUsage(char* name) {
         "       Vulkan backend allows user to choose their GPU.\n"
         "       You can provide the index of the GPU or\n"
         "       a substring to match against the device name\n\n"
-        "   --screenshot-as-ppm, -d\n"
-        "       export PPM as oppose to TIFF screenshots\n\n"
-        "   --webgpu-backend=<backend>, -w\n"
-        "       You can force WebGPU to select a backend of your choice. Provided that the platform\n"
-        "       supports this backend. (See -a for argument options).\n\n"
     );
     const std::string from("SHOWCASE");
     for (size_t pos = usage.find(from); pos != std::string::npos; pos = usage.find(from, pos)) {
         usage.replace(pos, from.length(), exec_name);
-    }
-    const std::string apiUsage("API_USAGE");
-    for (size_t pos = usage.find(apiUsage); pos != std::string::npos; pos = usage.find(apiUsage, pos)) {
-        usage.replace(pos, apiUsage.length(), samples::getBackendAPIArgumentsUsage());
     }
     std::cout << usage;
 }
@@ -231,24 +234,22 @@ static std::ifstream::pos_type getFileSize(const char* filename) {
 }
 
 static int handleCommandLineArguments(int argc, char* argv[], App* app) {
-    static constexpr const char* OPTSTR = "ha:f:i:usc:rt:y:b:evg:dw:";
+    static constexpr const char* OPTSTR = "ha:f:i:usc:rt:b:evg:";
     static const struct option OPTIONS[] = {
-        { "help",              no_argument,          nullptr, 'h' },
-        { "api",               required_argument,    nullptr, 'a' },
-        { "feature-level",     required_argument,    nullptr, 'f' },
-        { "batch",             required_argument,    nullptr, 'b' },
-        { "headless",          no_argument,          nullptr, 'e' },
-        { "ibl",               required_argument,    nullptr, 'i' },
-        { "ubershader",        no_argument,          nullptr, 'u' },
-        { "actual-size",       no_argument,          nullptr, 's' },
-        { "camera",            required_argument,    nullptr, 'c' },
-        { "eyes",              required_argument,    nullptr, 'y' },
-        { "recompute-aabb",    no_argument,          nullptr, 'r' },
-        { "settings",          required_argument,    nullptr, 't' },
-        { "split-view",        no_argument,          nullptr, 'v' },
-        { "vulkan-gpu-hint",   required_argument,    nullptr, 'g' },
-        { "screenshot-as-ppm", no_argument,          nullptr, 'd' },
-        { "webgpu-backend",    required_argument,    nullptr, 'w' },
+        { "help",            no_argument,          nullptr, 'h' },
+        { "api",             required_argument,    nullptr, 'a' },
+        { "feature-level",   required_argument,    nullptr, 'f' },
+        { "batch",           required_argument,    nullptr, 'b' },
+        { "headless",        no_argument,          nullptr, 'e' },
+        { "ibl",             required_argument,    nullptr, 'i' },
+        { "ubershader",      no_argument,          nullptr, 'u' },
+        { "actual-size",     no_argument,          nullptr, 's' },
+        { "camera",          required_argument,    nullptr, 'c' },
+        { "eyes",            required_argument,    nullptr, 'y' },
+        { "recompute-aabb",  no_argument,          nullptr, 'r' },
+        { "settings",        required_argument,    nullptr, 't' },
+        { "split-view",      no_argument,          nullptr, 'v' },
+        { "vulkan-gpu-hint", required_argument,    nullptr, 'g' },
         { nullptr, 0, nullptr, 0 }
     };
     int opt;
@@ -261,7 +262,15 @@ static int handleCommandLineArguments(int argc, char* argv[], App* app) {
                 printUsage(argv[0]);
                 exit(0);
             case 'a':
-                app->config.backend = samples::parseArgumentsForBackend(arg);
+                if (arg == "opengl") {
+                    app->config.backend = Engine::Backend::OPENGL;
+                } else if (arg == "vulkan") {
+                    app->config.backend = Engine::Backend::VULKAN;
+                } else if (arg == "metal") {
+                    app->config.backend = Engine::Backend::METAL;
+                } else {
+                    std::cerr << "Unrecognized backend. Must be 'opengl'|'vulkan'|'metal'.\n";
+                }
                 break;
             case 'f':
                 if (arg == "1") {
@@ -702,9 +711,7 @@ static void onClick(App& app, View* view, ImVec2 pos) {
 
 static utils::Path getPathForIBLAsset(std::string_view string) {
     auto isIBL = [] (utils::Path file) -> bool {
-        return file.getExtension() == "ktx" || file.getExtension() == "hdr" ||
-            file.getExtension() == "exr";
-
+        return file.getExtension() == "ktx" || file.getExtension() == "hdr";
     };
 
     utils::Path filename{ string };
@@ -1350,24 +1357,6 @@ int main(int argc, char** argv) {
             view->setColorGrading(app.colorGrading);
         } else {
             view->setColorGrading(nullptr);
-        }
-
-        // After updating transforms, refresh picking world transforms once per frame for all renderables.
-        if (app.asset) {
-            auto reg = app.asset->getPickingRegistry();
-            if (reg) {
-                auto& tcm = engine->getTransformManager();
-                const utils::Entity* renderables = app.asset->getRenderableEntities();
-                size_t rc = app.asset->getRenderableEntityCount();
-                if (renderables) {
-                    for (size_t i = 0; i < rc; ++i) {
-                        auto inst = tcm.getInstance(renderables[i]);
-                        if (inst) {
-                            reg->updateTransform(renderables[i], tcm.getWorldTransform(inst));
-                        }
-                    }
-                }
-            }
         }
     };
 
