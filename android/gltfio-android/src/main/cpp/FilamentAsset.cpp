@@ -382,3 +382,36 @@ Java_com_google_android_filament_gltfio_FilamentAsset_nRayPickScreen(JNIEnv* env
             (jint) hit.entity.getId(), (jint) hit.triangle,
             (jfloat) hit.distance, (jfloat) hit.bary.x, (jfloat) hit.bary.y, (jfloat) hit.bary.z);
 }
+
+extern "C" JNIEXPORT jfloatArray JNICALL
+Java_com_google_android_filament_gltfio_FilamentAsset_nGetTriangleModelSpaceForHit(JNIEnv* env, jclass,
+        jlong nativeAsset, jint entityId, jint triangleIndex) {
+    FilamentAsset* asset = (FilamentAsset*) nativeAsset;
+    if (!asset || triangleIndex < 0) return nullptr;
+    PickingRegistry* reg = asset->getPickingRegistry();
+    if (!reg) return nullptr;
+    Entity e = Entity::import((uint32_t)entityId);
+    auto* md = reg->getMesh(e);
+    if (!md) return nullptr;
+
+    uint32_t base = (uint32_t)triangleIndex * 3u;
+    // Basic bounds checks to avoid OOB.
+    if (!md->indices.size() || base + 2 >= md->indices.size()) return nullptr;
+    uint32_t i0 = md->indices[base + 0];
+    uint32_t i1 = md->indices[base + 1];
+    uint32_t i2 = md->indices[base + 2];
+    if (!md->positions.size() || i0 >= md->positions.size() || i1 >= md->positions.size() || i2 >= md->positions.size()) {
+        return nullptr;
+    }
+
+    float3 v0 = md->positions[i0];
+    float3 v1 = md->positions[i1];
+    float3 v2 = md->positions[i2];
+
+    jfloatArray out = env->NewFloatArray(9);
+    if (!out) return nullptr;
+    jfloat vals[9] = { v0.x, v0.y, v0.z, v1.x, v1.y, v1.z, v2.x, v2.y, v2.z };
+    env->SetFloatArrayRegion(out, 0, 9, vals);
+    return out;
+}
+

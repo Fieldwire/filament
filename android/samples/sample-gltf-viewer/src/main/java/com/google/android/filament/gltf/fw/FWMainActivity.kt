@@ -93,18 +93,13 @@ class FWMainActivity : AppCompatActivity(), BimExecutor.Callback, ProgressDialog
     }
 
     private fun loadModel() {
-//        MainScope().launch {
-            try {
-                showProgress()
-//                bimExecutor.loadModel(this@FWMainActivity, intent.getStringExtra("model")!!) { count ->
-                bimExecutor.loadModel(this@FWMainActivity, "100_MB_small.glb") { count ->
-                    logg("nodeCount", count)
-                    frameChoreographer.start()
-                }
-            } catch (e: Exception) {
-                logg("Exception in loadModel", e.message.toString())
+        try {
+            bimExecutor.loadModel(this@FWMainActivity, intent.getStringExtra("model")!!) { count ->
+                frameChoreographer.start()
             }
-//        }
+        } catch (e: Exception) {
+            logg("Exception in loadModel", e.message.toString())
+        }
     }
 
     override fun onModelRendered() {
@@ -118,14 +113,6 @@ class FWMainActivity : AppCompatActivity(), BimExecutor.Callback, ProgressDialog
 
     override fun onExecutorException(throwable: Throwable) {
         logg("executorException", throwable)
-    }
-
-    private fun showProgress() {
-        progressDialogFragment = ProgressDialogFragment()
-        progressDialogFragment?.callback = this
-
-        progressDialogFragment?.show(supportFragmentManager, "")
-        supportFragmentManager.executePendingTransactions()
     }
 
     override fun onProgressCancelled() {

@@ -22,6 +22,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.nio.ByteBuffer
+import kotlin.text.clear
 
 @SuppressLint("ClickableViewAccessibility")
 class BimViewer(
@@ -71,6 +72,8 @@ class BimViewer(
     // To handle isolate/hide/showAll menu actions
     private val visibilityHandler: VisibilityHandler
     // Menus: Properties/Isolate/Hide
+    // To highlight a single triangle overlay
+    private val triangleHighlighter: TriangleHighlighter = TriangleHighlighter(context.applicationContext, modelViewer)
 
     private var frameCount = 0
     private var isModelRendered = false
@@ -128,9 +131,9 @@ class BimViewer(
     }
 
     private fun setIndirectLight(lightBuffer: ByteBuffer) {
-        modelViewer.scene.indirectLight = KTX1Loader.createIndirectLight(modelViewer.engine, lightBuffer).apply {
+        modelViewer.scene.indirectLight = KTX1Loader.createIndirectLight(modelViewer.engine, lightBuffer).indirectLight.apply {
             // Adjust this value to increase the brightness of the model
-            intensity = 35_000f
+            this?.intensity = 30_000f
         }
     }
 
@@ -150,8 +153,6 @@ class BimViewer(
         modelViewer.renderer.clearOptions = modelViewer.renderer.clearOptions.apply {
             clear = true
         }
-
-        modelViewer.asset.getEntitiesByName()
     }
 
     private fun disablePostProcessing() {
@@ -169,13 +170,13 @@ class BimViewer(
             // https://github.com/Fieldwire/filament/blob/main/android/samples/sample-gltf-viewer/src/main/java/com/google/android/filament/gltf/MainActivity.kt
             // dynamic resolution often helps a lot
             dynamicResolutionOptions = dynamicResolutionOptions.apply {
-                enabled = true
+                enabled = false
                 quality = View.QualityLevel.MEDIUM
             }
 
             // MSAA is needed with dynamic resolution MEDIUM
             multiSampleAntiAliasingOptions = multiSampleAntiAliasingOptions.apply {
-                enabled = true
+                enabled = false
             }
 
             // FXAA is pretty cheap and helps a lot
@@ -209,17 +210,41 @@ class BimViewer(
 
     private inner class SingleTapListener : GestureDetector.SimpleOnGestureListener() {
         override fun onSingleTapUp(event: MotionEvent): Boolean {
-            // If there was a previous selection, remove it & don't start another selection
-            if (entityHighlighter.unhighlight()) {
-                // Event consumed
-                return true
-            }
+            callback.execute {
+                // If there was a previous selection, remove it & don't start another selection
+                if (entityHighlighter.unhighlight()) {
+                    triangleHighlighter.clear()
+                    return@execute
+                }
 
-            val x = event.x.toInt()
-            val y = event.y.toInt()
-            modelViewer.view.pick(x, surfaceView.height - y, surfaceView.handler) { result ->
-                if (entityHighlighter.highlight(result.renderable)) {
-                    showContextMenu(x, y)
+                val x = event.x.toInt()
+                val y = event.y.toInt()
+
+                val asset = modelViewer.asset
+                if (asset != null) {
+                    // Use existing screen-space pick to get entity and triangle index
+                    val hit = asset.pickScreen(modelViewer.view, x, y)
+                    if (hit != null && hit.entity != 0 && hit.triangle >= 0) {
+                        val tri = asset.getTriangleModelSpaceForHit(hit.entity, hit.triangle)
+                        if (tri != null && tri.size == 9) {
+                            val v0 = Float3(tri[0], tri[1], tri[2])
+                            val v1 = Float3(tri[3], tri[4], tri[5])
+                            val v2 = Float3(tri[6], tri[7], tri[8])
+                            // Parent overlay to the picked entity
+                            triangleHighlighter.showTriangle(hit.entity, v0, v1, v2)
+                            // showContextMenu(x, y)
+                            return@execute
+                        }
+                    }
+                }
+
+                // Fallback: highlight entire renderable entity
+                // Filament's pick expects y flipped to viewport origin at bottom-left
+                val flippedY = surfaceView.height - y
+                modelViewer.view.pick(x, flippedY, surfaceView.handler) { result ->
+                    if (entityHighlighter.highlight(result.renderable)) {
+                        // showContextMenu(x, y)
+                    }
                 }
             }
             // Tap event is always consumed
@@ -232,7 +257,7 @@ class BimViewer(
     }
 
     companion object {
-        private const val IBL_FILE = "envs/default_env/default_env_ibl.ktx"
+        private const val IBL_FILE = "envs/default_env/default_ibl.ktx"
         // Some models take a couple of frames to appear on screen
         // Wait for 60 frames (~1 sec on most devices) before informing any callbacks
         // TODO: This is not foolproof - some models take longer than 60frames to appear on screen

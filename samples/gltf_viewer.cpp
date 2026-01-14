@@ -675,7 +675,7 @@ static void onClick(App& app, View* view, ImVec2 pos) {
                         .material(0, app.scene.highlightMaterialInstance)
                         .geometry(0, RenderableManager::PrimitiveType::TRIANGLES, app.triangleVB, app.triangleIB, 0, 3)
                         .culling(false)
-                        .priority(15u)
+                        .priority(7u)
                         .receiveShadows(false)
                         .castShadows(false)
                         .build(*engine, app.triangleHighlightRenderable);

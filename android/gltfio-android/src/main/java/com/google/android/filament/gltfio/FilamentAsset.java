@@ -341,6 +341,16 @@ public class FilamentAsset {
         }
     }
 
+    /**
+     * Returns model-space triangle vertices [v0, v1, v2] for a given hit (entity, triangle index),
+     * or null if unavailable.
+     */
+    public @Nullable float[] getTriangleModelSpaceForHit(@Entity int entity, int triangleIndex) {
+        if (mNativeObject == 0) return null;
+        if (entity == 0 || triangleIndex < 0) return null;
+        return nGetTriangleModelSpaceForHit(mNativeObject, entity, triangleIndex);
+    }
+
     private static native int nGetRoot(long nativeAsset);
     private static native int nPopRenderable(long nativeAsset);
     private static native int nPopRenderables(long nativeAsset, int[] result);
@@ -381,4 +391,5 @@ public class FilamentAsset {
     private static native @Nullable Hit nRayPick(long nativeAsset,
             float ox, float oy, float oz, float dx, float dy, float dz);
     private static native @Nullable Hit nRayPickScreen(long nativeAsset, long nativeView, int sx, int sy); // Added native bridge for screen picking.
+    private static native @Nullable float[] nGetTriangleModelSpaceForHit(long nativeAsset, int entity, int triangleIndex);
 }

@@ -60,11 +60,11 @@ class MultiMainActivity : Activity() {
         val scene = modelViewer.scene
         val ibl = "default_env"
         readCompressedAsset("envs/$ibl/${ibl}_ibl.ktx").let {
-            scene.indirectLight = KTX1Loader.createIndirectLight(engine, it)
+            scene.indirectLight = KTX1Loader.createIndirectLight(engine, it).indirectLight
             scene.indirectLight!!.intensity = 35_000f
         }
         readCompressedAsset("envs/$ibl/${ibl}_skybox.ktx").let {
-            scene.skybox = KTX1Loader.createSkybox(engine, it)
+            scene.skybox = KTX1Loader.createSkybox(engine, it).skybox
         }
     }
 

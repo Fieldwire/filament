@@ -29,7 +29,7 @@ class ObjectHighlighter(private val context: Context, private val modelViewer: F
     private var actualEntityMaterials: List<MaterialInstance>? = null
 
     init {
-//        loadObjectHighlightMaterial()
+        loadObjectHighlightMaterial()
     }
 
     fun highlight(@Entity renderableEntity: Int): Boolean {
@@ -106,6 +106,6 @@ class ObjectHighlighter(private val context: Context, private val modelViewer: F
     }
 
     companion object {
-        private const val MAT_FILE = "materials/object_highlight.filamat"
+        const val MAT_FILE = "materials/object_highlight.filamat"
     }
 }
