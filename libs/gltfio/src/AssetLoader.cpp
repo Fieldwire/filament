@@ -1014,7 +1014,6 @@ bool FAssetLoader::createPrimitive(const cgltf_primitive& inPrim, const char* na
         const int index = attribute.index;
         const cgltf_attribute_type atype = attribute.type;
         const cgltf_accessor* accessor = attribute.data;
-        int8_t customIndex = -1;
 
         // The glTF tangent data is ignored here, but honored in ResourceLoader.
         if (atype == cgltf_attribute_type_tangent) {

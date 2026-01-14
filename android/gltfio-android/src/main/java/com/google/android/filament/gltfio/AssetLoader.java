@@ -227,6 +227,10 @@ public class AssetLoader {
     }
 
     private static native long nCreateAssetLoader(long nativeEngine, Object provider,
+            long nativeEntities);
+    private static native long nCreateAssetLoaderExtended(long nativeEngine, Object provider,
+                                                          long nativeEntities, String filePath);
+    private static native long nCreateAssetLoader(long nativeEngine, Object provider,
             long nativeEntities, String defaultNodeName);
     private static native long nCreateAssetLoaderExtended(long nativeEngine, Object provider,
                                                           long nativeEntities, String filePath, String defaultNodeName);
