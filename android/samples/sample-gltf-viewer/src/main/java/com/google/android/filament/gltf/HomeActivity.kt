@@ -27,6 +27,7 @@ class HomeActivity : ComponentActivity() {
                     ) {
                         items(
                             items = listOf(
+                                "packed_21_KB.glb",
                                 "21_KB.glb",
                                 "70_MB.glb",
                                 "100_MB.glb",

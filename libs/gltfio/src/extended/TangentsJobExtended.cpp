@@ -274,41 +274,46 @@ void unpack(cgltf_accessor const* accessor, size_t const vertexCount, T out,
                 return;
             }
         }
-    } else {
+    } else if (componentType == cgltf_component_type_r_8u) {
         assert_invariant(outDim == inDim);
-        if (componentType == cgltf_component_type_r_8u) {
-            if (inDim == 2) {
-                data::copy<ubyte2*, T>((ubyte2*) data, accessor->stride, (T) out,
-                        data::byteCount<T>(), vertexCount);
-                return;
-            } else if (inDim == 3) {
-                data::copy<ubyte3*, T>((ubyte3*) data, accessor->stride, (T) out,
-                        data::byteCount<T>(), vertexCount);
-                return;
-            } else if (inDim == 4) {
-                data::copy<ubyte4*, T>((ubyte4*) data, accessor->stride, (T) out,
-                        data::byteCount<T>(), vertexCount);
-                return;
-            }
-        } else if (componentType == cgltf_component_type_r_16u) {
-            if (inDim == 2) {
-                data::copy<ushort2*, T>((ushort2*) data, accessor->stride, (T) out,
-                        data::byteCount<T>(), vertexCount);
-                return;
-            } else if (inDim == 3) {
-                data::copy<ushort3*, T>((ushort3*) data, accessor->stride, (T) out,
-                        data::byteCount<T>(), vertexCount);
-                return;
-            } else if (inDim == 4) {
-                data::copy<ushort4*, T>((ushort4*) data, accessor->stride, (T) out,
-                        data::byteCount<T>(), vertexCount);
-                return;
-            }
+        if (inDim == 2) {
+            data::copy<ubyte2*, T>((ubyte2*) data, accessor->stride, (T) out,
+                    data::byteCount<T>(), vertexCount);
+            return;
+        } else if (inDim == 3) {
+            data::copy<ubyte3*, T>((ubyte3*) data, accessor->stride, (T) out,
+                    data::byteCount<T>(), vertexCount);
+            return;
+        } else if (inDim == 4) {
+            data::copy<ubyte4*, T>((ubyte4*) data, accessor->stride, (T) out,
+                    data::byteCount<T>(), vertexCount);
+            return;
         }
-
-        PANIC_POSTCONDITION("Only ubyte or ushort accepted as input");
+    } else if (componentType == cgltf_component_type_r_16u) {
+        assert_invariant(outDim == inDim);
+        if (inDim == 2) {
+            data::copy<ushort2*, T>((ushort2*) data, accessor->stride, (T) out,
+                    data::byteCount<T>(), vertexCount);
+            return;
+        } else if (inDim == 3) {
+            data::copy<ushort3*, T>((ushort3*) data, accessor->stride, (T) out,
+                    data::byteCount<T>(), vertexCount);
+            return;
+        } else if (inDim == 4) {
+            data::copy<ushort4*, T>((ushort4*) data, accessor->stride, (T) out,
+                    data::byteCount<T>(), vertexCount);
+            return;
+        }
+    } else {
+        // Handle other component types (signed byte, signed short, unsigned int) by using
+        // cgltf's generic unpacking which converts to float
+        assert_invariant(data::componentType<T>() == FLOAT_TYPE);
+        size_t const elementCount = outDim * vertexCount;
+        cgltf_accessor_unpack_floats(accessor, (float*) out, elementCount);
+        return;
     }
 }
+
 
 template<typename T, uint8_t attrib>
 void unpack(cgltf_accessor const* accessor, AttributeDataMap& data, size_t const vertexCount,

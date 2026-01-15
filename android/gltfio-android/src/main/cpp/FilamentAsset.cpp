@@ -394,7 +394,7 @@ Java_com_google_android_filament_gltfio_FilamentAsset_nGetTriangleModelSpaceForH
     auto* md = reg->getMesh(e);
     if (!md) return nullptr;
 
-    uint32_t base = (uint32_t)triangleIndex * 3u;
+    uint32_t base = (uint32_t)triangleIndex;
     // Basic bounds checks to avoid OOB.
     if (!md->indices.size() || base + 2 >= md->indices.size()) return nullptr;
     uint32_t i0 = md->indices[base + 0];

@@ -74,6 +74,8 @@ class BimViewer(
     // Menus: Properties/Isolate/Hide
     // To highlight a single triangle overlay
     private val triangleHighlighter: TriangleHighlighter = TriangleHighlighter(context.applicationContext, modelViewer)
+    // Triangle mapping for grouped triangle highlighting
+    private var triangleMapping: TriangleMapping? = null
 
     private var frameCount = 0
     private var isModelRendered = false
@@ -100,6 +102,16 @@ class BimViewer(
         logg("ModelBuffer", modelBuffer, "lightBuffer", lightBuffer)
         modelViewer.loadModelGlb(modelBuffer)
         setIndirectLight(lightBuffer)
+
+        // Try to load triangle mapping if it exists
+        try {
+            triangleMapping = TriangleMapping(context, TRIANGLE_MAPPING_FILE)
+            logg("TriangleMapping loaded successfully")
+        } catch (e: Exception) {
+            logg("No triangle mapping file found or error loading it: ${e.message}")
+            triangleMapping = null
+        }
+
         // To fit the model in the screen
         transformToInitialPosition()
     }
@@ -225,14 +237,46 @@ class BimViewer(
                     // Use existing screen-space pick to get entity and triangle index
                     val hit = asset.pickScreen(modelViewer.view, x, y)
                     if (hit != null && hit.entity != 0 && hit.triangle >= 0) {
+                        // Get entity name for mapping lookup
+                        val entityName = asset.getName(hit.entity) ?: hit.entity.toString()
+                        logg("Picked entity: $entityName, triangle: ${hit.triangle}")
+
+                        // Check if we have a triangle mapping
+                        val mapping = triangleMapping
+                        if (mapping != null) {
+                            // Get the triangle range from mapping
+                            val range = mapping.getTriangleRange(entityName, hit.triangle)
+                            if (range != null) {
+                                val (startIdx, endIdx) = range
+                                logg("Triangle range: $startIdx to $endIdx")
+
+                                // Collect all triangles in the range
+                                val trianglesToHighlight = mutableListOf<Triple<Float3, Float3, Float3>>()
+                                for (triIdx in startIdx..endIdx step 3) {
+                                    val tri = asset.getTriangleModelSpaceForHit(hit.entity, triIdx)
+                                    if (tri != null && tri.size == 9) {
+                                        val v0 = Float3(tri[0], tri[1], tri[2])
+                                        val v1 = Float3(tri[3], tri[4], tri[5])
+                                        val v2 = Float3(tri[6], tri[7], tri[8])
+                                        trianglesToHighlight.add(Triple(v0, v1, v2))
+                                    }
+                                }
+
+                                if (trianglesToHighlight.isNotEmpty()) {
+                                    logg("Highlighting ${trianglesToHighlight.size} triangles")
+                                    triangleHighlighter.showTriangles(hit.entity, trianglesToHighlight)
+                                    return@execute
+                                }
+                            }
+                        }
+
+                        // Fallback: highlight single triangle if no mapping or mapping failed
                         val tri = asset.getTriangleModelSpaceForHit(hit.entity, hit.triangle)
                         if (tri != null && tri.size == 9) {
                             val v0 = Float3(tri[0], tri[1], tri[2])
                             val v1 = Float3(tri[3], tri[4], tri[5])
                             val v2 = Float3(tri[6], tri[7], tri[8])
-                            // Parent overlay to the picked entity
                             triangleHighlighter.showTriangle(hit.entity, v0, v1, v2)
-                            // showContextMenu(x, y)
                             return@execute
                         }
                     }
@@ -258,6 +302,7 @@ class BimViewer(
 
     companion object {
         private const val IBL_FILE = "envs/default_env/default_ibl.ktx"
+        private const val TRIANGLE_MAPPING_FILE = "json/mapping_21_kb.json"
         // Some models take a couple of frames to appear on screen
         // Wait for 60 frames (~1 sec on most devices) before informing any callbacks
         // TODO: This is not foolproof - some models take longer than 60frames to appear on screen

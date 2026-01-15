@@ -623,7 +623,6 @@ static void onClick(App& app, View* view, ImVec2 pos) {
                             .build(*engine);
                     app.scene.highlightMaterialInstance = app.scene.highlightMaterial->createInstance();
                     app.scene.highlightMaterialInstance->setParameter("baseColor", RgbType::sRGB, float3{1.0f, 0.0f, 0.0f});
-                    app.scene.highlightMaterialInstance->setPolygonOffset(1.0f, 1.0f);
                     // Ensure triangle is visible regardless of winding: disable back-face culling
                     app.scene.highlightMaterialInstance->setCullingMode(MaterialInstance::CullingMode::NONE);
                 }
@@ -663,11 +662,18 @@ static void onClick(App& app, View* view, ImVec2 pos) {
                 {
                     if (!tcm.hasComponent(app.triangleHighlightRenderable)) {
                         tcm.create(app.triangleHighlightRenderable);
+
                     }
                     auto hitInst = tcm.getInstance(hit.entity);
                     auto overlayInst = tcm.getInstance(app.triangleHighlightRenderable);
                     if (hitInst && overlayInst) {
                         tcm.setParent(overlayInst, hitInst);
+                        tcm.setTransform(overlayInst, mat4f{
+                            float4{1,0,0,0},
+                            float4{0,1,0,0},
+                            float4{0,0,1,0},
+                            float4{0,0,0,1}
+                        });
                     }
                 }
 
