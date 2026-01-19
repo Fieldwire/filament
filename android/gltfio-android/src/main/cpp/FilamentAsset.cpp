@@ -15,15 +15,25 @@
  */
 
 #include <jni.h>
+#include <iostream>
+#include <android/log.h>
+
+#define LOG_TAG "FilamentAsset"
+#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 #include <gltfio/FilamentAsset.h>
 #include <gltfio/Picking.h>
+#include <gltfio/ScreenRay.h>
 #include <filament/TransformManager.h>
 #include <filament/Engine.h>
 #include <filament/View.h>
 #include <filament/Camera.h>
 #include <filament/Viewport.h> // Added to provide full definition of filament::Viewport
 #include <math/mat4.h>
+#include <gltfio/PickingUtils.h>
 
 using namespace filament;
 using namespace filament::math;
@@ -310,70 +320,40 @@ Java_com_google_android_filament_gltfio_FilamentAsset_nRayPick(JNIEnv* env, jcla
 extern "C" JNIEXPORT jobject JNICALL
 Java_com_google_android_filament_gltfio_FilamentAsset_nRayPickScreen(JNIEnv* env, jclass,
         jlong nativeAsset, jlong nativeView, jint sx, jint sy) {
+    LOGD("[nRayPickScreen] sx=%d sy=%d", sx, sy);
+
     FilamentAsset* asset = (FilamentAsset*) nativeAsset;
     if (!asset) return nullptr;
     View* view = (View*) nativeView;
     if (!view) return nullptr;
     Camera* cam = &view->getCamera();
-    PickingRegistry* reg = asset->getPickingRegistry();
-    if (!reg || !cam) return nullptr;
 
     // Update transforms before picking.
-    Engine* engine = asset->getEngine();
-    if (engine) {
-        auto& tcm = engine->getTransformManager();
-        size_t rc = asset->getRenderableEntityCount();
-        const utils::Entity* renderables = asset->getRenderableEntities();
-        if (renderables) {
-            for (size_t i = 0; i < rc; ++i) {
-                auto inst = tcm.getInstance(renderables[i]);
-                if (inst) {
-                    reg->updateTransform(renderables[i], tcm.getWorldTransform(inst));
-                }
-            }
-        }
-    }
+    size_t updatedCount = gltfio::updatePickingTransforms(asset);
+    LOGD("[nRayPickScreen] updatedTransforms=%zu", updatedCount);
 
-    // Screen to NDC conversion. Viewport origin is lower-left in Filament; Java gives top-left.
-    filament::Viewport vp = view->getViewport();
-    if (vp.width <= 0 || vp.height <= 0) return nullptr;
-
-    // Flip y: incoming sy has top-left origin.
-    int flippedY = (int)vp.height - 1 - sy;
-    double nx = (double(sx) / double(vp.width)) * 2.0 - 1.0;
-    double ny = (double(flippedY) / double(vp.height)) * 2.0 - 1.0;
-
-    // Build ray.
-    using namespace filament::math;
-    mat4 proj = cam->getProjectionMatrix();
-    bool isPerspective = std::abs(proj[3][3]) < 1e-6;
-    mat4 invProj = Camera::inverseProjection(proj);
-    mat4 viewM = cam->getViewMatrix();
-    mat4 invView = inverse(viewM);
-
+    // Build ray using shared helper to mirror desktop math.
     float3 rayOrigin;
     float3 rayDir;
-    if (isPerspective) {
-        double4 clip{ nx, ny, -1.0, 1.0 }; // near plane
-        double4 viewSpace = invProj * clip;
-        float3 viewPoint = float3(viewSpace.x, viewSpace.y, viewSpace.z);
-        float3 dirView = viewPoint;
-        float3 dirWorld = (invView * float4(dirView, 0)).xyz;
-        rayOrigin = cam->getPosition();
-        rayDir = dirWorld;
-    } else {
-        double4 clip{ nx, ny, -1.0, 1.0 };
-        double4 viewSpace = invProj * clip;
-        float3 viewPoint = float3(viewSpace.x, viewSpace.y, viewSpace.z);
-        float3 worldPoint = (invView * float4(viewPoint, 1)).xyz;
-        rayOrigin = worldPoint;
-        rayDir = cam->getForwardVector();
-    }
-
-    auto hit = reg->pick(rayOrigin, rayDir);
-    if (hit.entity.getId() == 0 || hit.triangle < 0) {
+    if (!gltfio::computeScreenRay(view, (int)sx, (int)sy, &rayOrigin, &rayDir)) {
+        LOGD("[nRayPickScreen] invalid viewport or inputs");
         return nullptr;
     }
+    LOGD("[nRayPickScreen] camPos=(%.3f,%.3f,%.3f) rayOrigin=(%.3f,%.3f,%.3f) rayDir=(%.3f,%.3f,%.3f)",
+         cam->getPosition().x, cam->getPosition().y, cam->getPosition().z,
+         rayOrigin.x, rayOrigin.y, rayOrigin.z,
+         rayDir.x, rayDir.y, rayDir.z);
+
+    PickingRegistry* reg = asset->getPickingRegistry();
+    if (!reg) return nullptr;
+    auto hit = reg->pick(rayOrigin, rayDir);
+    if (hit.entity.getId() == 0 || hit.triangle < 0) {
+        LOGD("[nRayPickScreen] No hit");
+        return nullptr;
+    }
+    LOGD("[nRayPickScreen] Hit entity=%d tri=%d dist=%.3f",
+         hit.entity.getId(), hit.triangle, hit.distance);
+
     jclass hitClass = env->FindClass("com/google/android/filament/gltfio/FilamentAsset$Hit");
     if (!hitClass) return nullptr;
     jmethodID ctor = env->GetMethodID(hitClass, "<init>", "(IIFFFF)V");
@@ -412,6 +392,69 @@ Java_com_google_android_filament_gltfio_FilamentAsset_nGetTriangleModelSpaceForH
     if (!out) return nullptr;
     jfloat vals[9] = { v0.x, v0.y, v0.z, v1.x, v1.y, v1.z, v2.x, v2.y, v2.z };
     env->SetFloatArrayRegion(out, 0, 9, vals);
+    return out;
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_google_android_filament_gltfio_FilamentAsset_nGetIndicesSize(JNIEnv* env, jclass,
+        jlong nativeAsset, jint entityId) {
+    FilamentAsset* asset = (FilamentAsset*) nativeAsset;
+    if (!asset) return -1;
+    PickingRegistry* reg = asset->getPickingRegistry();
+    if (!reg) return -1;
+    Entity e = Entity::import((uint32_t)entityId);
+    auto* md = reg->getMesh(e);
+    if (!md) return -1;
+    return static_cast<jint>(md->indices.size());
+}
+
+extern "C" JNIEXPORT jintArray JNICALL
+Java_com_google_android_filament_gltfio_FilamentAsset_nGetMeshIndices(JNIEnv* env, jclass,
+        jlong nativeAsset, jint entityId) {
+    FilamentAsset* asset = (FilamentAsset*) nativeAsset;
+    if (!asset) return nullptr;
+    PickingRegistry* reg = asset->getPickingRegistry();
+    if (!reg) return nullptr;
+    Entity e = Entity::import((uint32_t)entityId);
+    auto* md = reg->getMesh(e);
+    if (!md || md->indices.empty()) return nullptr;
+
+    jintArray out = env->NewIntArray(static_cast<jint>(md->indices.size()));
+    if (!out) return nullptr;
+
+    std::vector<jint> jIndices;
+    jIndices.reserve(md->indices.size());
+    for (uint32_t idx : md->indices) {
+        jIndices.push_back(static_cast<jint>(idx));
+    }
+
+    env->SetIntArrayRegion(out, 0, static_cast<jint>(jIndices.size()), jIndices.data());
+    return out;
+}
+
+extern "C" JNIEXPORT jfloatArray JNICALL
+Java_com_google_android_filament_gltfio_FilamentAsset_nGetMeshPositions(JNIEnv* env, jclass,
+        jlong nativeAsset, jint entityId) {
+    FilamentAsset* asset = (FilamentAsset*) nativeAsset;
+    if (!asset) return nullptr;
+    PickingRegistry* reg = asset->getPickingRegistry();
+    if (!reg) return nullptr;
+    Entity e = Entity::import((uint32_t)entityId);
+    auto* md = reg->getMesh(e);
+    if (!md || md->positions.empty()) return nullptr;
+
+    jfloatArray out = env->NewFloatArray(static_cast<jint>(md->positions.size() * 3));
+    if (!out) return nullptr;
+
+    std::vector<jfloat> jPositions;
+    jPositions.reserve(md->positions.size() * 3);
+    for (const float3& pos : md->positions) {
+        jPositions.push_back(pos.x);
+        jPositions.push_back(pos.y);
+        jPositions.push_back(pos.z);
+    }
+
+    env->SetFloatArrayRegion(out, 0, static_cast<jint>(jPositions.size()), jPositions.data());
     return out;
 }
 

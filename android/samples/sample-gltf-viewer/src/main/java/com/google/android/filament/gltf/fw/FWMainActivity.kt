@@ -18,6 +18,7 @@ package com.google.android.filament.gltf.fw
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.Intent
 import android.content.res.Configuration
 import android.os.Bundle
 import android.util.Log
@@ -46,8 +47,8 @@ import kotlinx.coroutines.launch
 import java.nio.ByteBuffer
 import java.util.concurrent.Executors
 
-fun logg(vararg msg: Any) {
-    Log.d("fml", msg.joinToString("\t"))
+fun logg(vararg msg: Any, tag: String = "fml") {
+    Log.d(tag, msg.joinToString("\t"))
 }
 
 class FWMainActivity : AppCompatActivity(), BimExecutor.Callback, ProgressDialogFragment.Callback {
@@ -84,6 +85,21 @@ class FWMainActivity : AppCompatActivity(), BimExecutor.Callback, ProgressDialog
 
         addOnConfigurationChangedListener {
             logg("configChangedListener")
+        }
+
+        onBackPressedDispatcher.addCallback(object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                finishWithResult(Activity.RESULT_OK)
+            }
+        })
+    }
+
+    private fun finishWithResult(resultCode: Int, intent: Intent? = null) {
+        frameChoreographer.stop()
+        bimExecutor.destroyViewer {
+            hideProgress()
+            setResult(resultCode, intent)
+            finish()
         }
     }
 

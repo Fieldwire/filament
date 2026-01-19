@@ -46,11 +46,21 @@ struct MeshBVHNode {
 
 struct MeshData {
     std::vector<filament::math::float3> positions;   // local-space vertex positions
+    std::vector<filament::math::float3> normals;     // vertex normals
+    std::vector<filament::math::float4> tangents;    // vertex tangents (w component is handedness)
+    std::vector<filament::math::float2> uvs;         // texture coordinates (TEXCOORD_0)
+    std::vector<filament::math::float4> colors;      // vertex colors (COLOR_0)
     std::vector<uint32_t> indices;                   // triangle list (3 * triCount)
     std::vector<MeshBVHNode> bvh;                    // BVH nodes (empty until built)
     std::vector<uint32_t> leafTris;                  // triangle ordinals for leaves
     filament::Aabb localBounds;                      // un-transformed bounds
     bool bvhBuilt = false;                           // BVH build flag
+
+    // Flags to indicate which attributes are present
+    bool hasNormals = false;
+    bool hasTangents = false;
+    bool hasUVs = false;
+    bool hasColors = false;
 };
 
 // Build CPU mesh data for picking from a cgltf mesh (triangles only). localBounds left empty.

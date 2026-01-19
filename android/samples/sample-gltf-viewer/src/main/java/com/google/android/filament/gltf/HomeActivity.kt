@@ -1,7 +1,6 @@
 package com.google.android.filament.gltf
 
 import android.content.Intent
-import androidx.appcompat.app.AppCompatActivity
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.padding
@@ -19,6 +18,19 @@ import com.google.android.filament.gltf.fw.FWMainActivity
 class HomeActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Get all .glb files from assets/models directory
+        val modelFiles = try {
+            assets.list("models")
+                ?.filter { it.endsWith(".glb") }
+                ?.map { it.removeSuffix(".glb") }
+                ?.sorted()
+                ?: emptyList()
+        } catch (e: Exception) {
+            e.printStackTrace()
+            emptyList<String>()
+        }
+
         setContentView(
             ComposeView(this).apply {   
                 setContent { 
@@ -26,15 +38,7 @@ class HomeActivity : ComponentActivity() {
                         modifier = Modifier.padding(32.dp)
                     ) {
                         items(
-                            items = listOf(
-                                "packed_21_KB.glb",
-                                "21_KB.glb",
-                                "70_MB.glb",
-                                "100_MB.glb",
-                                "160_MB.glb",
-                                "500_MB.glb",
-                                "560_MB.glb"
-                            ),
+                            items = modelFiles,
                             itemContent = { modelName ->
                                 ClickableText(
                                     modifier = Modifier.padding(16.dp),

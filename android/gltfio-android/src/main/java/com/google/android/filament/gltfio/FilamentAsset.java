@@ -392,4 +392,37 @@ public class FilamentAsset {
             float ox, float oy, float oz, float dx, float dy, float dz);
     private static native @Nullable Hit nRayPickScreen(long nativeAsset, long nativeView, int sx, int sy); // Added native bridge for screen picking.
     private static native @Nullable float[] nGetTriangleModelSpaceForHit(long nativeAsset, int entity, int triangleIndex);
+    private static native int nGetIndicesSize(long nativeAsset, int entity);
+    private static native @Nullable int[] nGetMeshIndices(long nativeAsset, int entity);
+    private static native @Nullable float[] nGetMeshPositions(long nativeAsset, int entity);
+
+    /**
+     * Get the size of the indices array for a given entity.
+     * @param entity The entity to query
+     * @return The number of indices, or -1 if entity not found or has no mesh data
+     */
+    public int getIndicesSize(@Entity int entity) {
+        return nGetIndicesSize(getNativeObject(), entity);
+    }
+
+    /**
+     * Get all mesh indices for a given entity.
+     * This returns the complete index buffer data from the PickingRegistry's MeshData.
+     * @param entity The entity to query
+     * @return Array of indices, or null if entity not found or has no mesh data
+     */
+    public @Nullable int[] getMeshIndices(@Entity int entity) {
+        return nGetMeshIndices(getNativeObject(), entity);
+    }
+
+    /**
+     * Get all mesh positions for a given entity.
+     * This returns the complete position data from the PickingRegistry's MeshData.
+     * The array contains vertex positions as [x0, y0, z0, x1, y1, z1, ...].
+     * @param entity The entity to query
+     * @return Array of positions (3 floats per vertex), or null if entity not found or has no mesh data
+     */
+    public @Nullable float[] getMeshPositions(@Entity int entity) {
+        return nGetMeshPositions(getNativeObject(), entity);
+    }
 }

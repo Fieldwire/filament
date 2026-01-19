@@ -19,11 +19,16 @@ import org.json.JSONObject
  * Where the keys (0, 120, 240) represent triangle index ranges.
  */
 class TriangleMapping(context: Context, jsonAssetPath: String) {
-    private val mappingData: JSONObject
+    val mappingData: JSONObject
 
     init {
-        val jsonString = context.assets.open(jsonAssetPath).use { inputStream ->
-            inputStream.bufferedReader().use { it.readText() }
+        val jsonString = try{
+            context.assets.open(jsonAssetPath).use { inputStream ->
+                inputStream.bufferedReader().use { it.readText() }
+            }
+        } catch (e: Exception) {
+            logg("TriangleMapping", "Error reading JSON asset at $jsonAssetPath: ${e.message}")
+            ""
         }
         mappingData = JSONObject(jsonString)
     }
@@ -36,7 +41,10 @@ class TriangleMapping(context: Context, jsonAssetPath: String) {
      * @param triangleIndex The vertex index (will be multiplied by 3 to get triangle index)
      */
     fun getTriangleRange(entityId: String, triangleIndex: Int): Pair<Int, Int>? {
-        val entityMapping = mappingData.optJSONObject(entityId) ?: mappingData.optJSONObject(mappingData.keys().next())
+        val entityMapping = mappingData.optJSONObject(entityId) ?: return null.also {
+            logg("TriangleMapping", "No mapping found for entityId:", entityId)
+            logg("TriangleMapping", "Available entityIds:", mappingData.keys().asSequence().toList())
+        }
 
         // Convert vertex index to triangle index by multiplying by 3
         val actualTriangleIndex = triangleIndex * 3
@@ -50,16 +58,29 @@ class TriangleMapping(context: Context, jsonAssetPath: String) {
 
         if (rangeKeys.isEmpty()) return null
 
-        // Find which range the triangle falls into
-        for (i in rangeKeys.indices) {
-            val rangeStart = rangeKeys[i]
-            val rangeEnd = if (i < rangeKeys.size - 1) {
-                rangeKeys[i + 1] - 1
+        // Use binary search to find the insertion point
+        // binarySearch returns (-(insertion point) - 1) if not found
+        val searchResult = rangeKeys.binarySearch(actualTriangleIndex)
+
+        val foundIndex = if (searchResult >= 0) {
+            // Exact match found
+            searchResult
+        } else {
+            // Not an exact match, get the insertion point
+            val insertionPoint = -(searchResult + 1)
+            // The range we want is the one before the insertion point
+            if (insertionPoint > 0) insertionPoint - 1 else -1
+        }
+
+        if (foundIndex != -1 && foundIndex < rangeKeys.size) {
+            val rangeStart = rangeKeys[foundIndex]
+            val rangeEnd = if (foundIndex < rangeKeys.size - 1) {
+                rangeKeys[foundIndex + 1] - 1
             } else {
-                // For the last range, use a large number or you can determine max from data
                 Int.MAX_VALUE
             }
 
+            // Verify the triangle actually falls in this range
             if (actualTriangleIndex >= rangeStart && actualTriangleIndex <= rangeEnd) {
                 return Pair(rangeStart, rangeEnd)
             }

@@ -18,6 +18,8 @@ package com.google.android.filament.gltf
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.Context
+import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -26,6 +28,7 @@ import android.view.*
 import android.view.GestureDetector
 import android.widget.TextView
 import android.widget.Toast
+import androidx.core.content.ContextCompat
 import com.google.android.filament.Engine
 import com.google.android.filament.Fence
 import com.google.android.filament.IndirectLight
@@ -33,6 +36,8 @@ import com.google.android.filament.Material
 import com.google.android.filament.Skybox
 import com.google.android.filament.View
 import com.google.android.filament.View.OnPickCallback
+import com.google.android.filament.gltf.fw.BimViewer.Companion.ZOOM
+import com.google.android.filament.gltf.fw.FWModelViewer
 import com.google.android.filament.gltfio.FilamentAsset
 import com.google.android.filament.utils.*
 import kotlinx.coroutines.CoroutineScope
@@ -59,7 +64,7 @@ class MainActivity : Activity() {
     private lateinit var surfaceView: SurfaceView
     private lateinit var choreographer: Choreographer
     private val frameScheduler = FrameCallback()
-    private lateinit var modelViewer: ModelViewer
+    private lateinit var modelViewer: FWModelViewer
     private lateinit var titlebarHint: TextView
     private val doubleTapListener = DoubleTapListener()
     private val singleTapListener = SingleTapListener()
@@ -76,6 +81,12 @@ class MainActivity : Activity() {
 
     private val multiplier = 2L
 
+    private val cameraManipulator: Manipulator get() = Manipulator.Builder()
+        .viewport(surfaceView.width, surfaceView.height)
+        .flightPanSpeed(0.0004f, 0.0004f)
+        .flightStartPosition(0f, 0f, 1f)
+        .build(Manipulator.Mode.FREE_FLIGHT_2)
+
     @SuppressLint("ClickableViewAccessibility")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -89,7 +100,8 @@ class MainActivity : Activity() {
         doubleTapDetector = GestureDetector(applicationContext, doubleTapListener)
         singleTapDetector = GestureDetector(applicationContext, singleTapListener)
 
-        modelViewer = ModelViewer(surfaceView,
+        modelViewer = FWModelViewer(surfaceView,
+            manipulator = cameraManipulator,
             engine = Engine.Builder().backend(Engine.Backend.VULKAN).config(
                 Engine.Config().apply {
                     // Remember to change the configs in release/config file
@@ -99,7 +111,9 @@ class MainActivity : Activity() {
                     perFrameCommandsSizeMB = 2 * multiplier
                     driverHandleArenaSizeMB = 5 * multiplier
                 }
-            ).build()
+            ).build(),
+            executor = { it() },
+            generateNormals = true
         )
 
         viewerContent.view = modelViewer.view
@@ -115,16 +129,20 @@ class MainActivity : Activity() {
             true
         }
 
+        modelViewer.scene.removeEntity(modelViewer.light)
+        setBackgroundColor(this)
+        disablePostProcessing()
+
         createDefaultRenderables()
         createIndirectLight()
 
         setStatusText("To load a new model, go to the above URL on your host machine.")
 
-        val view = modelViewer.view
+        /*val view = modelViewer.view
 
-        /*
+        *//*
          * Note: The settings below are overriden when connecting to the remote UI.
-         */
+         *//*
 
         // on mobile, better use lower quality color buffer
         view.renderQuality = view.renderQuality.apply {
@@ -153,13 +171,62 @@ class MainActivity : Activity() {
         // bloom is pretty expensive but adds a fair amount of realism
         view.bloomOptions = view.bloomOptions.apply {
             enabled = true
-        }
+        }*/
 
         remoteServer = RemoteServer(8082)
     }
 
+
+    private fun setBackgroundColor(context: Context) {
+        val color = ContextCompat.getColor(context, android.R.color.white)
+        val background = floatArrayOf(
+            Color.red(color) / 255f,
+            Color.green(color) / 255f,
+            Color.blue(color) / 255f,
+            Color.alpha(color) / 255f
+        )
+        // Skybox fills the untouched pixels (pixels not taken up by model) with this color
+        modelViewer.scene.skybox = Skybox.Builder().color(background).build(modelViewer.engine)
+
+        // On Lenovo Tab without this option, draw calls from previous frame is not cleared
+        // resulting in multiple appearance of the same model when moved
+        modelViewer.renderer.clearOptions = modelViewer.renderer.clearOptions.apply {
+            clear = true
+        }
+    }
+
+    private fun disablePostProcessing() {
+        modelViewer.view.run {
+            isPostProcessingEnabled = false
+            setShadowingEnabled(false)
+            setScreenSpaceRefractionEnabled(false)
+
+            // on mobile, better use lower quality color buffer
+            renderQuality = renderQuality.apply {
+                hdrColorBuffer = View.QualityLevel.MEDIUM
+            }
+
+            // Below properties are copied from sample-gltf-viewer android sample
+            // https://github.com/Fieldwire/filament/blob/main/android/samples/sample-gltf-viewer/src/main/java/com/google/android/filament/gltf/MainActivity.kt
+            // dynamic resolution often helps a lot
+            dynamicResolutionOptions = dynamicResolutionOptions.apply {
+                enabled = false
+                quality = View.QualityLevel.MEDIUM
+            }
+
+            // MSAA is needed with dynamic resolution MEDIUM
+            multiSampleAntiAliasingOptions = multiSampleAntiAliasingOptions.apply {
+                enabled = false
+            }
+
+            // FXAA is pretty cheap and helps a lot
+            antiAliasing = View.AntiAliasing.FXAA
+        }
+    }
+
+
     private fun createDefaultRenderables() {
-        val buffer = assets.open("models/21_KB.glb").use { input ->
+        val buffer = assets.open("models/21_KB_1.glb").use { input ->
             val bytes = ByteArray(input.available())
             input.read(bytes)
             ByteBuffer.wrap(bytes)
@@ -394,7 +461,8 @@ class MainActivity : Activity() {
 
     private fun updateRootTransform() {
         if (automation.viewerOptions.autoScaleEnabled) {
-            modelViewer.transformToUnitCube()
+            modelViewer.transformToUnitCube(Float3(0f, 0f, ZOOM))
+            modelViewer.setCameraManipulator(cameraManipulator)
         } else {
             modelViewer.clearRootTransform()
         }
@@ -409,7 +477,7 @@ class MainActivity : Activity() {
                 choreographer.postFrameCallback(this)
             }, 100)
 
-            loadStartFence?.let {
+/*            loadStartFence?.let {
                 if (it.wait(Fence.Mode.FLUSH, 0) == Fence.FenceStatus.CONDITION_SATISFIED) {
                     val end = System.nanoTime()
                     val total = (end - loadStartTime) / 1_000_000
@@ -455,7 +523,7 @@ class MainActivity : Activity() {
                     applyAnimation(0, elapsedTimeSeconds.toFloat())
                 }
                 updateBoneMatrices()
-            }
+            }*/
 
             modelViewer.render(frameTimeNanos)
 
@@ -495,23 +563,26 @@ class MainActivity : Activity() {
     inner class SingleTapListener : GestureDetector.SimpleOnGestureListener() {
         override fun onSingleTapUp(event: MotionEvent): Boolean {
             // GPU picking remains for renderable entity.
-            modelViewer.view.pick(
+            val flippedY = surfaceView.height - 1 - event.y.toInt()
+            /*modelViewer.view.pick(
                 event.x.toInt(),
                 surfaceView.height - event.y.toInt(),
                 surfaceView.handler, {
                     val name = modelViewer.asset?.getName(it.renderable)
                     Log.v("Filament", "Picked (GPU) ${it.renderable}: $name")
                 },
-            )
+            )*/
+
+            logg("SurfaceView width: ${surfaceView.width} height: ${surfaceView.height} event.x: ${event.x} event.y: ${event.y}")
 
             // CPU triangle picking using native screen-coordinate conversion (no Java unprojection).
             modelViewer.asset?.let { asset ->
-                val hit = asset.pickScreen(modelViewer.view, event.x.toInt(), event.y.toInt()) // Updated usage: removed redundant asset parameter
+                val hit = asset.pickScreen(modelViewer.view, event.x.toInt(), flippedY.toInt()) // Updated usage: removed redundant asset parameter
                 if (hit != null) {
                     val pickedName = asset.getName(hit.entity)
                     Log.v(
                         "Filament",
-                        "Ray-picked entity=${hit.entity} name=${pickedName} tri=${hit.triangle} dist=${hit.distance} bary=(${hit.u},${hit.v},${hit.w})"
+                        "Ray-picked entity=${hit.entity} name=${pickedName}"
                     )
                 } else {
                     Log.v("Filament", "Ray pick: no intersection")

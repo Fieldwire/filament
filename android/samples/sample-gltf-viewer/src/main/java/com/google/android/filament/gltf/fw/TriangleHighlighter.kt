@@ -23,19 +23,12 @@ import java.nio.ByteBuffer
  * - Call [clear] to remove it.
  */
 class TriangleHighlighter(
-    private val context: Context,
+    private val objectHighlighter: ObjectHighlighter,
     private val viewer: FWModelViewer,
 ) {
     private var overlayEntity: Int = 0
     private var vb: VertexBuffer? = null
     private var ib: IndexBuffer? = null
-    private var materialInstance: MaterialInstance? = null
-
-    init {
-        materialInstance = loadUnlitHighlightMaterial(viewer.engine)
-    }
-
-    fun isVisible(): Boolean = overlayEntity != 0
 
     /**
      * Show a triangle overlay.
@@ -120,7 +113,7 @@ class TriangleHighlighter(
         }
 
         // Build renderable: unlit, double-sided, culling disabled.
-        val mi = materialInstance ?: return
+        val mi = objectHighlighter.highlightMaterial
         val builder = RenderableManager.Builder(1)
             .geometry(0, RenderableManager.PrimitiveType.TRIANGLES, vb!!, ib!!, 0, indexCount)
             .material(0, mi)
@@ -143,16 +136,6 @@ class TriangleHighlighter(
         ib?.let { viewer.engine.destroyIndexBuffer(it) }
         vb = null
         ib = null
-    }
-
-    private fun loadUnlitHighlightMaterial(engine: Engine): MaterialInstance? {
-        return try {
-            val buffer = readAssetAsByteBuffer(context, ObjectHighlighter.MAT_FILE)
-            val mat = Material.Builder().payload(buffer, buffer.remaining()).build(engine)
-            mat.defaultInstance
-        } catch (@Suppress("UNUSED_PARAMETER") t: Throwable) {
-            null
-        }
     }
 
     companion object {

@@ -8,21 +8,18 @@ import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
-import android.view.ViewGroup
 import androidx.core.content.ContextCompat
 import com.google.android.filament.Engine
 import com.google.android.filament.Skybox
 import com.google.android.filament.View
+import com.google.android.filament.gltf.logg
+import com.google.android.filament.gltfio.FilamentAsset
 import com.google.android.filament.utils.Float3
 import com.google.android.filament.utils.KTX1Loader
 import com.google.android.filament.utils.Manipulator
-import com.google.android.filament.utils.ModelViewer
-import com.google.android.material.snackbar.Snackbar
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.nio.ByteBuffer
-import kotlin.text.clear
 
 @SuppressLint("ClickableViewAccessibility")
 class BimViewer(
@@ -35,6 +32,7 @@ class BimViewer(
     private val cameraManipulator: Manipulator get() = Manipulator.Builder()
         .viewport(surfaceView.width, surfaceView.height)
         .flightPanSpeed(0.0004f, 0.0004f)
+        .flightStartPosition(0f, 0f, 1f)
         .build(Manipulator.Mode.FREE_FLIGHT_2)
 
     init {
@@ -50,10 +48,10 @@ class BimViewer(
             Engine.Config().apply {
                 // Remember to change the configs in release/config file
                 commandBufferSizeMB = 2 * multiplier * 3
-                perRenderPassArenaSizeMB = 2 * multiplier + 1
+                perRenderPassArenaSizeMB = 2 * multiplier + 2
                 minCommandBufferSizeMB = 2 * multiplier
                 perFrameCommandsSizeMB = 2 * multiplier
-                driverHandleArenaSizeMB = 4 * multiplier
+                driverHandleArenaSizeMB = 8 * multiplier
             }
         ).build(),
         executor = {
@@ -73,7 +71,9 @@ class BimViewer(
     private val visibilityHandler: VisibilityHandler
     // Menus: Properties/Isolate/Hide
     // To highlight a single triangle overlay
-    private val triangleHighlighter: TriangleHighlighter = TriangleHighlighter(context.applicationContext, modelViewer)
+    private val triangleHighlighter: TriangleHighlighter
+    // To hide subset of triangles by rebuilding IndexBuffer
+    private var triangleHider: TriangleHider? = null
     // Triangle mapping for grouped triangle highlighting
     private var triangleMapping: TriangleMapping? = null
 
@@ -89,13 +89,14 @@ class BimViewer(
 
         entityHighlighter = ObjectHighlighter(context.applicationContext, modelViewer)
         visibilityHandler = VisibilityHandler(modelViewer)
+        triangleHighlighter = TriangleHighlighter(entityHighlighter, modelViewer)
     }
 
     suspend fun loadModel(context: Context, fileName: String) {
         logg("loadingModel", fileName)
         val (modelBuffer, lightBuffer) = withContext(Dispatchers.IO) {
             Pair(
-                readAssetAsByteBuffer(context, "models/$fileName"),
+                readAssetAsByteBuffer(context, "models/$fileName.glb"),
                 readAssetAsByteBuffer(context, IBL_FILE)
             )
         }
@@ -103,9 +104,15 @@ class BimViewer(
         modelViewer.loadModelGlb(modelBuffer)
         setIndirectLight(lightBuffer)
 
+        // Initialize TriangleHider with the asset
+        modelViewer.asset?.let { asset ->
+            triangleHider = TriangleHider(modelViewer.engine, asset)
+            logg("TriangleHider initialized")
+        }
+
         // Try to load triangle mapping if it exists
         try {
-            triangleMapping = TriangleMapping(context, TRIANGLE_MAPPING_FILE)
+            triangleMapping = TriangleMapping(context, "json/mapping_$fileName.json")
             logg("TriangleMapping loaded successfully")
         } catch (e: Exception) {
             logg("No triangle mapping file found or error loading it: ${e.message}")
@@ -222,87 +229,158 @@ class BimViewer(
 
     private inner class SingleTapListener : GestureDetector.SimpleOnGestureListener() {
         override fun onSingleTapUp(event: MotionEvent): Boolean {
-            callback.execute {
+//            callback.execute {
                 // If there was a previous selection, remove it & don't start another selection
-                if (entityHighlighter.unhighlight()) {
-                    triangleHighlighter.clear()
-                    return@execute
-                }
+//                if (entityHighlighter.unhighlight()) {
+//                    triangleHighlighter.clear()
+//                    return@execute
+//                }
 
                 val x = event.x.toInt()
                 val y = event.y.toInt()
+                val flippedY = surfaceView.height - 1 - event.y.toInt()
+                logg("SurfaceView width: ${surfaceView.width} height: ${surfaceView.height} event.x: ${event.x} event.y: ${event.y}")
 
-                val asset = modelViewer.asset
-                if (asset != null) {
-                    // Use existing screen-space pick to get entity and triangle index
-                    val hit = asset.pickScreen(modelViewer.view, x, y)
-                    if (hit != null && hit.entity != 0 && hit.triangle >= 0) {
-                        // Get entity name for mapping lookup
-                        val entityName = asset.getName(hit.entity) ?: hit.entity.toString()
-                        logg("Picked entity: $entityName, triangle: ${hit.triangle}")
-
-                        // Check if we have a triangle mapping
-                        val mapping = triangleMapping
-                        if (mapping != null) {
-                            // Get the triangle range from mapping
-                            val range = mapping.getTriangleRange(entityName, hit.triangle)
-                            if (range != null) {
-                                val (startIdx, endIdx) = range
-                                logg("Triangle range: $startIdx to $endIdx")
-
-                                // Collect all triangles in the range
-                                val trianglesToHighlight = mutableListOf<Triple<Float3, Float3, Float3>>()
-                                for (triIdx in startIdx..endIdx step 3) {
-                                    val tri = asset.getTriangleModelSpaceForHit(hit.entity, triIdx)
-                                    if (tri != null && tri.size == 9) {
-                                        val v0 = Float3(tri[0], tri[1], tri[2])
-                                        val v1 = Float3(tri[3], tri[4], tri[5])
-                                        val v2 = Float3(tri[6], tri[7], tri[8])
-                                        trianglesToHighlight.add(Triple(v0, v1, v2))
-                                    }
-                                }
-
-                                if (trianglesToHighlight.isNotEmpty()) {
-                                    logg("Highlighting ${trianglesToHighlight.size} triangles")
-                                    triangleHighlighter.showTriangles(hit.entity, trianglesToHighlight)
-                                    return@execute
-                                }
-                            }
-                        }
-
-                        // Fallback: highlight single triangle if no mapping or mapping failed
-                        val tri = asset.getTriangleModelSpaceForHit(hit.entity, hit.triangle)
-                        if (tri != null && tri.size == 9) {
-                            val v0 = Float3(tri[0], tri[1], tri[2])
-                            val v1 = Float3(tri[3], tri[4], tri[5])
-                            val v2 = Float3(tri[6], tri[7], tri[8])
-                            triangleHighlighter.showTriangle(hit.entity, v0, v1, v2)
-                            return@execute
-                        }
-                    }
-                }
+//                kotlinTrianglePicking(x, flippedY)
+                cppTrianglePicking(x, flippedY)
 
                 // Fallback: highlight entire renderable entity
                 // Filament's pick expects y flipped to viewport origin at bottom-left
-                val flippedY = surfaceView.height - y
-                modelViewer.view.pick(x, flippedY, surfaceView.handler) { result ->
+                /*modelViewer.view.pick(x, flippedY, surfaceView.handler) { result ->
                     if (entityHighlighter.highlight(result.renderable)) {
                         // showContextMenu(x, y)
                     }
-                }
-            }
+                }*/
+//            }
             // Tap event is always consumed
             return true
         }
     }
 
-    private fun showContextMenu(x: Int, y: Int) {
+    private fun cppTrianglePicking(x: Int, y: Int) {
+        val asset = modelViewer.asset
+        if (asset != null) {
+            // Use existing screen-space pick to get entity and triangle index
+            val hit = asset.pickScreen(modelViewer.view, x, y)
 
+            logg("Pick result: ${hit?.entity} triangle: ${hit?.triangle} ")
+//            highlight(hit)
+
+            hide(hit)
+        }
+    }
+
+    private fun hide(hit: FilamentAsset.Hit?) {
+        triangleHider?.restore()
+
+        val asset = modelViewer.asset ?: return
+        if (hit != null && hit.entity != 0 && hit.triangle >= 0) {
+            // Get entity name for mapping lookup
+            val entityName = asset.getName(hit.entity) ?: hit.entity.toString()
+            logg("Hiding triangles for entity: $entityName, triangle: ${hit.triangle}")
+
+            // Check if we have a triangle mapping
+            val mapping = triangleMapping
+            if (mapping != null) {
+                // Get the triangle range from mapping
+                val range = mapping.getTriangleRange(entityName, hit.triangle)
+                logg("Triangle range from mapping: $range")
+                if (range != null) {
+                    var (startIdx, endIdx) = range
+                    logg("Triangle range: $startIdx to $endIdx")
+
+                    // If endIdx is Int.MAX_VALUE, get the actual indices size from the asset
+                    if (endIdx == Int.MAX_VALUE) {
+                        val indicesSize = asset.getIndicesSize(hit.entity)
+                        if (indicesSize > 0) {
+                            endIdx = indicesSize - 1
+                            logg("Adjusted endIdx from Int.MAX_VALUE to actual size: $endIdx")
+                        }
+                    }
+
+                    // Hide triangles in the range using TriangleHider
+                    val success = triangleHider?.hideTriangles(hit.entity, startIdx, endIdx)
+                    if (success == true) {
+                        logg("Successfully hid triangles [$startIdx, $endIdx] for entity ${hit.entity}")
+                    } else {
+                        logg("Failed to hide triangles for entity ${hit.entity}")
+                    }
+                    return
+                }
+            }
+
+            // If no mapping or no range found, log it
+            logg("No triangle mapping or range found, cannot hide triangles")
+        }
+    }
+
+    private fun highlight(hit: FilamentAsset.Hit?) {
+        val asset = modelViewer.asset ?: return
+        if (hit != null && hit.entity != 0 && hit.triangle >= 0) {
+            // Get entity name for mapping lookup
+            val entityName = asset.getName(hit.entity) ?: hit.entity.toString()
+            logg("Picked entity: $entityName, triangle: ${hit.triangle}")
+
+            // Check if we have a triangle mapping
+            val mapping = triangleMapping
+            if (mapping != null) {
+                // Get the triangle range from mapping
+                logg("getting triangle range from mapping")
+                val range = mapping.getTriangleRange(entityName, hit.triangle)
+                logg("Triangle range from mapping: $range")
+                if (range != null) {
+                    var (startIdx, endIdx) = range
+                    logg("Triangle range: $startIdx to $endIdx")
+
+                    // If endIdx is Int.MAX_VALUE, get the actual indices size from the asset
+                    if (endIdx == Int.MAX_VALUE) {
+                        val indicesSize = asset.getIndicesSize(hit.entity)
+                        if (indicesSize > 0) {
+                            endIdx = indicesSize - 1
+                            logg("Adjusted endIdx from Int.MAX_VALUE to actual size: $endIdx")
+                        }
+                    }
+
+                    // Collect all triangles in the range
+                    val trianglesToHighlight = mutableListOf<Triple<Float3, Float3, Float3>>()
+                    for (triIdx in startIdx..endIdx step 3) {
+                        val tri = asset.getTriangleModelSpaceForHit(hit.entity, triIdx)
+                        if (tri != null && tri.size == 9) {
+                            val v0 = Float3(tri[0], tri[1], tri[2])
+                            val v1 = Float3(tri[3], tri[4], tri[5])
+                            val v2 = Float3(tri[6], tri[7], tri[8])
+                            trianglesToHighlight.add(Triple(v0, v1, v2))
+                        }
+                    }
+
+                    if (trianglesToHighlight.isNotEmpty()) {
+                        logg("Highlighting ${trianglesToHighlight.size} triangles")
+                        triangleHighlighter.showTriangles(hit.entity, trianglesToHighlight)
+
+                        // Alternative: Use TriangleHider to actually hide triangles (modifies geometry)
+                        // Note: Only one entity can be hidden at a time (auto-restores previous)
+                        // triangleHider?.hideTriangles(hit.entity, startIdx, endIdx)
+                        // To restore: triangleHider?.restore()
+
+                        return
+                    }
+                }
+            }
+
+            // Fallback: highlight single triangle if no mapping or mapping failed
+            val tri = asset.getTriangleModelSpaceForHit(hit.entity, hit.triangle)
+            if (tri != null && tri.size == 9) {
+                val v0 = Float3(tri[0], tri[1], tri[2])
+                val v1 = Float3(tri[3], tri[4], tri[5])
+                val v2 = Float3(tri[6], tri[7], tri[8])
+                triangleHighlighter.showTriangle(hit.entity, v0, v1, v2)
+                return
+            }
+        }
     }
 
     companion object {
-        private const val IBL_FILE = "envs/default_env/default_ibl.ktx"
-        private const val TRIANGLE_MAPPING_FILE = "json/mapping_21_kb.json"
+        private const val IBL_FILE = "envs/default_env/default_env_ibl.ktx"
         // Some models take a couple of frames to appear on screen
         // Wait for 60 frames (~1 sec on most devices) before informing any callbacks
         // TODO: This is not foolproof - some models take longer than 60frames to appear on screen
@@ -310,7 +388,7 @@ class BimViewer(
         // as GPU renders pixels asynchronously on a different (render) thread.
         private const val FIRST_FRAME_THRESHOLD = 60
 
-        private const val ZOOM = -4f
+        const val ZOOM = -1f
     }
 
     interface Callback {

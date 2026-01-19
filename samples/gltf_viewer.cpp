@@ -38,6 +38,11 @@
 #include <gltfio/Picking.h>
 #include <gltfio/ResourceLoader.h>
 #include <gltfio/TextureProvider.h>
+#include <gltfio/ScreenRay.h>
+#include <gltfio/PickingUtils.h>
+
+// Access to internal asset structures for getting vertex/index buffers
+#include "../libs/gltfio/src/FFilamentAsset.h"
 
 #include <viewer/AutomationEngine.h>
 #include <viewer/AutomationSpec.h>
@@ -68,6 +73,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <set>
 #include <sstream>
 #include <string>
@@ -159,6 +165,16 @@ struct App {
     utils::Entity triangleHighlightRenderable{};
     VertexBuffer* triangleVB = nullptr;
     IndexBuffer* triangleIB = nullptr;
+
+    // Track hidden triangles per entity
+    struct HiddenTriangleInfo {
+        utils::Entity originalEntity;
+        VertexBuffer* originalVertexBuffer = nullptr;  // Original vertex buffer from asset
+        IndexBuffer* originalIndexBuffer = nullptr;    // Original index buffer from asset
+        IndexBuffer* modifiedIndexBuffer = nullptr;    // Our modified index buffer
+        std::set<int> hiddenTriangleIndices;
+    };
+    std::map<uint32_t, HiddenTriangleInfo> hiddenTriangles;
 };
 
 static const char* DEFAULT_IBL = "assets/ibl/lightroom_14b";
@@ -521,52 +537,262 @@ static void createOverdrawVisualizerEntities(Engine* engine, Scene* scene, App& 
     app.scene.fullScreenTriangleIndexBuffer = indexBuffer;
 }
 
+
+static void highlightTriangle(App& app, View* view, const PickingRegistry::Hit& hit) {
+    Engine* engine = app.engine;
+    auto& tcm = engine->getTransformManager();
+    auto reg = app.asset->getPickingRegistry();
+
+    // Build a standalone renderable for the exact picked triangle (model-space)
+    auto* md = reg->getMesh(hit.entity);
+    if (!md) return;
+
+    const uint32_t base = (uint32_t)hit.triangle * 3u;
+    const float3 v0 = md->positions[ md->indices[base + 0] ];
+    const float3 v1 = md->positions[ md->indices[base + 1] ];
+    const float3 v2 = md->positions[ md->indices[base + 2] ];
+
+    // Clean up previous triangle highlight entity if present
+    if (app.triangleHighlightRenderable) {
+        view->getScene()->remove(app.triangleHighlightRenderable);
+        if (app.triangleVB) { engine->destroy(app.triangleVB); app.triangleVB = nullptr; }
+        if (app.triangleIB) { engine->destroy(app.triangleIB); app.triangleIB = nullptr; }
+        engine->destroy(app.triangleHighlightRenderable);
+        app.triangleHighlightRenderable.clear();
+    }
+
+    // Ensure highlight material exists
+    if (!app.scene.highlightMaterial) {
+        app.scene.highlightMaterial = Material::Builder()
+                .package(RESOURCES_SANDBOXUNLIT_DATA, RESOURCES_SANDBOXUNLIT_SIZE)
+                .build(*engine);
+        app.scene.highlightMaterialInstance = app.scene.highlightMaterial->createInstance();
+        app.scene.highlightMaterialInstance->setParameter("baseColor", RgbType::sRGB, float3{1.0f, 0.0f, 0.0f});
+        app.scene.highlightMaterialInstance->setCullingMode(MaterialInstance::CullingMode::NONE);
+    }
+
+    // Create vertex and index buffers for the triangle (MODEL-SPACE), with a tiny lift along local normal
+    struct TriVertex { float3 pos; };
+    float3 nLocal = normalize(cross(v1 - v0, v2 - v0));
+    float3 liftLocal = nLocal * 1e-4f;
+    auto* verts = new TriVertex[3]{ TriVertex{v0 + liftLocal}, TriVertex{v1 + liftLocal}, TriVertex{v2 + liftLocal} };
+    auto* indices = new uint16_t[3]{ 0, 1, 2 };
+
+    app.triangleVB = VertexBuffer::Builder()
+            .vertexCount(3)
+            .bufferCount(1)
+            .attribute(VertexAttribute::POSITION, 0, VertexBuffer::AttributeType::FLOAT3, 0, sizeof(TriVertex))
+            .build(*engine);
+    app.triangleVB->setBufferAt(*engine, 0,
+            VertexBuffer::BufferDescriptor(
+                    verts, sizeof(TriVertex) * 3,
+                    [](void* buffer, size_t, void*) { delete[] static_cast<TriVertex*>(buffer); }
+            ));
+
+    app.triangleIB = IndexBuffer::Builder()
+            .indexCount(3)
+            .bufferType(IndexBuffer::IndexType::USHORT)
+            .build(*engine);
+    app.triangleIB->setBuffer(*engine,
+            IndexBuffer::BufferDescriptor(
+                    indices, sizeof(uint16_t) * 3,
+                    [](void* buffer, size_t, void*) { delete[] static_cast<uint16_t*>(buffer); }
+            ));
+
+    // Create renderable entity
+    app.triangleHighlightRenderable = EntityManager::get().create();
+
+    // Parent to the hit entity so transformations persist
+    {
+        if (!tcm.hasComponent(app.triangleHighlightRenderable)) {
+            tcm.create(app.triangleHighlightRenderable);
+        }
+        auto hitInst = tcm.getInstance(hit.entity);
+        auto overlayInst = tcm.getInstance(app.triangleHighlightRenderable);
+        if (hitInst && overlayInst) {
+            tcm.setParent(overlayInst, hitInst);
+            tcm.setTransform(overlayInst, mat4f{
+                float4{1,0,0,0},
+                float4{0,1,0,0},
+                float4{0,0,1,0},
+                float4{0,0,0,1}
+            });
+        }
+    }
+
+    RenderableManager::Builder(1)
+            .material(0, app.scene.highlightMaterialInstance)
+            .geometry(0, RenderableManager::PrimitiveType::TRIANGLES, app.triangleVB, app.triangleIB, 0, 3)
+            .culling(false)
+            .priority(7u)
+            .receiveShadows(false)
+            .castShadows(false)
+            .build(*engine, app.triangleHighlightRenderable);
+
+    view->getScene()->addEntity(app.triangleHighlightRenderable);
+
+    std::cout << "Added triangle highlight for triangle " << hit.triangle << std::endl;
+}
+
+static void hideTriangle(App& app, View* view, const PickingRegistry::Hit& hit) {
+    Engine* engine = app.engine;
+    auto& rcm = engine->getRenderableManager();
+    auto reg = app.asset->getPickingRegistry();
+    if (!reg) return;
+
+    auto* md = reg->getMesh(hit.entity);
+    if (!md) return;
+
+    auto entityId = hit.entity.getId();
+    auto renderableInst = rcm.getInstance(hit.entity);
+    if (!renderableInst) return;
+
+    // Check if we already have hidden triangles for this entity
+    auto it = app.hiddenTriangles.find(entityId);
+    if (it == app.hiddenTriangles.end()) {
+        // First time hiding a triangle for this entity
+        App::HiddenTriangleInfo info;
+        info.originalEntity = hit.entity;
+        info.hiddenTriangleIndices.insert(hit.triangle);
+
+        size_t vertexCount = md->positions.size();
+
+        // Build vertex buffer structure with position, UVs, and colors only
+        // (Normals and tangents excluded for now)
+        struct Vertex {
+            float3 position;
+            float2 uv0;
+            float4 color;
+        };
+
+        VertexBuffer::Builder vbBuilder;
+        vbBuilder.vertexCount(vertexCount).bufferCount(1);
+
+        size_t offset = 0;
+
+        // Position is always required
+        vbBuilder.attribute(VertexAttribute::POSITION, 0, VertexBuffer::AttributeType::FLOAT3, offset, sizeof(Vertex));
+        offset += sizeof(float3);
+
+        // UVs
+        if (md->hasUVs) {
+            vbBuilder.attribute(VertexAttribute::UV0, 0, VertexBuffer::AttributeType::FLOAT2, offset, sizeof(Vertex));
+        }
+        offset += sizeof(float2);
+
+        // Colors
+        if (md->hasColors) {
+            vbBuilder.attribute(VertexAttribute::COLOR, 0, VertexBuffer::AttributeType::FLOAT4, offset, sizeof(Vertex));
+        }
+
+        auto* vertices = new Vertex[vertexCount];
+        for (size_t i = 0; i < vertexCount; ++i) {
+            vertices[i].position = md->positions[i];
+            vertices[i].uv0 = md->hasUVs ? md->uvs[i] : float2{0, 0};
+            vertices[i].color = md->hasColors ? md->colors[i] : float4{1, 1, 1, 1};
+        }
+
+        info.originalVertexBuffer = vbBuilder.build(*engine);
+        info.originalVertexBuffer->setBufferAt(*engine, 0,
+                VertexBuffer::BufferDescriptor(
+                        vertices, sizeof(Vertex) * vertexCount,
+                        [](void* buffer, size_t, void*) { delete[] static_cast<Vertex*>(buffer); }
+                ));
+
+        // Create new index buffer excluding the hidden triangle
+        size_t originalIndexCount = md->indices.size();
+        size_t newIndexCount = originalIndexCount - 3;
+        auto* newIndices = new uint32_t[newIndexCount];
+
+        size_t writeIdx = 0;
+        uint32_t triangleBase = hit.triangle * 3;
+        for (size_t i = 0; i < originalIndexCount; ++i) {
+            if (i >= triangleBase && i < triangleBase + 3) {
+                continue;
+            }
+            newIndices[writeIdx++] = md->indices[i];
+        }
+
+        info.modifiedIndexBuffer = IndexBuffer::Builder()
+                .indexCount(newIndexCount)
+                .bufferType(IndexBuffer::IndexType::UINT)
+                .build(*engine);
+        info.modifiedIndexBuffer->setBuffer(*engine,
+                IndexBuffer::BufferDescriptor(
+                        newIndices, sizeof(uint32_t) * newIndexCount,
+                        [](void* buffer, size_t, void*) { delete[] static_cast<uint32_t*>(buffer); }
+                ));
+
+        // Update the renderable's geometry with our new buffers
+        rcm.setGeometryAt(renderableInst, 0,
+                RenderableManager::PrimitiveType::TRIANGLES,
+                info.originalVertexBuffer,
+                info.modifiedIndexBuffer,
+                0, newIndexCount);
+
+        app.hiddenTriangles[entityId] = info;
+
+        std::cout << "Hidden triangle " << hit.triangle << " from entity " << entityId
+                  << ". New index count: " << newIndexCount << std::endl;
+    } else {
+        // Already have hidden triangles - hide another one
+        auto& info = it->second;
+
+        if (info.hiddenTriangleIndices.find(hit.triangle) != info.hiddenTriangleIndices.end()) {
+            std::cout << "Triangle " << hit.triangle << " is already hidden" << std::endl;
+            return;
+        }
+
+        info.hiddenTriangleIndices.insert(hit.triangle);
+
+        // Rebuild index buffer excluding all hidden triangles
+        size_t originalIndexCount = md->indices.size();
+        size_t newIndexCount = originalIndexCount - (info.hiddenTriangleIndices.size() * 3);
+        auto* newIndices = new uint32_t[newIndexCount];
+
+        size_t writeIdx = 0;
+        for (size_t i = 0; i < originalIndexCount; i += 3) {
+            int triangleIdx = i / 3;
+            if (info.hiddenTriangleIndices.find(triangleIdx) == info.hiddenTriangleIndices.end()) {
+                newIndices[writeIdx++] = md->indices[i];
+                newIndices[writeIdx++] = md->indices[i + 1];
+                newIndices[writeIdx++] = md->indices[i + 2];
+            }
+        }
+
+        // Destroy old index buffer and create new one
+        engine->destroy(info.modifiedIndexBuffer);
+        info.modifiedIndexBuffer = IndexBuffer::Builder()
+                .indexCount(newIndexCount)
+                .bufferType(IndexBuffer::IndexType::UINT)
+                .build(*engine);
+        info.modifiedIndexBuffer->setBuffer(*engine,
+                IndexBuffer::BufferDescriptor(
+                        newIndices, sizeof(uint32_t) * newIndexCount,
+                        [](void* buffer, size_t, void*) { delete[] static_cast<uint32_t*>(buffer); }
+                ));
+
+        // Update geometry with new index buffer (vertex buffer stays the same)
+        rcm.setGeometryAt(renderableInst, 0,
+                RenderableManager::PrimitiveType::TRIANGLES,
+                info.originalVertexBuffer,
+                info.modifiedIndexBuffer,
+                0, newIndexCount);
+
+        std::cout << "Hidden triangle " << hit.triangle << " (total hidden: "
+                  << info.hiddenTriangleIndices.size() << "). New index count: "
+                  << newIndexCount << std::endl;
+    }
+}
+
 static void onClick(App& app, View* view, ImVec2 pos) {
-    // existing pixel-based GPU picking
-    view->pick(pos.x, pos.y, [&app](View::PickingQueryResult const& result){
-        /*if (const char* name = app.asset->getName(result.renderable); name) {
-            app.notificationText = name; // will be augmented by CPU picking below
-        } else {
-            app.notificationText.clear();
-        }*/
-    });
-
-    // CPU-side triangle picking using ray from camera.
-    Camera* cam = &view->getCamera();
-    const Viewport& vp = view->getViewport();
-    // Convert pixel to NDC (-1..1) where origin is bottom-left after y flip already applied.
-    double nx = (double(pos.x) / double(vp.width)) * 2.0 - 1.0;
-    double ny = (double(pos.y) / double(vp.height)) * 2.0 - 1.0;
-
-    // Perspective vs Ortho heuristic: perspective projection matrix has m[3][3] == 0.
-    mat4 proj = cam->getProjectionMatrix();
-    bool isPerspective = std::abs(proj[3][3]) < 1e-6;
-
-    mat4 invProj = Camera::inverseProjection(proj);
-    mat4 viewM = cam->getViewMatrix();
-    mat4 invView = inverse(viewM);
-
+    // CPU-side triangle picking using ray from camera via shared utility.
     float3 rayOrigin;
     float3 rayDir;
-    if (isPerspective) {
-        // Unproject a point on the near plane in view space.
-        double4 clip{ nx, ny, -1.0, 1.0 }; // z=-1 near
-        double4 viewSpace = invProj * clip;
-        // For perspective, direction is from origin toward the unprojected point.
-        float3 viewPoint = float3( (float)viewSpace.x, (float)viewSpace.y, (float)viewSpace.z );
-        float3 dirView = normalize(viewPoint);
-        float3 dirWorld = normalize( (invView * float4(dirView, 0)).xyz );
-        rayOrigin = cam->getPosition();
-        rayDir = dirWorld;
-    } else {
-        // Orthographic: generate world position of cursor on near plane then forward direction.
-        double4 clip{ nx, ny, -1.0, 1.0 }; // near
-        double4 viewSpace = invProj * clip;
-        float3 viewPoint = float3( (float)viewSpace.x, (float)viewSpace.y, (float)viewSpace.z );
-        float3 worldPoint = (invView * float4(viewPoint, 1)).xyz;
-        rayOrigin = worldPoint;
-        rayDir = normalize(cam->getForwardVector());
+    if (!gltfio::computeScreenRay(view, (int)pos.x, (int)pos.y, &rayOrigin, &rayDir)) {
+        return;
     }
+
 
     auto reg = app.asset->getPickingRegistry();
     if (reg) {
@@ -583,6 +809,7 @@ static void onClick(App& app, View* view, ImVec2 pos) {
                 }
             }
         }
+
         auto hit = reg->pick(rayOrigin, rayDir);
         if (hit.entity.getId() != 0 && hit.triangle >= 0) {
             const char* name = app.asset->getName(hit.entity);
@@ -592,105 +819,17 @@ static void onClick(App& app, View* view, ImVec2 pos) {
             } else {
                 oss << "Entity " << hit.entity.getId() << " (triangle " << hit.triangle << ")";
             }
-            // Include barycentric and distance for debugging.
-            oss << " dist=" << std::fixed << std::setprecision(3) << hit.distance
-                << " bary=(" << hit.bary.x << "," << hit.bary.y << "," << hit.bary.z << ")";
+
+            oss << " (index " << hit.triangle * 3 << ")";
+            oss << " dist=" << std::fixed << std::setprecision(3) << hit.distance;
             app.notificationText = oss.str();
 
-            // Build a standalone renderable for the exact picked triangle (world-space)
-            // Fetch model-space triangle vertices from the picking registry mesh
-            auto* md = reg->getMesh(hit.entity);
-            if (md) {
-                const uint32_t base = (uint32_t)hit.triangle * 3u;
-                const float3 v0 = md->positions[ md->indices[base + 0] ];
-                const float3 v1 = md->positions[ md->indices[base + 1] ];
-                const float3 v2 = md->positions[ md->indices[base + 2] ];
-
-                // Clean up previous triangle highlight entity if present
-                if (app.triangleHighlightRenderable) {
-                    // Remove from scene and destroy resources
-                    view->getScene()->remove(app.triangleHighlightRenderable);
-                    if (app.triangleVB) { engine->destroy(app.triangleVB); app.triangleVB = nullptr; }
-                    if (app.triangleIB) { engine->destroy(app.triangleIB); app.triangleIB = nullptr; }
-                    engine->destroy(app.triangleHighlightRenderable);
-                    app.triangleHighlightRenderable.clear();
-                }
-
-                // Ensure highlight material exists
-                if (!app.scene.highlightMaterial) {
-                    app.scene.highlightMaterial = Material::Builder()
-                            .package(RESOURCES_SANDBOXUNLIT_DATA, RESOURCES_SANDBOXUNLIT_SIZE)
-                            .build(*engine);
-                    app.scene.highlightMaterialInstance = app.scene.highlightMaterial->createInstance();
-                    app.scene.highlightMaterialInstance->setParameter("baseColor", RgbType::sRGB, float3{1.0f, 0.0f, 0.0f});
-                    // Ensure triangle is visible regardless of winding: disable back-face culling
-                    app.scene.highlightMaterialInstance->setCullingMode(MaterialInstance::CullingMode::NONE);
-                }
-
-                // Create vertex and index buffers for the triangle (MODEL-SPACE), with a tiny lift along local normal
-                struct TriVertex { float3 pos; };
-                float3 nLocal = normalize(cross(v1 - v0, v2 - v0));
-                float3 liftLocal = nLocal * 1e-4f;
-                auto* verts = new TriVertex[3]{ TriVertex{v0 + liftLocal}, TriVertex{v1 + liftLocal}, TriVertex{v2 + liftLocal} };
-                auto* indices = new uint16_t[3]{ 0, 1, 2 };
-
-                app.triangleVB = VertexBuffer::Builder()
-                        .vertexCount(3)
-                        .bufferCount(1)
-                        .attribute(VertexAttribute::POSITION, 0, VertexBuffer::AttributeType::FLOAT3, 0, sizeof(TriVertex))
-                        .build(*engine);
-                app.triangleVB->setBufferAt(*engine, 0,
-                        VertexBuffer::BufferDescriptor(
-                                verts, sizeof(TriVertex) * 3,
-                                [](void* buffer, size_t, void*) { delete[] static_cast<TriVertex*>(buffer); }
-                        ));
-
-                app.triangleIB = IndexBuffer::Builder()
-                        .indexCount(3)
-                        .bufferType(IndexBuffer::IndexType::USHORT)
-                        .build(*engine);
-                app.triangleIB->setBuffer(*engine,
-                        IndexBuffer::BufferDescriptor(
-                                indices, sizeof(uint16_t) * 3,
-                                [](void* buffer, size_t, void*) { delete[] static_cast<uint16_t*>(buffer); }
-                        ));
-
-                // Create renderable entity
-                app.triangleHighlightRenderable = EntityManager::get().create();
-
-                // Ensure a transform component exists and parent to the HIT ENTITY (so rotations persist)
-                {
-                    if (!tcm.hasComponent(app.triangleHighlightRenderable)) {
-                        tcm.create(app.triangleHighlightRenderable);
-
-                    }
-                    auto hitInst = tcm.getInstance(hit.entity);
-                    auto overlayInst = tcm.getInstance(app.triangleHighlightRenderable);
-                    if (hitInst && overlayInst) {
-                        tcm.setParent(overlayInst, hitInst);
-                        tcm.setTransform(overlayInst, mat4f{
-                            float4{1,0,0,0},
-                            float4{0,1,0,0},
-                            float4{0,0,1,0},
-                            float4{0,0,0,1}
-                        });
-                    }
-                }
-
-                RenderableManager::Builder(1)
-                        .material(0, app.scene.highlightMaterialInstance)
-                        .geometry(0, RenderableManager::PrimitiveType::TRIANGLES, app.triangleVB, app.triangleIB, 0, 3)
-                        .culling(false)
-                        .priority(7u)
-                        .receiveShadows(false)
-                        .castShadows(false)
-                        .build(*engine, app.triangleHighlightRenderable);
-
-                // Add to the Scene via View for consistency with Stats panel
-                view->getScene()->addEntity(app.triangleHighlightRenderable);
-
-                std::cout << "Added triangle highlight (world-space) for triangle " << hit.triangle
-                          << ". Scene renderables now: " << view->getScene()->getRenderableCount() << std::endl;
+            // Check if Shift key is pressed to hide instead of highlight
+            ImGuiIO& io = ImGui::GetIO();
+            if (io.KeyShift) {
+                hideTriangle(app, view, hit);
+            } else {
+                highlightTriangle(app, view, hit);
             }
         }
     }
@@ -1007,6 +1146,12 @@ int main(int argc, char** argv) {
 
             const ImVec4 yellow(1.0f,1.0f,0.0f,1.0f);
 
+            // Display picking instructions
+            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetColorU32(ImVec4(0.7f, 0.7f, 0.7f, 1.0f)));
+            ImGui::TextWrapped("Click: Highlight triangle | Shift+Click: Hide triangle");
+            ImGui::PopStyleColor();
+            ImGui::Spacing();
+
             if (!app.notificationText.empty()) {
                 // Word-wrap the picked notification within the available content region.
                 ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x);
@@ -1222,6 +1367,27 @@ int main(int argc, char** argv) {
         engine->destroy(app.scene.fullScreenTriangleVertexBuffer);
         engine->destroy(app.scene.fullScreenTriangleIndexBuffer);
 
+        // Cleanup triangle highlight resources
+        if (app.triangleHighlightRenderable) {
+            if (app.triangleVB) engine->destroy(app.triangleVB);
+            if (app.triangleIB) engine->destroy(app.triangleIB);
+            engine->destroy(app.triangleHighlightRenderable);
+        }
+        if (app.scene.highlightMaterial) {
+            if (app.scene.highlightMaterialInstance) {
+                engine->destroy(app.scene.highlightMaterialInstance);
+            }
+            engine->destroy(app.scene.highlightMaterial);
+        }
+
+        // Cleanup hidden triangle resources
+        for (auto& pair : app.hiddenTriangles) {
+            auto& info = pair.second;
+            if (info.originalVertexBuffer) engine->destroy(info.originalVertexBuffer);
+            if (info.modifiedIndexBuffer) engine->destroy(info.modifiedIndexBuffer);
+        }
+        app.hiddenTriangles.clear();
+
         auto& em = EntityManager::get();
         for (auto e : app.scene.overdrawVisualizer) {
             engine->destroy(e);
@@ -1247,7 +1413,7 @@ int main(int argc, char** argv) {
         app.resourceLoader->asyncUpdateLoad();
 
         // Optionally fit the model into a unit cube at the origin.
-        app.viewer->updateRootTransform();
+        //app.viewer->updateRootTransform();
 
         // Gradually add renderables to the scene as their textures become ready.
         app.viewer->populateScene();
@@ -1319,18 +1485,18 @@ int main(int argc, char** argv) {
         Skybox* skybox = scene->getSkybox();
         applySettings(engine, app.viewer->getSettings().viewer, &camera, skybox, renderer);
 
-        // technically we don't need to do this each frame
-        auto& tcm = engine->getTransformManager();
-        TransformManager::Instance const& root = tcm.getInstance(app.rootTransformEntity);
-        tcm.setParent(tcm.getInstance(camera.getEntity()), root);
-        tcm.setParent(tcm.getInstance(app.asset->getRoot()), root);
-        tcm.setParent(tcm.getInstance(view->getFogEntity()), root);
-
-        // these values represent a point somewhere on Earth's surface
-        float const d = app.originIsFarAway ? app.originDistance : 0.0f;
-//        tcm.setTransform(root, mat4::translation(double3{ 67.0, -6366759.0, -21552.0 } * d));
-        tcm.setTransform(root, mat4::translation(
-                double3{ 2304097.1410110965, -4688442.9915525438, -3639452.5611694567 } * d));
+//         // technically we don't need to do this each frame
+//         auto& tcm = engine->getTransformManager();
+//         TransformManager::Instance const& root = tcm.getInstance(app.rootTransformEntity);
+//         tcm.setParent(tcm.getInstance(camera.getEntity()), root);
+//         tcm.setParent(tcm.getInstance(app.asset->getRoot()), root);
+//         tcm.setParent(tcm.getInstance(view->getFogEntity()), root);
+//
+//         // these values represent a point somewhere on Earth's surface
+//         float const d = app.originIsFarAway ? app.originDistance : 0.0f;
+// //        tcm.setTransform(root, mat4::translation(double3{ 67.0, -6366759.0, -21552.0 } * d));
+//         tcm.setTransform(root, mat4::translation(
+//                 double3{ 2304097.1410110965, -4688442.9915525438, -3639452.5611694567 } * d));
 
         // Check if color grading has changed.
         ColorGradingSettings const& options = app.viewer->getSettings().view.colorGrading;
@@ -1395,7 +1561,7 @@ int main(int argc, char** argv) {
         }
     });
 
-    filamentApp.run(app.config, setup, cleanup, gui, preRender, postRender);
+    filamentApp.run(app.config, setup, cleanup, gui, nullptr, nullptr);
 
     return 0;
 }

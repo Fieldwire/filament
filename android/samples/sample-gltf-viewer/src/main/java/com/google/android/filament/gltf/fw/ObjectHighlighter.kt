@@ -15,7 +15,7 @@ class ObjectHighlighter(private val context: Context, private val modelViewer: F
     // Used to highlight the selected renderable entity
     // To change the highlight color, modify `tools/material/highlight.mat` & follow the instruction
     // in that file to create a compiled `.filamat` file
-    private lateinit var highlightMaterial: MaterialInstance
+    lateinit var highlightMaterial: MaterialInstance
 
     // Entity is nothing but an individual object that creates a scene including camera, light and renderables.
     // Of these three entities, only renderable entities are displayed on the screen. This stores the currently

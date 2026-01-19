@@ -30,6 +30,7 @@ import com.google.android.filament.gltfio.UbershaderProvider
 import com.google.android.filament.utils.Float3
 import com.google.android.filament.utils.GestureDetector
 import com.google.android.filament.utils.Manipulator
+import com.google.android.filament.utils.Mat4
 import com.google.android.filament.utils.max
 import com.google.android.filament.utils.scale
 import com.google.android.filament.utils.translation
@@ -255,7 +256,7 @@ class FWModelViewer(
     /**
      * Frees all entities associated with the most recently-loaded model.
      */
-    private fun destroyModel() {
+    fun destroyModel() {
         fetchResourcesJob?.cancel()
         resourceLoader.asyncCancelLoad()
         resourceLoader.evictResourceData()
@@ -264,6 +265,13 @@ class FWModelViewer(
             assetLoader.destroyAsset(asset)
             this.asset = null
             this.animator = null
+        }
+    }
+
+    fun clearRootTransform() {
+        asset?.let {
+            val tm = engine.transformManager
+            tm.setTransform(tm.getInstance(it.root), Mat4().toFloatArray())
         }
     }
 

@@ -1,5 +1,7 @@
 package com.google.android.filament.gltf.fw
 
+import android.os.Handler
+import android.os.Looper
 import android.view.Choreographer
 import android.view.Choreographer.FrameCallback
 import androidx.lifecycle.Lifecycle
@@ -17,11 +19,17 @@ class FrameChoreographer(
 ) {
     private val choreographer = Choreographer.getInstance()
 
+    private val handler = Handler(Looper.getMainLooper())
+
     private val frameCallback = object : FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
-            doFrameCallback.doFrame(frameTimeNanos)
             frameCount++
-            choreographer.postFrameCallback(this)
+
+            handler.postDelayed({
+                choreographer.postFrameCallback(this)
+            }, 100)
+
+            doFrameCallback.doFrame(frameTimeNanos)
         }
     }
 
