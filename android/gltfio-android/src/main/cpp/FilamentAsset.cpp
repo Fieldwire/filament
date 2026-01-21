@@ -27,6 +27,7 @@
 #include <gltfio/FilamentAsset.h>
 #include <gltfio/Picking.h>
 #include <gltfio/ScreenRay.h>
+#include <gltfio/TriangleHiding.h>
 #include <filament/TransformManager.h>
 #include <filament/Engine.h>
 #include <filament/View.h>
@@ -363,6 +364,39 @@ Java_com_google_android_filament_gltfio_FilamentAsset_nRayPickScreen(JNIEnv* env
             (jfloat) hit.distance, (jfloat) hit.bary.x, (jfloat) hit.bary.y, (jfloat) hit.bary.z);
 }
 
+extern "C" JNIEXPORT jobject JNICALL
+Java_com_google_android_filament_gltfio_FilamentAsset_nRayPickScreenSkippingRange(JNIEnv* env, jclass,
+        jlong nativeAsset, jlong nativeView, jint sx, jint sy, jint startIdx, jint endIdx) {
+    FilamentAsset* asset = (FilamentAsset*) nativeAsset;
+    if (!asset) return nullptr;
+    View* view = (View*) nativeView;
+    if (!view) return nullptr;
+
+    // Update transforms similar to nRayPickScreen
+    gltfio::updatePickingTransforms(asset);
+
+    float3 rayOrigin;
+    float3 rayDir;
+    if (!gltfio::computeScreenRay(view, (int)sx, (int)sy, &rayOrigin, &rayDir)) {
+        return nullptr;
+    }
+
+    PickingRegistry* reg = asset->getPickingRegistry();
+    if (!reg) return nullptr;
+    auto hit = reg->pickSkippingIndexRange(rayOrigin, rayDir, (uint32_t)startIdx, (uint32_t)endIdx);
+    if (hit.entity.getId() == 0 || hit.triangle < 0) {
+        return nullptr;
+    }
+
+    jclass hitClass = env->FindClass("com/google/android/filament/gltfio/FilamentAsset$Hit");
+    if (!hitClass) return nullptr;
+    jmethodID ctor = env->GetMethodID(hitClass, "<init>", "(IIFFFF)V");
+    if (!ctor) return nullptr;
+    return env->NewObject(hitClass, ctor,
+            (jint) hit.entity.getId(), (jint) hit.triangle,
+            (jfloat) hit.distance, (jfloat) hit.bary.x, (jfloat) hit.bary.y, (jfloat) hit.bary.z);
+}
+
 extern "C" JNIEXPORT jfloatArray JNICALL
 Java_com_google_android_filament_gltfio_FilamentAsset_nGetTriangleModelSpaceForHit(JNIEnv* env, jclass,
         jlong nativeAsset, jint entityId, jint triangleIndex) {
@@ -406,6 +440,19 @@ Java_com_google_android_filament_gltfio_FilamentAsset_nGetIndicesSize(JNIEnv* en
     auto* md = reg->getMesh(e);
     if (!md) return -1;
     return static_cast<jint>(md->indices.size());
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_google_android_filament_gltfio_FilamentAsset_nGetPositionsSize(JNIEnv* env, jclass,
+        jlong nativeAsset, jint entityId) {
+    FilamentAsset* asset = (FilamentAsset*) nativeAsset;
+    if (!asset) return -1;
+    PickingRegistry* reg = asset->getPickingRegistry();
+    if (!reg) return -1;
+    Entity e = Entity::import((uint32_t)entityId);
+    auto* md = reg->getMesh(e);
+    if (!md) return -1;
+    return static_cast<jint>(md->positions.size());
 }
 
 extern "C" JNIEXPORT jintArray JNICALL
@@ -458,3 +505,74 @@ Java_com_google_android_filament_gltfio_FilamentAsset_nGetMeshPositions(JNIEnv* 
     return out;
 }
 
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_google_android_filament_gltfio_FilamentAsset_nCreateTriangleHider(JNIEnv*, jclass,
+        jlong nativeEngine) {
+    Engine* engine = (Engine*) nativeEngine;
+    if (!engine) return 0;
+    return (jlong) new gltfio::TriangleHider(engine);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_google_android_filament_gltfio_FilamentAsset_nDestroyTriangleHider(JNIEnv*, jclass,
+        jlong nativeHider) {
+    gltfio::TriangleHider* hider = (gltfio::TriangleHider*) nativeHider;
+    delete hider;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_google_android_filament_gltfio_FilamentAsset_nHideTriangle(JNIEnv*, jclass,
+        jlong nativeHider, jlong nativeAsset, jint entityId, jint triangleIndex) {
+    gltfio::TriangleHider* hider = (gltfio::TriangleHider*) nativeHider;
+    FilamentAsset* asset = (FilamentAsset*) nativeAsset;
+    if (!hider || !asset) return false;
+
+    PickingRegistry* reg = asset->getPickingRegistry();
+    if (!reg) return false;
+
+    Entity e = Entity::import((uint32_t)entityId);
+    auto* md = reg->getMesh(e);
+    if (!md) return false;
+
+    return hider->hideTriangle(e, (uint32_t)triangleIndex, asset);
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_google_android_filament_gltfio_FilamentAsset_nHideTriangleWithoutCache(JNIEnv* env, jclass,
+                                                                                jlong nativeAsset, jint entityId, jint triangleIndex) {
+    FilamentAsset* asset = (FilamentAsset*) nativeAsset;
+    if (!asset) return (jboolean) false;
+
+    PickingRegistry* reg = asset->getPickingRegistry();
+    if (!reg) return (jboolean) false;
+
+    Entity e = Entity::import((uint32_t) entityId);
+    auto* md = reg->getMesh(e);
+    if (!md) return (jboolean) false;
+
+    // Create a local TriangleHider for one-off hiding without cache
+    Engine* engine = asset->getEngine();
+    TriangleHider hider(engine);
+    bool ok = hider.hideTriangleWithoutCache(e, (uint32_t) triangleIndex, md);
+    return (jboolean) ok;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_google_android_filament_gltfio_FilamentAsset_nHideVerticesInRangeWithoutCache(JNIEnv* env, jclass,
+        jlong nativeAsset, jint entityId, jint startVertex, jint endVertex) {
+    FilamentAsset* asset = (FilamentAsset*) nativeAsset;
+    if (!asset) return (jboolean) false;
+
+    PickingRegistry* reg = asset->getPickingRegistry();
+    if (!reg) return (jboolean) false;
+
+    Entity e = Entity::import((uint32_t) entityId);
+    auto* md = reg->getMesh(e);
+    if (!md) return (jboolean) false;
+
+    // Create a local TriangleHider for one-off hiding without cache
+    Engine* engine = asset->getEngine();
+    TriangleHider hider(engine);
+    bool ok = hider.hideVerticesInRangeWithoutCache(e, (uint32_t) startVertex, (uint32_t) endVertex, md);
+    return (jboolean) ok;
+}

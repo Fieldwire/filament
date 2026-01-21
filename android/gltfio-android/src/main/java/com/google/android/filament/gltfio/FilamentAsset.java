@@ -342,6 +342,26 @@ public class FilamentAsset {
     }
 
     /**
+     * Screen-space pick that ignores triangles whose index positions overlap [startIdx, endIdx].
+     */
+    public @Nullable Hit pickScreenSkippingRange(@NonNull View view, int sx, int sy,
+                                                 int startIdx, int endIdx) {
+        if (view == null) throw new IllegalArgumentException("view cannot be null");
+        if (mNativeObject == 0) return null;
+        Viewport vp = view.getViewport();
+        if (sx < 0 || sy < 0 || sx >= vp.width || sy >= vp.height) {
+            return null;
+        }
+        if (sNativeViewField == null) throw new RuntimeException("Unable to access native View handle (field not found)");
+        try {
+            long nativeView = sNativeViewField.getLong(view);
+            return nRayPickScreenSkippingRange(mNativeObject, nativeView, sx, sy, startIdx, endIdx);
+        } catch (IllegalAccessException e) {
+            throw new RuntimeException("Unable to access native View handle", e);
+        }
+    }
+
+    /**
      * Returns model-space triangle vertices [v0, v1, v2] for a given hit (entity, triangle index),
      * or null if unavailable.
      */
@@ -391,8 +411,10 @@ public class FilamentAsset {
     private static native @Nullable Hit nRayPick(long nativeAsset,
             float ox, float oy, float oz, float dx, float dy, float dz);
     private static native @Nullable Hit nRayPickScreen(long nativeAsset, long nativeView, int sx, int sy); // Added native bridge for screen picking.
+    private static native @Nullable Hit nRayPickScreenSkippingRange(long nativeAsset, long nativeView, int sx, int sy, int startIdx, int endIdx);
     private static native @Nullable float[] nGetTriangleModelSpaceForHit(long nativeAsset, int entity, int triangleIndex);
     private static native int nGetIndicesSize(long nativeAsset, int entity);
+    private static native int nGetPositionsSize(long nativeAsset, int entity);
     private static native @Nullable int[] nGetMeshIndices(long nativeAsset, int entity);
     private static native @Nullable float[] nGetMeshPositions(long nativeAsset, int entity);
 
@@ -403,6 +425,15 @@ public class FilamentAsset {
      */
     public int getIndicesSize(@Entity int entity) {
         return nGetIndicesSize(getNativeObject(), entity);
+    }
+
+    /**
+     * Get the size of the positions array for a given entity.
+     * @param entity The entity to query
+     * @return The number of positions (vertices), or -1 if entity not found or has no mesh data
+     */
+    public int getPositionsSize(@Entity int entity) {
+        return nGetPositionsSize(getNativeObject(), entity);
     }
 
     /**
@@ -425,4 +456,59 @@ public class FilamentAsset {
     public @Nullable float[] getMeshPositions(@Entity int entity) {
         return nGetMeshPositions(getNativeObject(), entity);
     }
+
+    /**
+     * Create a TriangleHider instance for this asset.
+     * @param engine The Filament engine
+     * @return Native pointer to TriangleHider
+     */
+    public long createTriangleHider(Engine engine) {
+        return nCreateTriangleHider(engine.getNativeObject());
+    }
+
+    /**
+     * Destroy a TriangleHider instance.
+     * @param nativeHider Native pointer to TriangleHider
+     */
+    public void destroyTriangleHider(long nativeHider) {
+        nDestroyTriangleHider(nativeHider);
+    }
+
+    /**
+     * Hide a triangle using TriangleHider.
+     * @param nativeHider Native pointer to TriangleHider
+     * @param entity The entity to hide triangle from
+     * @param triangleIndex The triangle index to hide
+     * @return true if successful
+     */
+    public boolean hideTriangle(long nativeHider, @Entity int entity, int triangleIndex) {
+        return nHideTriangle(nativeHider, getNativeObject(), entity, triangleIndex);
+    }
+
+    /**
+     * Hide a triangle without relying on mesh cache (uses PickingRegistry MeshData).
+     * @param entity The entity to hide triangle from
+     * @param triangleIndex The triangle index to hide
+     * @return true if successful
+     */
+    public boolean hideTriangleWithoutCache(@Entity int entity, int triangleIndex) {
+        return nHideTriangleWithoutCache(getNativeObject(), entity, triangleIndex);
+    }
+
+    /**
+     * Hide all triangles that reference vertices in the given inclusive range without relying on mesh cache.
+     * @param entity The entity whose triangles should be hidden
+     * @param startVertex Inclusive start of vertex index range (original mesh vertex indices)
+     * @param endVertex Inclusive end of vertex index range
+     * @return true if successful
+     */
+    public boolean hideVerticesInRangeWithoutCache(@Entity int entity, int startVertex, int endVertex) {
+        return nHideVerticesInRangeWithoutCache(getNativeObject(), entity, startVertex, endVertex);
+    }
+
+    private static native long nCreateTriangleHider(long nativeEngine);
+    private static native void nDestroyTriangleHider(long nativeHider);
+    private static native boolean nHideTriangle(long nativeHider, long nativeAsset, int entity, int triangleIndex);
+    private static native boolean nHideTriangleWithoutCache(long nativeAsset, int entity, int triangleIndex);
+    private static native boolean nHideVerticesInRangeWithoutCache(long nativeAsset, int entity, int startVertex, int endVertex);
 }

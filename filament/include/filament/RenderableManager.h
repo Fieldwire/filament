@@ -870,6 +870,28 @@ public:
      */
     size_t getIndexCountAt(Instance instance, size_t primitiveIndex) const noexcept;
 
+    /**
+     * Gets the VertexBuffer for the given primitive.
+     *
+     * @param instance the renderable of interest
+     * @param primitiveIndex the primitive of interest (default is 0)
+     * @return The VertexBuffer used by this primitive, or nullptr if not set
+     *
+     * @see setGeometryAt()
+     */
+    VertexBuffer* UTILS_NULLABLE getVertexBuffer(Instance instance, size_t primitiveIndex = 0) const noexcept;
+
+    /**
+     * Gets the IndexBuffer for the given primitive.
+     *
+     * @param instance the renderable of interest
+     * @param primitiveIndex the primitive of interest (default is 0)
+     * @return The IndexBuffer used by this primitive, or nullptr if not set
+     *
+     * @see setGeometryAt()
+     */
+    IndexBuffer* UTILS_NULLABLE getIndexBuffer(Instance instance, size_t primitiveIndex = 0) const noexcept;
+
     /*! \cond PRIVATE */
     template<typename T>
     struct is_supported_vector_type {

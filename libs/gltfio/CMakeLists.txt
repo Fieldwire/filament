@@ -21,6 +21,7 @@ set(PUBLIC_HDRS
         include/gltfio/TextureProvider.h
         include/gltfio/math.h
         include/gltfio/Picking.h
+        include/gltfio/TriangleHiding.h
 )
 
 set(SRCS
@@ -63,6 +64,8 @@ set(SRCS
         src/extended/TangentSpaceMeshWrapper.h
         src/Picking.cpp
         src/PickingUtility.cpp  # moved buildMeshDataForPicking here
+        src/ScreenRay.cpp
+        src/TriangleHiding.cpp
 )
 
 # ==================================================================================================

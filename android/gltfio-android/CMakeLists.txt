@@ -62,8 +62,8 @@ set(GLTFIO_SRCS
         src/main/cpp/MaterialKey.cpp
         src/main/cpp/MaterialKey.h
         src/main/cpp/UbershaderProvider.cpp
+#        src/main/cpp/JitShaderProvider.cpp
         src/main/cpp/ResourceLoader.cpp
-
         ${FILAMENT_DIR}/include/gltfio/materials/uberarchive.h
 
         ../common/NioUtils.cpp
@@ -106,4 +106,5 @@ target_link_libraries(gltfio-jni
         PRIVATE uberzlib
         PRIVATE perfetto        # needed only when FILAMENT_ENABLE_PERFETTO is defined
         PRIVATE log             # needed only when perfetto above is used
+#        PRIVATE filamat         # needed for JIT shader provider
 )

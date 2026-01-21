@@ -74,6 +74,10 @@ public:
 
     struct Hit { Entity entity; int triangle; float distance; filament::math::float3 bary; };
     [[nodiscard]] Hit pick(const filament::math::float3& rayOrigin, const filament::math::float3& rayDir) const;
+    [[nodiscard]] Hit pickSkippingIndexRange(const filament::math::float3& rayOrigin,
+                                            const filament::math::float3& rayDir,
+                                            uint32_t startIdx,
+                                            uint32_t endIdx) const;
 
     struct SceneItem { Entity e; filament::Aabb worldBounds; };
 private:

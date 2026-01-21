@@ -200,4 +200,12 @@ bool RenderableManager::getFogEnabled(Instance const instance) const noexcept {
     return downcast(this)->getFogEnabled(instance);
 }
 
+VertexBuffer* RenderableManager::getVertexBuffer(Instance instance, size_t primitiveIndex) const noexcept {
+    return downcast(this)->getVertexBuffer(instance, primitiveIndex);
+}
+
+IndexBuffer* RenderableManager::getIndexBuffer(Instance instance, size_t primitiveIndex) const noexcept {
+    return downcast(this)->getIndexBuffer(instance, primitiveIndex);
+}
+
 } // namespace filament

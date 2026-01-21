@@ -100,6 +100,9 @@ struct Primitive {
     MorphTargetBuffer* morphTargetBuffer = nullptr;
     uint32_t morphTargetOffset;
     std::vector<int> slotIndices;
+    // Recorded CPU-side sizes for VB/IB to enable mesh-cache-only logging
+    size_t vbSizeBytes = 0;
+    size_t ibSizeBytes = 0;
 };
 using MeshCache = utils::FixedCapacityVector<utils::FixedCapacityVector<Primitive>>;
 
@@ -236,6 +239,107 @@ struct FFilamentAsset : public FilamentAsset {
 
     bool isUsingExtendedAlgorithm() {
         return std::holds_alternative<ResourceInfoExtended>(mResourceInfo);
+    }
+
+    // Expose mesh cache for accessing expanded mesh data (with correct vertex/index counts)
+    const MeshCache& getMeshCache() const noexcept {
+        return mMeshCache;
+    }
+
+    // Log memory footprint of mesh cache (CPU-side buffers) using ResourceInfoExtended slots.
+    void logMeshCacheFootprint() const noexcept {
+        size_t meshCount = mMeshCache.size();
+        size_t primitiveCount = 0;
+        for (auto const& mesh : mMeshCache) primitiveCount += mesh.size();
+
+        size_t totalVBBytes = 0;
+        size_t totalIBBytes = 0;
+        if (std::holds_alternative<ResourceInfoExtended>(mResourceInfo)) {
+            auto const& ext = std::get<ResourceInfoExtended>(mResourceInfo);
+            for (auto const& slot : ext.slots) {
+                if (slot.vertices && slot.sizeInBytes) totalVBBytes += slot.sizeInBytes;
+                if (slot.indices && slot.sizeInBytes) totalIBBytes += slot.sizeInBytes;
+            }
+        }
+
+        printf("[Asset] MeshCache footprint: meshes=%zu primitives=%zu VB=%zu bytes IB=%zu bytes\n",
+               meshCount, primitiveCount, totalVBBytes, totalIBBytes);
+    }
+
+    // Log a detailed memory footprint of mMeshCache including Primitive internals.
+    void logMeshCacheMemoryDetailed() const noexcept {
+        size_t meshCount = mMeshCache.size();
+        size_t primitiveCount = 0;
+        for (auto const& mesh : mMeshCache) primitiveCount += mesh.size();
+
+        constexpr size_t primitiveStructSize = sizeof(Primitive);
+        size_t primitivesStructBytes = 0;
+        size_t slotIndicesBytes = 0;
+
+        // Prefer mesh-cache-recorded sizes if available; otherwise sum from extended slots.
+        size_t totalVBBytes = 0;
+        size_t totalIBBytes = 0;
+        bool hasExt = std::holds_alternative<ResourceInfoExtended>(mResourceInfo);
+        const ResourceInfoExtended* extInfo = hasExt ? &std::get<ResourceInfoExtended>(mResourceInfo) : nullptr;
+
+        bool haveRecordedSizes = true;
+        for (auto const& mesh : mMeshCache) {
+            for (auto const& prim : mesh) {
+                primitivesStructBytes += primitiveStructSize;
+                slotIndicesBytes += prim.slotIndices.size() * sizeof(int);
+                if (prim.vbSizeBytes == 0 && prim.ibSizeBytes == 0) {
+                    haveRecordedSizes = false;
+                }
+                totalVBBytes += prim.vbSizeBytes;
+                totalIBBytes += prim.ibSizeBytes;
+            }
+        }
+
+        if (!haveRecordedSizes && extInfo) {
+            // Fallback: sum extended slots once.
+            totalVBBytes = 0;
+            totalIBBytes = 0;
+            for (auto const& slot : extInfo->slots) {
+                if (slot.vertices && slot.sizeInBytes) totalVBBytes += slot.sizeInBytes;
+                if (slot.indices && slot.sizeInBytes) totalIBBytes += slot.sizeInBytes;
+            }
+        }
+
+        size_t totalEstimatedBytes = primitivesStructBytes + slotIndicesBytes + totalVBBytes + totalIBBytes;
+        double totalKB = totalEstimatedBytes / 1024.0;
+        double totalMB = totalKB / 1024.0;
+
+        printf("[Asset] mMeshCache memory summary: meshes=%zu primitives=%zu\n", meshCount, primitiveCount);
+        printf("  Primitive structs: %zu bytes\n", primitivesStructBytes);
+        printf("  slotIndices vectors: %zu bytes\n", slotIndicesBytes);
+        if (extInfo) {
+            printf("  Vertex buffers (CPU-side): %zu bytes\n", totalVBBytes);
+            printf("  Index buffers (CPU-side):  %zu bytes\n", totalIBBytes);
+        } else {
+            printf("  (No extended resource info; VB/IB CPU-side sizes unavailable)\n");
+        }
+        printf("  TOTAL: %zu bytes (%.2f KB, %.2f MB)\n", totalEstimatedBytes, totalKB, totalMB);
+    }
+
+    // Populate vbSizeBytes/ibSizeBytes in MeshCache primitives from ResourceInfoExtended slots.
+    void populateMeshCacheSizesFromExtended() noexcept {
+        if (!std::holds_alternative<ResourceInfoExtended>(mResourceInfo)) {
+            return;
+        }
+        auto const& ext = std::get<ResourceInfoExtended>(mResourceInfo);
+        for (size_t mi = 0; mi < mMeshCache.size(); ++mi) {
+            auto& mesh = mMeshCache[mi];
+            for (size_t pi = 0; pi < mesh.size(); ++pi) {
+                auto& prim = mesh[pi];
+                size_t vb = 0, ib = 0;
+                for (auto const& slot : ext.slots) {
+                    if (slot.vertices == prim.vertices) vb += slot.sizeInBytes;
+                    if (slot.indices == prim.indices) ib += slot.sizeInBytes;
+                }
+                prim.vbSizeBytes = vb;
+                prim.ibSizeBytes = ib;
+            }
+        };
     }
 
     // end public API

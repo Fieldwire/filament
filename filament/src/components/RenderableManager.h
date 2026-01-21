@@ -212,6 +212,8 @@ public:
     void setGlobalBlendOrderEnabledAt(Instance instance, uint8_t level, size_t primitiveIndex, bool enabled) noexcept;
     AttributeBitset getEnabledAttributesAt(Instance instance, uint8_t level, size_t primitiveIndex) const noexcept;
     size_t getIndexCountAt(Instance instance, uint8_t level, size_t primitiveIndex) const noexcept;
+    FVertexBuffer* getVertexBuffer(Instance instance, size_t primitiveIndex) const noexcept;
+    FIndexBuffer* getIndexBuffer(Instance instance, size_t primitiveIndex) const noexcept;
     inline utils::Slice<FRenderPrimitive> const& getRenderPrimitives(Instance instance, uint8_t level) const noexcept;
     // inline utils::Slice<FRenderPrimitive>& getRenderPrimitives(Instance instance, uint8_t level) noexcept;
 

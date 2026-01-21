@@ -30,6 +30,7 @@
 
 #include <cgltf.h>
 
+#include <cstdio>
 #include <unordered_map>
 #include <variant>
 #include <vector>
@@ -199,6 +200,11 @@ std::vector<BufferSlot> computeGeometries(cgltf_primitive const* prim, uint8_t c
 
                 vertexBufferBuilder.attribute(vattr, slot, type);
 
+                // Debug: log attribute mapping and whether data is generated
+                printf("[ALE] Attr slot=%d semantic=%d type=%d bytesPerVertex=%zu generated=%d\n",
+                       slot, (int)vattr, (int)type, byteCount,
+                       ((expectedIndex == GENERATED_0 || expectedIndex == GENERATED_1) ? 1 : 0));
+
                 // Here we generate data if needed.
                 if (expectedIndex == GENERATED_0 || expectedIndex == GENERATED_1) {
                     // We should free `data` here because it's not being passed on to ResourceLoader.
@@ -246,6 +252,8 @@ std::vector<BufferSlot> computeGeometries(cgltf_primitive const* prim, uint8_t c
                 auto const [type, byteCount, data] = getVertexBundle(vattr, out);
                 vertexBufferBuilder.attribute(vattr, slot, type);
                 vertexBufferBuilder.normalized(vattr);
+                printf("[ALE] Auto-add TANGENTS slot=%d type=%d bytesPerVertex=%zu\n",
+                       slot, (int)type, byteCount);
                 vslots.push_back({
                         .slot = slot,
                         .sizeInBytes = byteCount * vertexCount,
@@ -258,6 +266,7 @@ std::vector<BufferSlot> computeGeometries(cgltf_primitive const* prim, uint8_t c
             auto vertexBuffer = vertexBufferBuilder.build(*engine);
             std::for_each(vslots.begin(), vslots.end(),
                     [vertexBuffer](BufferSlot& slot) { slot.vertices = vertexBuffer; });
+            printf("[ALE] Built VB vertexCount=%zu buffers=%zu\n", vertexCount, vslots.size());
             slots.insert(slots.end(), vslots.begin(), vslots.end());
         }
         if ((jobType & INDEX_JOB) != 0) {
@@ -265,6 +274,8 @@ std::vector<BufferSlot> computeGeometries(cgltf_primitive const* prim, uint8_t c
                                        .indexCount(out.triangleCount * 3)
                                        .bufferType(IndexBuffer::IndexType::UINT)
                                        .build(*engine);
+
+            printf("[ALE] Built IB indexCount=%zu\n", (size_t)(out.triangleCount * 3));
 
             slots.push_back({
                     .indices = indexBuffer,
@@ -328,7 +339,7 @@ bool AssetLoaderExtended::createPrimitive(Input* input, Output* out,
     if (indexAccessor || prim->attributes_count > 0) {
         IndexBuffer::IndexType indexType;
         if (indexAccessor && !getIndexType(indexAccessor->component_type, &indexType)) {
-            utils::slog.e << "Unrecognized index type in " << name << utils::io::endl;
+            printf("Unrecognized index type in %s\n", name ? name : "(null)");
             return false;
         }
         jobType |= INDEX_JOB;
@@ -378,20 +389,20 @@ bool AssetLoaderExtended::createPrimitive(Input* input, Output* out,
         // Translate the cgltf attribute enum into a Filament enum.
         VertexAttribute semantic;
         if (!getVertexAttrType(atype, &semantic)) {
-            utils::slog.e << "Unrecognized vertex semantic in " << name << utils::io::endl;
+            printf("Unrecognized vertex semantic in %s\n", name ? name : "(null)");
             return false;
         }
         if (atype == cgltf_attribute_type_weights && index > 0) {
-            utils::slog.e << "Too many bone weights in " << name << utils::io::endl;
+            printf("Too many bone weights in %s\n", name ? name : "(null)");
             continue;
         }
         if (atype == cgltf_attribute_type_joints && index > 0) {
-            utils::slog.e << "Too many joints in " << name << utils::io::endl;
+            printf("Too many joints in %s\n", name ? name : "(null)");
             continue;
         }
         if (atype == cgltf_attribute_type_texcoord) {
             if (index >= UvMapSize) {
-                utils::slog.e << "Too many texture coordinate sets in " << name << utils::io::endl;
+                printf("Too many texture coordinate sets in %s\n", name ? name : "(null)");
                 continue;
             }
             UvSet uvset = out->uvmap[index];
@@ -436,22 +447,21 @@ bool AssetLoaderExtended::createPrimitive(Input* input, Output* out,
 
         if (VertexBuffer::AttributeType fatype, actualType;
                 !getElementType(accessor->type, accessor->component_type, &fatype, &actualType)) {
-            utils::slog.e << "Unsupported accessor type in " << name << utils::io::endl;
+            printf("Unsupported accessor type in %s\n", name ? name : "(null)");
             return false;
         }
 
         attributesMap[cattr] = { semantic, slotCount++ };
 
         if (accessor->count == 0) {
-            utils::slog.e << "Empty vertex buffer in " << name << utils::io::endl;
+            printf("Empty vertex buffer in %s\n", name ? name : "(null)");
             return false;
         }
     }
 
     cgltf_size targetsCount = prim->targets_count;
     if (targetsCount > MAX_MORPH_TARGETS) {
-        utils::slog.w << "WARNING: Exceeded max morph target count of " << MAX_MORPH_TARGETS
-                      << utils::io::endl;
+        printf("WARNING: Exceeded max morph target count of %d\n", (int)MAX_MORPH_TARGETS);
         targetsCount = MAX_MORPH_TARGETS;
     }
 
@@ -469,14 +479,14 @@ bool AssetLoaderExtended::createPrimitive(Input* input, Output* out,
 
             if (atype != cgltf_attribute_type_position && atype != cgltf_attribute_type_normal &&
                     atype != cgltf_attribute_type_tangent) {
-                utils::slog.e << "Only positions, normals, and tangents can be morphed."
-                              << " type=" << static_cast<int>(atype) << utils::io::endl;
+                printf("Only positions, normals, and tangents can be morphed. type=%d\n",
+                       (int)atype);
                 return false;
             }
 
             if (VertexBuffer::AttributeType fatype, actualType; !getElementType(accessor->type,
                         accessor->component_type, &fatype, &actualType)) {
-                utils::slog.e << "Unsupported accessor type in " << name << utils::io::endl;
+                printf("Unsupported accessor type in %s\n", name ? name : "(null)");
                 return false;
             }
 
@@ -529,7 +539,7 @@ bool AssetLoaderExtended::createPrimitive(Input* input, Output* out,
     }
 
     if (!hasUv1 && numUvSets > 1) {
-        utils::slog.w << "Missing UV1 data in " << name << utils::io::endl;
+        printf("Missing UV1 data in %s\n", name ? name : "(null)");
         attributesMap[{cgltf_attribute_type_texcoord, GENERATED_1}] = {VertexAttribute::UV1,
                 slotCount++};
     }

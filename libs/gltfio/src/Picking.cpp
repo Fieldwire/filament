@@ -250,4 +250,85 @@ PickingRegistry::Hit PickingRegistry::pick(const float3& rayOrigin, const float3
     return best;
 }
 
+PickingRegistry::Hit PickingRegistry::pickSkippingIndexRange(const float3& rayOrigin,
+                                                             const float3& rayDir,
+                                                             uint32_t startIdx,
+                                                             uint32_t endIdx) const {
+    Hit best{ Entity{}, -1, std::numeric_limits<float>::max(), {} };
+    float3 dirNorm = normalize(rayDir);
+    if (startIdx > endIdx) {
+        return best;
+    }
+
+    for (auto it = mMeshes.begin(); it != mMeshes.end(); ++it) {
+        Entity entity = it->first;
+        MeshData const& mesh = it->second;
+        mat4f world; // identity by default
+        auto wIt = mWorldTransforms.find(entity);
+        if (wIt != mWorldTransforms.end()) {
+            world = wIt->second;
+        }
+        mat4f invWorld = inverse(world);
+        float4 o4(rayOrigin, 1.0f);
+        float4 d4(dirNorm, 0.0f);
+        float3 localO = (invWorld * o4).xyz;
+        float3 localD = normalize((invWorld * d4).xyz);
+        float3 localDInv{ 1.0f / localD.x, 1.0f / localD.y, 1.0f / localD.z };
+
+        if (!intersectAabb(localO, localDInv, mesh.localBounds.min, mesh.localBounds.max, best.distance)) {
+            continue;
+        }
+        MeshData const* mdConst = &mesh;
+        if (!mdConst->bvhBuilt) {
+            const_cast<PickingRegistry*>(this)->buildBVHIfNeeded(entity);
+            mdConst = getMesh(entity);
+            if (!mdConst) continue;
+        }
+        MeshData const& md = *mdConst;
+        if (md.bvh.empty()) {
+            continue;
+        }
+        struct StackNode { uint32_t index; };
+        StackNode stack[128];
+        int sp = 0;
+        stack[sp++] = { 0u };
+        while (sp) {
+            uint32_t ni = stack[--sp].index;
+            const MeshBVHNode& node = md.bvh[ni];
+            if (!intersectAabb(localO, localDInv, node.min, node.max, best.distance)) {
+                continue;
+            }
+            if (node.leaf) {
+                uint32_t start = node.left;
+                uint32_t count = node.right;
+                for (uint32_t i = 0; i < count; ++i) {
+                    uint32_t triOrd = md.leafTris[start + i];
+                    uint32_t base = triOrd * 3;
+                    // Skip this triangle if any of its index positions fall within [startIdx, endIdx].
+                    bool skip = (base     >= startIdx && base     <= endIdx) ||
+                                (base + 1 >= startIdx && base + 1 <= endIdx) ||
+                                (base + 2 >= startIdx && base + 2 <= endIdx);
+                    if (skip) {
+                        continue;
+                    }
+                    const float3& v0 = md.positions[ md.indices[base + 0] ];
+                    const float3& v1 = md.positions[ md.indices[base + 1] ];
+                    const float3& v2 = md.positions[ md.indices[base + 2] ];
+                    float t, u, v;
+                    if (rayTriangle(localO, localD, v0, v1, v2, t, u, v) && t < best.distance) {
+                        best.entity = entity;
+                        best.triangle = (int)triOrd;
+                        best.distance = t;
+                        best.bary = float3{ u, v, 1.0f - u - v };
+                    }
+                }
+            } else {
+                stack[sp++] = { node.left };
+                stack[sp++] = { node.right };
+            }
+        }
+    }
+    return best;
+}
+
 } // namespace filament::gltfio

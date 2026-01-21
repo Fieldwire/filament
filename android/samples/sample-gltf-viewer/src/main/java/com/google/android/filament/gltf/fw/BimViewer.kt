@@ -44,7 +44,7 @@ class BimViewer(
     private val modelViewer: FWModelViewer = FWModelViewer(
         surfaceView = surfaceView,
         manipulator = cameraManipulator,
-        engine = Engine.Builder().backend(Engine.Backend.VULKAN).config(
+        engine = Engine.Builder().backend(Engine.Backend.OPENGL).config(
             Engine.Config().apply {
                 // Remember to change the configs in release/config file
                 commandBufferSizeMB = 2 * multiplier * 3
@@ -72,8 +72,8 @@ class BimViewer(
     // Menus: Properties/Isolate/Hide
     // To highlight a single triangle overlay
     private val triangleHighlighter: TriangleHighlighter
-    // To hide subset of triangles by rebuilding IndexBuffer
-    private var triangleHider: TriangleHider? = null
+    // Triangle hiding utility (JNI wrapper to gltfio::TriangleHider)
+    private var triangleHiderNative: Long = 0
     // Triangle mapping for grouped triangle highlighting
     private var triangleMapping: TriangleMapping? = null
 
@@ -104,10 +104,10 @@ class BimViewer(
         modelViewer.loadModelGlb(modelBuffer)
         setIndirectLight(lightBuffer)
 
-        // Initialize TriangleHider with the asset
+        // Initialize TriangleHider using JNI
         modelViewer.asset?.let { asset ->
-            triangleHider = TriangleHider(modelViewer.engine, asset)
-            logg("TriangleHider initialized")
+            triangleHiderNative = asset.createTriangleHider(modelViewer.engine)
+            logg("TriangleHider initialized (native)")
         }
 
         // Try to load triangle mapping if it exists
@@ -141,7 +141,13 @@ class BimViewer(
     }
 
     fun destroyViewer() {
-         modelViewer.destroyViewer()
+        // Cleanup triangle hider
+        if (triangleHiderNative != 0L) {
+            modelViewer.asset?.destroyTriangleHider(triangleHiderNative)
+            triangleHiderNative = 0
+        }
+
+        modelViewer.destroyViewer()
     }
 
     private fun transformToInitialPosition() {
@@ -261,7 +267,11 @@ class BimViewer(
         val asset = modelViewer.asset
         if (asset != null) {
             // Use existing screen-space pick to get entity and triangle index
-            val hit = asset.pickScreen(modelViewer.view, x, y)
+            val hit = if (lastHiddenStartIdx != -1 && lastHiddenEndIdx != -1) {
+                asset.pickScreenSkippingRange(modelViewer.view, x, y, lastHiddenStartIdx, lastHiddenEndIdx)
+            } else {
+                asset.pickScreen(modelViewer.view, x, y)
+            }
 
             logg("Pick result: ${hit?.entity} triangle: ${hit?.triangle} ")
 //            highlight(hit)
@@ -270,47 +280,74 @@ class BimViewer(
         }
     }
 
+    private var lastHiddenStartIdx = -1
+    private var lastHiddenEndIdx = -1
+
     private fun hide(hit: FilamentAsset.Hit?) {
-        triangleHider?.restore()
-
         val asset = modelViewer.asset ?: return
-        if (hit != null && hit.entity != 0 && hit.triangle >= 0) {
-            // Get entity name for mapping lookup
-            val entityName = asset.getName(hit.entity) ?: hit.entity.toString()
-            logg("Hiding triangles for entity: $entityName, triangle: ${hit.triangle}")
 
-            // Check if we have a triangle mapping
-            val mapping = triangleMapping
-            if (mapping != null) {
-                // Get the triangle range from mapping
-                val range = mapping.getTriangleRange(entityName, hit.triangle)
-                logg("Triangle range from mapping: $range")
-                if (range != null) {
-                    var (startIdx, endIdx) = range
-                    logg("Triangle range: $startIdx to $endIdx")
+        if (hit == null || hit.entity == 0 || hit.triangle < 0) {
+            return
+        }
 
-                    // If endIdx is Int.MAX_VALUE, get the actual indices size from the asset
-                    if (endIdx == Int.MAX_VALUE) {
-                        val indicesSize = asset.getIndicesSize(hit.entity)
-                        if (indicesSize > 0) {
-                            endIdx = indicesSize - 1
-                            logg("Adjusted endIdx from Int.MAX_VALUE to actual size: $endIdx")
-                        }
+        // Get entity and triangle from hit parameter
+        val entity = hit.entity
+        val triangle = hit.triangle
+
+        // Get entity name for mapping lookup
+        val entityName = asset.getName(entity) ?: entity.toString()
+        logg("Hiding triangles for entity: $entityName, triangle: $triangle")
+
+        // Get the triangle range from mapping
+        val mapping = triangleMapping
+        if (mapping != null) {
+            val range = mapping.getTriangleRange(entityName, triangle)
+            if (range != null) {
+                var (startIdx, endIdx) = range
+                logg("Triangle range from mapping: $startIdx to $endIdx")
+
+                // If endIdx is Int.MAX_VALUE, set it to indices.size from FilamentAsset.getIndicesSize
+                if (endIdx == Int.MAX_VALUE) {
+                    val indicesSize = asset.getIndicesSize(entity)
+                    if (indicesSize > 0) {
+                        endIdx = indicesSize - 1
+                        logg("Adjusted endIdx from Int.MAX_VALUE to actual size: $endIdx")
                     }
+                }
 
-                    // Hide triangles in the range using TriangleHider
-                    val success = triangleHider?.hideTriangles(hit.entity, startIdx, endIdx)
-                    if (success == true) {
-                        logg("Successfully hid triangles [$startIdx, $endIdx] for entity ${hit.entity}")
-                    } else {
-                        logg("Failed to hide triangles for entity ${hit.entity}")
+                // Hide all the triangles in between startIdx and endIdx
+             /*   var hiddenCount = 0
+                for (triIdx in startIdx..endIdx step 3) {
+                    val success = asset.hideTriangleWithoutCache(entity, triIdx / 3)
+                    if (success) {
+                        hiddenCount++
                     }
-                    return
+                }*/
+
+                lastHiddenStartIdx = startIdx
+                lastHiddenEndIdx = endIdx
+                asset.hideVerticesInRangeWithoutCache(entity, startIdx, endIdx)
+
+                logg("Successfully hid triangles in range $startIdx to $endIdx")
+            } else {
+                // No mapping found, hide single triangle
+                logg("No triangle mapping found, hiding single triangle")
+                val success = asset.hideTriangleWithoutCache(entity, triangle)
+                if (success) {
+                    logg("Successfully hid triangle $triangle")
+                } else {
+                    logg("Failed to hide triangle $triangle")
                 }
             }
-
-            // If no mapping or no range found, log it
-            logg("No triangle mapping or range found, cannot hide triangles")
+        } else {
+            // No triangle mapping available, hide single triangle
+            logg("No triangle mapping available, hiding single triangle")
+            val success = asset.hideTriangleWithoutCache(entity, triangle)
+            if (success) {
+                logg("Successfully hid triangle $triangle")
+            } else {
+                logg("Failed to hide triangle $triangle")
+            }
         }
     }
 

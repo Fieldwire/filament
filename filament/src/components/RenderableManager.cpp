@@ -1026,4 +1026,24 @@ size_t FRenderableManager::getInstanceCount(Instance const instance) const noexc
     return 0;
 }
 
+FVertexBuffer* FRenderableManager::getVertexBuffer(Instance instance, size_t primitiveIndex) const noexcept {
+    if (instance) {
+        utils::Slice<FRenderPrimitive> const primitives = mManager[instance].primitives;
+        if (primitiveIndex < primitives.size()) {
+            return const_cast<FVertexBuffer*>(primitives[primitiveIndex].getVertexBuffer());
+        }
+    }
+    return nullptr;
+}
+
+FIndexBuffer* FRenderableManager::getIndexBuffer(Instance instance, size_t primitiveIndex) const noexcept {
+    if (instance) {
+        utils::Slice<FRenderPrimitive> const primitives = mManager[instance].primitives;
+        if (primitiveIndex < primitives.size()) {
+            return const_cast<FIndexBuffer*>(primitives[primitiveIndex].getIndexBuffer());
+        }
+    }
+    return nullptr;
+}
+
 } // namespace filament

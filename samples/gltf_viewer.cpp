@@ -40,6 +40,7 @@
 #include <gltfio/TextureProvider.h>
 #include <gltfio/ScreenRay.h>
 #include <gltfio/PickingUtils.h>
+#include <gltfio/TriangleHiding.h>
 
 // Access to internal asset structures for getting vertex/index buffers
 #include "../libs/gltfio/src/FFilamentAsset.h"
@@ -116,7 +117,7 @@ struct App {
     NameComponentManager* names;
 
     MaterialProvider* materials;
-    MaterialSource materialSource = JITSHADER;
+    MaterialSource materialSource = UBERSHADER;  // Default to JitShader (fix now supports both)
 
     gltfio::ResourceLoader* resourceLoader = nullptr;
     gltfio::TextureProvider* stbDecoder = nullptr;
@@ -166,15 +167,12 @@ struct App {
     VertexBuffer* triangleVB = nullptr;
     IndexBuffer* triangleIB = nullptr;
 
-    // Track hidden triangles per entity
-    struct HiddenTriangleInfo {
-        utils::Entity originalEntity;
-        VertexBuffer* originalVertexBuffer = nullptr;  // Original vertex buffer from asset
-        IndexBuffer* originalIndexBuffer = nullptr;    // Original index buffer from asset
-        IndexBuffer* modifiedIndexBuffer = nullptr;    // Our modified index buffer
-        std::set<int> hiddenTriangleIndices;
-    };
-    std::map<uint32_t, HiddenTriangleInfo> hiddenTriangles;
+    // Triangle hiding utility
+    gltfio::TriangleHider* triangleHider = nullptr;
+
+    // One-time flags for logging and releasing source data
+    bool loggedMeshCacheMemory = false;
+    bool releasedSourceData = false;
 };
 
 static const char* DEFAULT_IBL = "assets/ibl/lightroom_14b";
@@ -634,158 +632,22 @@ static void highlightTriangle(App& app, View* view, const PickingRegistry::Hit& 
     std::cout << "Added triangle highlight for triangle " << hit.triangle << std::endl;
 }
 
-static void hideTriangle(App& app, View* view, const PickingRegistry::Hit& hit) {
-    Engine* engine = app.engine;
-    auto& rcm = engine->getRenderableManager();
-    auto reg = app.asset->getPickingRegistry();
-    if (!reg) return;
-
-    auto* md = reg->getMesh(hit.entity);
-    if (!md) return;
-
-    auto entityId = hit.entity.getId();
-    auto renderableInst = rcm.getInstance(hit.entity);
-    if (!renderableInst) return;
-
-    // Check if we already have hidden triangles for this entity
-    auto it = app.hiddenTriangles.find(entityId);
-    if (it == app.hiddenTriangles.end()) {
-        // First time hiding a triangle for this entity
-        App::HiddenTriangleInfo info;
-        info.originalEntity = hit.entity;
-        info.hiddenTriangleIndices.insert(hit.triangle);
-
-        size_t vertexCount = md->positions.size();
-
-        // Build vertex buffer structure with position, UVs, and colors only
-        // (Normals and tangents excluded for now)
-        struct Vertex {
-            float3 position;
-            float2 uv0;
-            float4 color;
-        };
-
-        VertexBuffer::Builder vbBuilder;
-        vbBuilder.vertexCount(vertexCount).bufferCount(1);
-
-        size_t offset = 0;
-
-        // Position is always required
-        vbBuilder.attribute(VertexAttribute::POSITION, 0, VertexBuffer::AttributeType::FLOAT3, offset, sizeof(Vertex));
-        offset += sizeof(float3);
-
-        // UVs
-        if (md->hasUVs) {
-            vbBuilder.attribute(VertexAttribute::UV0, 0, VertexBuffer::AttributeType::FLOAT2, offset, sizeof(Vertex));
-        }
-        offset += sizeof(float2);
-
-        // Colors
-        if (md->hasColors) {
-            vbBuilder.attribute(VertexAttribute::COLOR, 0, VertexBuffer::AttributeType::FLOAT4, offset, sizeof(Vertex));
-        }
-
-        auto* vertices = new Vertex[vertexCount];
-        for (size_t i = 0; i < vertexCount; ++i) {
-            vertices[i].position = md->positions[i];
-            vertices[i].uv0 = md->hasUVs ? md->uvs[i] : float2{0, 0};
-            vertices[i].color = md->hasColors ? md->colors[i] : float4{1, 1, 1, 1};
-        }
-
-        info.originalVertexBuffer = vbBuilder.build(*engine);
-        info.originalVertexBuffer->setBufferAt(*engine, 0,
-                VertexBuffer::BufferDescriptor(
-                        vertices, sizeof(Vertex) * vertexCount,
-                        [](void* buffer, size_t, void*) { delete[] static_cast<Vertex*>(buffer); }
-                ));
-
-        // Create new index buffer excluding the hidden triangle
-        size_t originalIndexCount = md->indices.size();
-        size_t newIndexCount = originalIndexCount - 3;
-        auto* newIndices = new uint32_t[newIndexCount];
-
-        size_t writeIdx = 0;
-        uint32_t triangleBase = hit.triangle * 3;
-        for (size_t i = 0; i < originalIndexCount; ++i) {
-            if (i >= triangleBase && i < triangleBase + 3) {
-                continue;
-            }
-            newIndices[writeIdx++] = md->indices[i];
-        }
-
-        info.modifiedIndexBuffer = IndexBuffer::Builder()
-                .indexCount(newIndexCount)
-                .bufferType(IndexBuffer::IndexType::UINT)
-                .build(*engine);
-        info.modifiedIndexBuffer->setBuffer(*engine,
-                IndexBuffer::BufferDescriptor(
-                        newIndices, sizeof(uint32_t) * newIndexCount,
-                        [](void* buffer, size_t, void*) { delete[] static_cast<uint32_t*>(buffer); }
-                ));
-
-        // Update the renderable's geometry with our new buffers
-        rcm.setGeometryAt(renderableInst, 0,
-                RenderableManager::PrimitiveType::TRIANGLES,
-                info.originalVertexBuffer,
-                info.modifiedIndexBuffer,
-                0, newIndexCount);
-
-        app.hiddenTriangles[entityId] = info;
-
-        std::cout << "Hidden triangle " << hit.triangle << " from entity " << entityId
-                  << ". New index count: " << newIndexCount << std::endl;
-    } else {
-        // Already have hidden triangles - hide another one
-        auto& info = it->second;
-
-        if (info.hiddenTriangleIndices.find(hit.triangle) != info.hiddenTriangleIndices.end()) {
-            std::cout << "Triangle " << hit.triangle << " is already hidden" << std::endl;
-            return;
-        }
-
-        info.hiddenTriangleIndices.insert(hit.triangle);
-
-        // Rebuild index buffer excluding all hidden triangles
-        size_t originalIndexCount = md->indices.size();
-        size_t newIndexCount = originalIndexCount - (info.hiddenTriangleIndices.size() * 3);
-        auto* newIndices = new uint32_t[newIndexCount];
-
-        size_t writeIdx = 0;
-        for (size_t i = 0; i < originalIndexCount; i += 3) {
-            int triangleIdx = i / 3;
-            if (info.hiddenTriangleIndices.find(triangleIdx) == info.hiddenTriangleIndices.end()) {
-                newIndices[writeIdx++] = md->indices[i];
-                newIndices[writeIdx++] = md->indices[i + 1];
-                newIndices[writeIdx++] = md->indices[i + 2];
-            }
-        }
-
-        // Destroy old index buffer and create new one
-        engine->destroy(info.modifiedIndexBuffer);
-        info.modifiedIndexBuffer = IndexBuffer::Builder()
-                .indexCount(newIndexCount)
-                .bufferType(IndexBuffer::IndexType::UINT)
-                .build(*engine);
-        info.modifiedIndexBuffer->setBuffer(*engine,
-                IndexBuffer::BufferDescriptor(
-                        newIndices, sizeof(uint32_t) * newIndexCount,
-                        [](void* buffer, size_t, void*) { delete[] static_cast<uint32_t*>(buffer); }
-                ));
-
-        // Update geometry with new index buffer (vertex buffer stays the same)
-        rcm.setGeometryAt(renderableInst, 0,
-                RenderableManager::PrimitiveType::TRIANGLES,
-                info.originalVertexBuffer,
-                info.modifiedIndexBuffer,
-                0, newIndexCount);
-
-        std::cout << "Hidden triangle " << hit.triangle << " (total hidden: "
-                  << info.hiddenTriangleIndices.size() << "). New index count: "
-                  << newIndexCount << std::endl;
+static void hideTriangle(App& app, View* view, const PickingRegistry::Hit& hit, const MeshData* meshData) {
+    // Create TriangleHider on first use
+    if (!app.triangleHider) {
+        app.triangleHider = new gltfio::TriangleHider(app.engine);
     }
+
+    // Hide the triangle using FilamentAsset (no MeshData needed)
+    // app.triangleHider->hideTriangle(hit.entity, hit.triangle, app.asset);
+    // app.triangleHider->hideTriangleWithoutCache(hit.entity, hit.triangle, meshData);
+    app.triangleHider->hideVerticesInRangeWithoutCache(hit.entity, 0, 107, meshData);
 }
 
 static void onClick(App& app, View* view, ImVec2 pos) {
+    // Update transforms for accuracy (could be done once per frame elsewhere).
+    gltfio::updatePickingTransforms(app.asset);
+
     // CPU-side triangle picking using ray from camera via shared utility.
     float3 rayOrigin;
     float3 rayDir;
@@ -793,23 +655,8 @@ static void onClick(App& app, View* view, ImVec2 pos) {
         return;
     }
 
-
     auto reg = app.asset->getPickingRegistry();
     if (reg) {
-        // Update transforms for accuracy (could be done once per frame elsewhere).
-        Engine* engine = app.engine; // guaranteed set
-        auto& tcm = engine->getTransformManager();
-        const utils::Entity* renderables = app.asset->getRenderableEntities();
-        size_t rc = app.asset->getRenderableEntityCount();
-        if (renderables) {
-            for (size_t i = 0; i < rc; ++i) {
-                auto inst = tcm.getInstance(renderables[i]);
-                if (inst) {
-                    reg->updateTransform(renderables[i], tcm.getWorldTransform(inst));
-                }
-            }
-        }
-
         auto hit = reg->pick(rayOrigin, rayDir);
         if (hit.entity.getId() != 0 && hit.triangle >= 0) {
             const char* name = app.asset->getName(hit.entity);
@@ -826,8 +673,9 @@ static void onClick(App& app, View* view, ImVec2 pos) {
 
             // Check if Shift key is pressed to hide instead of highlight
             ImGuiIO& io = ImGui::GetIO();
+            auto meshData = reg->getMesh(hit.entity);
             if (io.KeyShift) {
-                hideTriangle(app, view, hit);
+                hideTriangle(app, view, hit, meshData);
             } else {
                 highlightTriangle(app, view, hit);
             }
@@ -1021,7 +869,8 @@ int main(int argc, char** argv) {
             app.asset->getInstance()->recomputeBoundingBoxes();
         }
 
-        app.asset->releaseSourceData();
+        // NOTE: Defer releaseSourceData until after we log mesh cache memory when load completes.
+        // app.asset->releaseSourceData();
 
         // Enable stencil writes on all material instances.
         const size_t matInstanceCount = app.instance->getMaterialInstanceCount();
@@ -1127,11 +976,29 @@ int main(int argc, char** argv) {
         loadResources(filename);
         app.viewer->setAsset(app.asset, app.instance);
 
+        // Create TriangleHider and register all entity buffers from the asset
+        // This allows hiding triangles while reusing original VertexBuffers
+        app.triangleHider = new gltfio::TriangleHider(app.engine);
+
         createGroundPlane(engine, scene, app);
         createOverdrawVisualizerEntities(engine, scene, app);
 
         app.viewer->setUiCallback([&app, scene, view, engine] () {
             auto& automation = *app.automationEngine;
+
+            // After resources are fully loaded, log mesh cache memory once, then release source data.
+            float const progress = app.resourceLoader->asyncGetLoadProgress();
+            if (progress >= 1.0f && !app.loggedMeshCacheMemory) {
+                auto* fasset = static_cast<gltfio::FFilamentAsset*>(app.asset);
+                fasset->populateMeshCacheSizesFromExtended();
+                fasset->logMeshCacheMemoryDetailed();
+                app.loggedMeshCacheMemory = true;
+                if (!app.releasedSourceData) {
+                    app.asset->releaseSourceData();
+                    app.resourceLoader->evictResourceData();
+                    app.releasedSourceData = true;
+                }
+            }
 
             if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                 ImVec2 pos = ImGui::GetMousePos();
@@ -1162,16 +1029,9 @@ int main(int argc, char** argv) {
                 ImGui::Spacing();
             }
 
-            float const progress = app.resourceLoader->asyncGetLoadProgress();
-            if (progress < 1.0) {
-                ImGui::ProgressBar(progress);
-            } else {
-                // The model is now fully loaded, so let automation know.
-                automation.signalBatchMode();
-            }
+            // The model is now fully loaded, so let automation know.
+            automation.signalBatchMode();
 
-            // The screenshots do not include the UI, but we auto-open the Automation UI group
-            // when in batch mode. This is useful when a human is observing progress.
             const int flags = automation.isBatchModeEnabled() ? ImGuiTreeNodeFlags_DefaultOpen : 0;
 
             if (ImGui::CollapsingHeader("Automation", flags)) {
@@ -1380,13 +1240,11 @@ int main(int argc, char** argv) {
             engine->destroy(app.scene.highlightMaterial);
         }
 
-        // Cleanup hidden triangle resources
-        for (auto& pair : app.hiddenTriangles) {
-            auto& info = pair.second;
-            if (info.originalVertexBuffer) engine->destroy(info.originalVertexBuffer);
-            if (info.modifiedIndexBuffer) engine->destroy(info.modifiedIndexBuffer);
+        // Cleanup triangle hiding resources
+        if (app.triangleHider) {
+            delete app.triangleHider;
+            app.triangleHider = nullptr;
         }
-        app.hiddenTriangles.clear();
 
         auto& em = EntityManager::get();
         for (auto e : app.scene.overdrawVisualizer) {

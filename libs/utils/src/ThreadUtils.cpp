@@ -32,6 +32,6 @@ bool ThreadUtils::isThisThread(std::thread::id id) noexcept {
     return getThreadId() == id;
 }
 
-bool ThreadUtils::threadingEnabled = true;
+bool ThreadUtils::threadingEnabled = false;
 
 } // namespace utils

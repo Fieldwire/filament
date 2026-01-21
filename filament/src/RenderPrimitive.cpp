@@ -62,6 +62,10 @@ void FRenderPrimitive::set(HwRenderPrimitiveFactory& factory, backend::DriverApi
         factory.destroy(driver, mHandle);
     }
 
+    // Store buffer references for later retrieval via getVertexBuffer/getIndexBuffer
+    mVertexBuffer = vertexBuffer;
+    mIndexBuffer = indexBuffer;
+
     AttributeBitset const enabledAttributes = vertexBuffer->getDeclaredAttributes();
 
     auto const& ebh = vertexBuffer->getHwHandle();

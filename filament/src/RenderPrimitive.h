@@ -77,6 +77,9 @@ public:
         mMorphingBufferOffset = offset;
     }
 
+    FVertexBuffer const* getVertexBuffer() const noexcept { return mVertexBuffer; }
+    FIndexBuffer const* getIndexBuffer() const noexcept { return mIndexBuffer; }
+
 private:
     // These first fields are dereferences from PrimitiveInfo, keep them together
     FMaterialInstance const* mMaterialInstance = nullptr;
@@ -86,6 +89,10 @@ private:
     uint32_t mIndexCount = 0;
     uint32_t mMorphingBufferOffset = 0;
     // End PrimitiveInfo fields.
+
+    // Store references to buffers for retrieval via getVertexBuffer/getIndexBuffer
+    FVertexBuffer const* mVertexBuffer = nullptr;
+    FIndexBuffer const* mIndexBuffer = nullptr;
 
     AttributeBitset mEnabledAttributes = {};
     uint16_t mBlendOrder = 0;
