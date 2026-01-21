@@ -183,7 +183,7 @@ static inline bool rayTriangle(const float3& o, const float3& d,
 }
 
 PickingRegistry::Hit PickingRegistry::pick(const float3& rayOrigin, const float3& rayDir) const {
-    Hit best{ Entity{}, -1, std::numeric_limits<float>::max(), {} };
+    Hit best{ Entity{}, -1, std::numeric_limits<float>::max() };
     float3 dirNorm = normalize(rayDir);
 
     for (auto it = mMeshes.begin(); it != mMeshes.end(); ++it) {
@@ -238,7 +238,6 @@ PickingRegistry::Hit PickingRegistry::pick(const float3& rayOrigin, const float3
                         best.entity = entity;
                         best.triangle = (int)triOrd;
                         best.distance = t;
-                        best.bary = float3{ u, v, 1.0f - u - v };
                     }
                 }
             } else {

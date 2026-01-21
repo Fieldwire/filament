@@ -62,7 +62,7 @@ public:
     [[nodiscard]] const MeshData* getMesh(Entity e) const;
     void updateTransform(Entity e, const filament::math::mat4f& world);
 
-    struct Hit { Entity entity; int triangle; float distance; filament::math::float3 bary; };
+    struct Hit { Entity entity; int triangle; float distance; };
     [[nodiscard]] Hit pick(const filament::math::float3& rayOrigin, const filament::math::float3& rayDir) const;
 
     struct SceneItem { Entity e; filament::Aabb worldBounds; };

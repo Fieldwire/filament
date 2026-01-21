@@ -505,6 +505,110 @@ static void createOverdrawVisualizerEntities(Engine* engine, Scene* scene, App& 
     app.scene.fullScreenTriangleIndexBuffer = indexBuffer;
 }
 
+static std::pair <float3, float3> cast_ray(bool isPerspective, mat4 invView, float3 forwardVector, double3 position, float3 viewPoint) {
+    std::pair <float3, float3> ray;
+
+    if (isPerspective) {
+        // Unproject a point on the near plane in view space.
+        // For perspective, direction is from origin toward the unprojected point.
+        float3 dirView = normalize(viewPoint);
+        float3 dirWorld = normalize( (invView * float4(dirView, 0)).xyz );
+
+        ray = {position, dirWorld};
+    } else {
+        // Orthographic: generate world position of cursor on near plane then forward direction.
+        float3 worldPoint = (invView * float4(viewPoint, 1)).xyz;
+        ray = {worldPoint, normalize(forwardVector)};
+    }
+
+    return ray;
+}
+
+static PickingRegistry::Hit pick_triangle_refactor(
+    PickingRegistry *registry,
+    const utils::Entity *renderables,
+    size_t renderableEntityCount,
+    TransformManager &transform_manager,
+    double nx,
+    double ny,
+    mat4 projectionMatrix,
+    mat4 inverseProjection,
+    mat4 viewMatrix,
+    float3 forwardVector,
+    double3 position
+) {
+    mat4 inverseViewMatrix = inverse(viewMatrix);
+    bool isPerspective = std::abs(projectionMatrix[3][3]) < 1e-6;
+    double4 clip{ nx, ny, -1.0, 1.0 }; // z=-1 near
+    double4 viewSpace = inverseProjection * clip;
+    auto viewPoint = float3( static_cast<float>(viewSpace.x), static_cast<float>(viewSpace.y), static_cast<float>(viewSpace.z) );
+
+    auto [rayOrigin, rayDir] = cast_ray(isPerspective, inverseViewMatrix, forwardVector, position, viewPoint);
+
+    for (size_t i = 0; i < renderableEntityCount; ++i) {
+        auto inst = transform_manager.getInstance(renderables[i]);
+        if (!inst) continue;
+        registry->updateTransform(renderables[i], transform_manager.getWorldTransform(inst));
+    }
+
+    auto hit = registry->pick(rayOrigin, rayDir);
+    return hit;
+}
+
+static std::string pick_triangle_refactor(App &app, View *view, ImVec2 pos) {
+    auto registry = app.asset->getPickingRegistry2();
+    if (!registry) {
+        return "(PickingRegistry2 not available)\n";
+    }
+
+    const utils::Entity* renderables = app.asset->getRenderableEntities();
+    size_t renderableEntityCount = app.asset->getRenderableEntityCount();
+    if (!renderables) {
+        return "(No renderable entities in refactor impl)\n";
+    }
+
+    // Update transforms for accuracy (could be done once per frame elsewhere).
+    Engine* engine = app.engine; // guaranteed set
+    auto& transform_manager = engine->getTransformManager();
+
+    // CPU-side triangle picking using ray from camera.
+    Camera* cam = &view->getCamera();
+    const Viewport& vp = view->getViewport();
+    double nx = static_cast<double>(pos.x) / static_cast<double>(vp.width) * 2.0 - 1.0;
+    double ny = static_cast<double>(pos.y) / static_cast<double>(vp.height) * 2.0 - 1.0;
+
+    // Perspective vs Ortho heuristic: perspective projection matrix has m[3][3] == 0.
+    mat4 projectionMatrix = cam->getProjectionMatrix();
+
+    mat4 inverseProjection = Camera::inverseProjection(projectionMatrix);
+    mat4 viewMatrix = cam->getViewMatrix();
+    auto forwardVector = cam->getForwardVector();
+    // Convert pixel to NDC (-1..1) where origin is bottom-left after y flip already applied.
+    auto position = cam->getPosition();
+
+    PickingRegistry::Hit hit = pick_triangle_refactor(
+        registry,
+        renderables,
+        renderableEntityCount,
+        transform_manager,
+        nx,
+        ny,
+        projectionMatrix,
+        inverseProjection,
+        viewMatrix,
+        forwardVector,
+        position
+    );
+    if (hit.entity.getId() == 0 || hit.triangle < 0) {
+        return "(No hit in refactor impl)\n";
+    }
+
+    const char* name = app.asset->getName(hit.entity);
+    std::string text = name ? name : "Entity " + std::to_string(hit.entity.getId());
+
+    return text + " (triangle " + std::to_string(hit.triangle) + ") (Refactor 1)\n";
+}
+
 static void onClick(App& app, View* view, ImVec2 pos) {
     // existing pixel-based GPU picking
     view->pick(pos.x, pos.y, [&app](View::PickingQueryResult const& result){
@@ -552,6 +656,8 @@ static void onClick(App& app, View* view, ImVec2 pos) {
         rayDir = normalize(cam->getForwardVector());
     }
 
+    std::ostringstream oss;
+    oss << std::endl;
     auto reg = app.asset->getPickingRegistry();
     if (reg) {
         // Update transforms for accuracy (could be done once per frame elsewhere).
@@ -570,18 +676,21 @@ static void onClick(App& app, View* view, ImVec2 pos) {
         auto hit = reg->pick(rayOrigin, rayDir);
         if (hit.entity.getId() != 0 && hit.triangle >= 0) {
             const char* name = app.asset->getName(hit.entity);
-            std::ostringstream oss;
             if (name) {
                 oss << name << " (triangle " << hit.triangle << ")";
             } else {
                 oss << "Entity " << hit.entity.getId() << " (triangle " << hit.triangle << ")";
             }
-            // Include barycentric and distance for debugging.
-            oss << " dist=" << std::fixed << std::setprecision(3) << hit.distance
-                << " bary=(" << hit.bary.x << "," << hit.bary.y << "," << hit.bary.z << ")";
+
+            oss << "(Original)" << std::endl;
+
             app.notificationText = oss.str();
         }
     }
+
+    oss << pick_triangle_refactor(app, view, pos);
+
+    app.notificationText = oss.str();
 }
 
 static utils::Path getPathForIBLAsset(std::string_view string) {
@@ -1244,6 +1353,34 @@ int main(int argc, char** argv) {
                         auto inst = tcm.getInstance(renderables[i]);
                         if (inst) {
                             reg->updateTransform(renderables[i], tcm.getWorldTransform(inst));
+                        }
+                    }
+                }
+            }
+            auto reg2 = app.asset->getPickingRegistry2();
+            if (reg2) {
+                auto& tcm = engine->getTransformManager();
+                const utils::Entity* renderables = app.asset->getRenderableEntities();
+                size_t rc = app.asset->getRenderableEntityCount();
+                if (renderables) {
+                    for (size_t i = 0; i < rc; ++i) {
+                        auto inst = tcm.getInstance(renderables[i]);
+                        if (inst) {
+                            reg2->updateTransform(renderables[i], tcm.getWorldTransform(inst));
+                        }
+                    }
+                }
+            }
+            auto reg3 = app.asset->getPickingRegistry3();
+            if (reg3) {
+                auto& tcm = engine->getTransformManager();
+                const utils::Entity* renderables = app.asset->getRenderableEntities();
+                size_t rc = app.asset->getRenderableEntityCount();
+                if (renderables) {
+                    for (size_t i = 0; i < rc; ++i) {
+                        auto inst = tcm.getInstance(renderables[i]);
+                        if (inst) {
+                            reg3->updateTransform(renderables[i], tcm.getWorldTransform(inst));
                         }
                     }
                 }
