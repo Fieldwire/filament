@@ -524,6 +524,14 @@ static std::pair <float3, float3> cast_ray(bool isPerspective, mat4 invView, flo
     return ray;
 }
 
+static std::pair <float3, float3> cast_ray_glm(bool isPerspective, mat4 invView, float3 forwardVector, double3 position, float3 viewPoint) {
+    std::pair <float3, float3> ray;
+
+    // stub
+
+    return ray;
+}
+
 static PickingRegistry::Hit pick_triangle_refactor(
     PickingRegistry *registry,
     const utils::Entity *renderables,
@@ -555,7 +563,39 @@ static PickingRegistry::Hit pick_triangle_refactor(
     return hit;
 }
 
-static std::string pick_triangle_refactor(App &app, View *view, ImVec2 pos) {
+static PickingRegistry::Hit pick_triangle_tinybvh(
+    PickingRegistry *registry,
+    const utils::Entity *renderables,
+    size_t renderableEntityCount,
+    TransformManager &transform_manager,
+    double nx,
+    double ny,
+    mat4 projectionMatrix,
+    mat4 inverseProjection,
+    mat4 viewMatrix,
+    float3 forwardVector,
+    double3 position
+) {
+    mat4 inverseViewMatrix = inverse(viewMatrix);
+    bool isPerspective = std::abs(projectionMatrix[3][3]) < 1e-6;
+    double4 clip{ nx, ny, -1.0, 1.0 }; // z=-1 near
+    double4 viewSpace = inverseProjection * clip;
+    auto viewPoint = float3( static_cast<float>(viewSpace.x), static_cast<float>(viewSpace.y), static_cast<float>(viewSpace.z) );
+
+    auto [rayOrigin, rayDir] = cast_ray_glm(isPerspective, inverseViewMatrix, forwardVector, position, viewPoint);
+
+    for (size_t i = 0; i < renderableEntityCount; ++i) {
+        auto inst = transform_manager.getInstance(renderables[i]);
+        if (!inst) continue;
+        registry->updateTransform(renderables[i], transform_manager.getWorldTransform(inst));
+    }
+
+    // stub
+    PickingRegistry::Hit hit = {};
+    return hit;
+}
+
+static std::string pick_triangle(App &app, View *view, ImVec2 pos) {
     auto registry = app.asset->getPickingRegistry2();
     if (!registry) {
         return "(PickingRegistry2 not available)\n";
@@ -599,14 +639,33 @@ static std::string pick_triangle_refactor(App &app, View *view, ImVec2 pos) {
         forwardVector,
         position
     );
+    PickingRegistry::Hit hit2 = pick_triangle_tinybvh(
+        registry,
+        renderables,
+        renderableEntityCount,
+        transform_manager,
+        nx,
+        ny,
+        projectionMatrix,
+        inverseProjection,
+        viewMatrix,
+        forwardVector,
+        position
+    );
     if (hit.entity.getId() == 0 || hit.triangle < 0) {
-        return "(No hit in refactor impl)\n";
+        return std::to_string(hit.entity.getId()) + " (triangle " + std::to_string(hit.triangle) + ")"
+             + " vs "
+             + std::to_string(hit2.entity.getId()) + " (triangle " + std::to_string(hit2.triangle) + ")\n";
     }
 
     const char* name = app.asset->getName(hit.entity);
     std::string text = name ? name : "Entity " + std::to_string(hit.entity.getId());
+    std::string output = text + " (triangle " + std::to_string(hit.triangle) + ") (Refactor 1)\n";
+    const char* name2 = app.asset->getName(hit2.entity);
+    std::string text2 = name2 ? name2 : "Entity " + std::to_string(hit2.entity.getId());
+    std::string output2 = text2 + " (triangle " + std::to_string(hit2.triangle) + ") (TinyBVH)\n";
 
-    return text + " (triangle " + std::to_string(hit.triangle) + ") (Refactor 1)\n";
+    return output + output2;
 }
 
 static void onClick(App& app, View* view, ImVec2 pos) {
@@ -688,7 +747,7 @@ static void onClick(App& app, View* view, ImVec2 pos) {
         }
     }
 
-    oss << pick_triangle_refactor(app, view, pos);
+    oss << pick_triangle(app, view, pos);
 
     app.notificationText = oss.str();
 }
