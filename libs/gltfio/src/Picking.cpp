@@ -118,6 +118,46 @@ static void buildBVH(MeshData& mesh, uint32_t leafSize = 12) {
     mesh.bvhBuilt = true;
 }
 
+bool isPerspective(mat4 projectionMatrix) {
+    return std::abs(projectionMatrix[3][3]) < 1e-6;
+}
+
+std::pair <float3, float3> castRay(
+    mat4 projectionMatrix,
+    mat4 viewMatrix,
+    float3 forwardVector,
+    double3 position,
+    float x,
+    float y,
+    uint32_t width,
+    uint32_t height,
+    mat4 inverseProjection
+) {
+    double nx = static_cast<double>(x) / static_cast<double>(width) * 2.0 - 1.0;
+    double ny = static_cast<double>(y) / static_cast<double>(height) * 2.0 - 1.0;
+    double4 clip{ nx, ny, -1.0, 1.0 }; // z=-1 near
+    double4 viewSpace = inverseProjection * clip;
+    auto viewPoint = float3( static_cast<float>(viewSpace.x), static_cast<float>(viewSpace.y), static_cast<float>(viewSpace.z) );
+    mat4 inverseViewMatrix = inverse(viewMatrix);
+
+    std::pair <float3, float3> ray;
+
+    if (isPerspective(projectionMatrix)) {
+        // Unproject a point on the near plane in view space.
+        // For perspective, direction is from origin toward the unprojected point.
+        float3 dirView = normalize(viewPoint);
+        float3 dirWorld = normalize( (inverseViewMatrix * float4(dirView, 0)).xyz );
+
+        ray = {position, dirWorld};
+    } else {
+        // Orthographic: generate world position of cursor on near plane then forward direction.
+        float3 worldPoint = (inverseViewMatrix * float4(viewPoint, 1)).xyz;
+        ray = {worldPoint, normalize(forwardVector)};
+    }
+
+    return ray;
+}
+
 // -------------------------------------------------------------------------------------------------
 // PickingRegistry methods
 // -------------------------------------------------------------------------------------------------
@@ -249,9 +289,8 @@ PickingRegistry::Hit PickingRegistry::pick(const float3& rayOrigin, const float3
     return best;
 }
 
-
-bool trianglesExist(const uint32_t numTriangles, const tinybvh::Ray &ray, const int32_t hitDistance) {
-    return hitDistance >= 0 && ray.hit.prim < numTriangles;
+bool triangleIsValidAndBest(const int32_t triangleIndex, const uint32_t distance1, const uint32_t distance2) {
+    return triangleIndex >= 0 && distance1 < distance2;
 }
 
 /* TinyBVH adapter: builds a temporary BVH per mesh and intersects a world-space ray.
@@ -299,7 +338,7 @@ PickingRegistry::Hit PickingRegistry::tinybvh_pick_mesh_world(
     );
 
     const int32_t hitPrim = bvh.Intersect(ray);
-    if (hitPrim < 0 || ray.hit.prim >= numTriangles) return result;
+    if (!triangleIsValidAndBest(hitPrim, ray.hit.prim, numTriangles)) return result;
     result.triangle = static_cast<int>(ray.hit.prim);
     result.distance = ray.hit.t;
 

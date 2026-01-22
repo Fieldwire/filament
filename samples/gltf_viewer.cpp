@@ -504,46 +504,14 @@ static void createOverdrawVisualizerEntities(Engine* engine, Scene* scene, App& 
     app.scene.fullScreenTriangleIndexBuffer = indexBuffer;
 }
 
-static std::pair <float3, float3> cast_ray(bool isPerspective, mat4 invView, float3 forwardVector, double3 position, float3 viewPoint) {
-    std::pair <float3, float3> ray;
-
-    if (isPerspective) {
-        // Unproject a point on the near plane in view space.
-        // For perspective, direction is from origin toward the unprojected point.
-        float3 dirView = normalize(viewPoint);
-        float3 dirWorld = normalize( (invView * float4(dirView, 0)).xyz );
-
-        ray = {position, dirWorld};
-    } else {
-        // Orthographic: generate world position of cursor on near plane then forward direction.
-        float3 worldPoint = (invView * float4(viewPoint, 1)).xyz;
-        ray = {worldPoint, normalize(forwardVector)};
-    }
-
-    return ray;
-}
-
 static PickingRegistry::Hit pick_triangle_refactor(
     PickingRegistry *registry,
     const utils::Entity *renderables,
     size_t renderableEntityCount,
     const mat4f* worldTransforms,
-    double nx,
-    double ny,
-    mat4 projectionMatrix,
-    mat4 inverseProjection,
-    mat4 viewMatrix,
-    float3 forwardVector,
-    double3 position
+    float3 rayOrigin,
+    float3 rayDir
 ) {
-    mat4 inverseViewMatrix = inverse(viewMatrix);
-    bool isPerspective = std::abs(projectionMatrix[3][3]) < 1e-6;
-    double4 clip{ nx, ny, -1.0, 1.0 }; // z=-1 near
-    double4 viewSpace = inverseProjection * clip;
-    auto viewPoint = float3( static_cast<float>(viewSpace.x), static_cast<float>(viewSpace.y), static_cast<float>(viewSpace.z) );
-
-    auto [rayOrigin, rayDir] = cast_ray(isPerspective, inverseViewMatrix, forwardVector, position, viewPoint);
-
     (void)renderables; (void)renderableEntityCount; (void)worldTransforms; // transforms assumed updated externally
     return registry->pick(rayOrigin, rayDir);
 }
@@ -553,22 +521,9 @@ static PickingRegistry::Hit pick_triangle_tinybvh(
     const utils::Entity *renderables,
     size_t renderableEntityCount,
     const mat4f* worldTransforms, // parallel array of world transforms, length = renderableEntityCount
-    double nx,
-    double ny,
-    mat4 projectionMatrix,
-    mat4 inverseProjection,
-    mat4 viewMatrix,
-    float3 forwardVector,
-    double3 position
+    float3 rayOrigin,
+    float3 rayDir
 ) {
-    mat4 inverseViewMatrix = inverse(viewMatrix);
-    bool isPerspective = std::abs(projectionMatrix[3][3]) < 1e-6;
-    double4 clip{ nx, ny, -1.0, 1.0 }; // z=-1 near
-    double4 viewSpace = inverseProjection * clip;
-    auto viewPoint = float3( static_cast<float>(viewSpace.x), static_cast<float>(viewSpace.y), static_cast<float>(viewSpace.z) );
-
-    auto [rayOrigin, rayDir] = cast_ray(isPerspective, inverseViewMatrix, forwardVector, position, viewPoint);
-
     // Assume registry transforms are already updated; use provided worldTransforms.
     PickingRegistry::Hit best{ {}, -1, std::numeric_limits<float>::max() };
     for (size_t i = 0; i < renderableEntityCount; ++i) {
@@ -611,9 +566,7 @@ static std::string pick_triangle(App &app, View *view, ImVec2 pos) {
 
     // CPU-side triangle picking using ray from camera.
     Camera* cam = &view->getCamera();
-    const Viewport& vp = view->getViewport();
-    double nx = static_cast<double>(pos.x) / static_cast<double>(vp.width) * 2.0 - 1.0;
-    double ny = static_cast<double>(pos.y) / static_cast<double>(vp.height) * 2.0 - 1.0;
+    const Viewport& viewport = view->getViewport();
 
     // Perspective vs Ortho heuristic: perspective projection matrix has m[3][3] == 0.
     mat4 projectionMatrix = cam->getProjectionMatrix();
@@ -642,18 +595,25 @@ static std::string pick_triangle(App &app, View *view, ImVec2 pos) {
     }
     auto world_transforms = worlds.data();
 
+    auto [rayOrigin, rayDir] = castRay(
+        projectionMatrix,
+        viewMatrix,
+        forwardVector,
+        position,
+        pos.x,
+        pos.y,
+        viewport.width,
+        viewport.height,
+        inverseProjection
+    );
+
     PickingRegistry::Hit hit = pick_triangle_refactor(
         registry,
         renderables,
         renderableEntityCount,
         world_transforms,
-        nx,
-        ny,
-        projectionMatrix,
-        inverseProjection,
-        viewMatrix,
-        forwardVector,
-        position
+        rayOrigin,
+        rayDir
     );
 
     PickingRegistry::Hit hit2 = pick_triangle_tinybvh(
@@ -661,13 +621,8 @@ static std::string pick_triangle(App &app, View *view, ImVec2 pos) {
         renderables,
         renderableEntityCount,
         world_transforms,
-        nx,
-        ny,
-        projectionMatrix,
-        inverseProjection,
-        viewMatrix,
-        forwardVector,
-        position
+        rayOrigin,
+        rayDir
     );
     if (hit.entity.getId() == 0 || hit.triangle < 0) {
         return std::to_string(hit.entity.getId()) + " (triangle " + std::to_string(hit.triangle) + ")"
