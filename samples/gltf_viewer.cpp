@@ -537,20 +537,20 @@ static std::string pick_triangle(App &app, View *view, ImVec2 pos) {
     // Convert pixel to NDC (-1..1) where origin is bottom-left after y flip already applied.
     auto position = cam->getPosition();
 
-    // Build world transforms array once outside and pass to both pickers
     std::vector<mat4f> worlds;
     worlds.reserve(renderableEntityCount);
     for (size_t i = 0; i < renderableEntityCount; ++i) {
         auto inst = transform_manager.getInstance(renderables[i]);
         mat4f world;
-        if (inst) {
-            world = transform_manager.getWorldTransform(inst);
-            // keep registry3 in sync; refactor path uses registry->pick which reads registry transforms
-            registry3->updateTransform(renderables[i], world);
-            registry->updateTransform(renderables[i], world);
-        } else {
+        if (!inst) {
             world = mat4f{};
+            continue;
         }
+
+        world = transform_manager.getWorldTransform(inst);
+        // keep registry3 in sync; refactor path uses registry->pick which reads registry transforms
+        registry3->updateTransform(renderables[i], world);
+        registry->updateTransform(renderables[i], world);
         worlds.push_back(world);
     }
     auto world_transforms = worlds.data();

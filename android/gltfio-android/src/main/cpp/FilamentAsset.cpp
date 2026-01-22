@@ -310,32 +310,45 @@ Java_com_google_android_filament_gltfio_FilamentAsset_nRayPick(JNIEnv* env, jcla
 extern "C" JNIEXPORT jobject JNICALL
 Java_com_google_android_filament_gltfio_FilamentAsset_nRayPickScreen(JNIEnv* env, jclass,
         jlong nativeAsset, jlong nativeView, jint sx, jint sy) {
-    FilamentAsset* asset = (FilamentAsset*) nativeAsset;
+    FilamentAsset* asset = static_cast<FilamentAsset *>(nativeAsset);
     if (!asset) return nullptr;
-    View* view = (View*) nativeView;
+    View* view = static_cast<View *>(nativeView);
     if (!view) return nullptr;
     Camera* cam = &view->getCamera();
     PickingRegistry* reg = asset->getPickingRegistry();
     if (!reg || !cam) return nullptr;
 
+    std::vector<mat4f> worlds;
+
     // Update transforms before picking.
     Engine* engine = asset->getEngine();
-    if (engine) {
-        auto& tcm = engine->getTransformManager();
-        size_t rc = asset->getRenderableEntityCount();
-        const utils::Entity* renderables = asset->getRenderableEntities();
-        if (renderables) {
-            for (size_t i = 0; i < rc; ++i) {
-                auto inst = tcm.getInstance(renderables[i]);
-                if (inst) {
-                    reg->updateTransform(renderables[i], tcm.getWorldTransform(inst));
-                }
-            }
+
+    if (!engine) return nullptr;
+
+    auto& transform_manager = engine->getTransformManager();
+    size_t renderableEntityCount = asset->getRenderableEntityCount();
+    const utils::Entity* renderables = asset->getRenderableEntities();
+    worlds.reserve(renderableEntityCount);
+
+    if (!renderables) return nullptr;
+
+    for (size_t i = 0; i < renderableEntityCount; ++i) {
+        auto inst = transform_manager.getInstance(renderables[i]);
+        mat4f world;
+        if (!inst) {
+            world = mat4f{};
+            continue;
         }
+
+        world = transform_manager.getWorldTransform(inst);
+        reg->updateTransform(renderables[i], transform_manager.getWorldTransform(inst));
+        worlds.push_back(world);
     }
+    auto worldTransforms = worlds.data();
 
     // Screen to NDC conversion. Viewport origin is lower-left in Filament; Java gives top-left.
     Viewport viewport = view->getViewport();
+
     if (viewport.width <= 0 || viewport.height <= 0) return nullptr;
 
     // Flip y: incoming sy has top-left origin.
@@ -355,14 +368,24 @@ Java_com_google_android_filament_gltfio_FilamentAsset_nRayPickScreen(JNIEnv* env
         Camera::inverseProjection(projectionMatrix)
     );
 
-    auto hit = reg->pick(rayOrigin, rayDir);
-    if (hit.entity.getId() == 0 || hit.triangle < 0) {
-        return nullptr;
-    }
+    auto hit = reg->pick_tinybvh(
+        renderables,
+        renderableEntityCount,
+        worldTransforms,
+        rayOrigin,
+        rayDir
+    );
+
+    if (hit.entity.getId() == 0 || hit.triangle < 0) return nullptr;
+
     jclass hitClass = env->FindClass("com/google/android/filament/gltfio/FilamentAsset$Hit");
+
     if (!hitClass) return nullptr;
+
     jmethodID ctor = env->GetMethodID(hitClass, "<init>", "(IIFFFF)V");
+
     if (!ctor) return nullptr;
+
     return env->NewObject(hitClass, ctor,
             (jint) hit.entity.getId(), (jint) hit.triangle,
             (jfloat) hit.distance, (jfloat) hit.bary.x, (jfloat) hit.bary.y, (jfloat) hit.bary.z);
