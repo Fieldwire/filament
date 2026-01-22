@@ -35,13 +35,6 @@
 #include <gltfio/Picking.h>
 #include <gltfio/ResourceLoader.h>
 #include <gltfio/TextureProvider.h>
-
-// tinybvh adapter API
-namespace filament::gltfio {
-    PickingRegistry::Hit tinybvh_pick_mesh_world(const MeshData& meshData, const math::mat4f& worldTransformMatrix,
-                                                 const math::float3& rayOriginWorldSpace, const math::float3& rayDirWorldSpace);
-}
-
 #include <viewer/AutomationEngine.h>
 #include <viewer/AutomationSpec.h>
 #include <viewer/ViewerGui.h>
@@ -585,7 +578,7 @@ static PickingRegistry::Hit pick_triangle_tinybvh(
         if (!md) continue;
 
         const mat4f& world = worldTransforms ? worldTransforms[i] : mat4f{};
-        auto hit = tinybvh_pick_mesh_world(*md, world, rayOrigin, rayDir);
+        auto hit = registry->tinybvh_pick_mesh_world(*md, world, rayOrigin, rayDir);
 
         if (hit.triangle < 0 || hit.distance >= best.distance) continue;
 

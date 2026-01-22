@@ -304,12 +304,6 @@ if (NOT ANDROID)
         add_definitions(-DFILAMENT_DISABLE_MATOPT=0)
     endif()
 
-    # Add adapter source to gltf_viewer build
-    set(TINYBVH_ADAPTER ${ROOT_DIR}/libs/gltfio/src/TinyBvhAdapter.cpp)
-    if (EXISTS ${TINYBVH_ADAPTER})
-        target_sources(gltf_viewer PRIVATE ${TINYBVH_ADAPTER})
-    endif()
-
     # ==============================================================================================
     # Installation
     # ==============================================================================================

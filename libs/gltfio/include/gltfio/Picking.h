@@ -25,9 +25,10 @@
 
 #include <vector>
 #include <unordered_map>
-#include <cstdint>
 
 #include <cgltf.h>
+
+using namespace filament::math;
 
 namespace filament::gltfio {
 
@@ -64,6 +65,12 @@ public:
 
     struct Hit { Entity entity; int triangle; float distance; };
     [[nodiscard]] Hit pick(const filament::math::float3& rayOrigin, const filament::math::float3& rayDir) const;
+    [[nodiscard]] static Hit tinybvh_pick_mesh_world(
+        const MeshData& meshData,
+        const mat4f& worldTransformMatrix,
+        const float3& rayOriginWorldSpace,
+        const float3& rayDirWorldSpace
+    );
 
     struct SceneItem { Entity e; filament::Aabb worldBounds; };
 private:
