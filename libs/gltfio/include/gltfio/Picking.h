@@ -65,12 +65,14 @@ public:
 
     struct Hit { Entity entity; int triangle; float distance; };
     [[nodiscard]] Hit pick(const float3& rayOrigin, const float3& rayDir) const;
-    [[nodiscard]] static Hit tinybvh_pick_mesh_world(
-        const MeshData& meshData,
-        const mat4f& worldTransformMatrix,
-        const float3& rayOriginWorldSpace,
-        const float3& rayDirWorldSpace
-    );
+
+    [[nodiscard]] Hit pick_tinybvh(
+        const utils::Entity *renderables,
+        size_t renderableEntityCount,
+        const mat4f* worldTransforms, // parallel array of world transforms, length = renderableEntityCount
+        float3 rayOrigin,
+        float3 rayDir
+    ) const;
 
     struct SceneItem { Entity e; filament::Aabb worldBounds; };
 private:

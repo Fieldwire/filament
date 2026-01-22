@@ -504,46 +504,6 @@ static void createOverdrawVisualizerEntities(Engine* engine, Scene* scene, App& 
     app.scene.fullScreenTriangleIndexBuffer = indexBuffer;
 }
 
-static PickingRegistry::Hit pick_triangle_refactor(
-    PickingRegistry *registry,
-    const utils::Entity *renderables,
-    size_t renderableEntityCount,
-    const mat4f* worldTransforms,
-    float3 rayOrigin,
-    float3 rayDir
-) {
-    (void)renderables; (void)renderableEntityCount; (void)worldTransforms; // transforms assumed updated externally
-    return registry->pick(rayOrigin, rayDir);
-}
-
-static PickingRegistry::Hit pick_triangle_tinybvh(
-    PickingRegistry *registry,
-    const utils::Entity *renderables,
-    size_t renderableEntityCount,
-    const mat4f* worldTransforms, // parallel array of world transforms, length = renderableEntityCount
-    float3 rayOrigin,
-    float3 rayDir
-) {
-    // Assume registry transforms are already updated; use provided worldTransforms.
-    PickingRegistry::Hit best{ {}, -1, std::numeric_limits<float>::max() };
-    for (size_t i = 0; i < renderableEntityCount; ++i) {
-        Entity entity = renderables[i];
-        const MeshData* md = registry->getMesh(entity);
-
-        if (!md) continue;
-
-        const mat4f& world = worldTransforms ? worldTransforms[i] : mat4f{};
-        auto hit = registry->tinybvh_pick_mesh_world(*md, world, rayOrigin, rayDir);
-
-        if (hit.triangle < 0 || hit.distance >= best.distance) continue;
-
-        best.entity = entity;
-        best.triangle = hit.triangle;
-        best.distance = hit.distance;
-    }
-    return best;
-}
-
 static std::string pick_triangle(App &app, View *view, ImVec2 pos) {
     auto registry = app.asset->getPickingRegistry2();
     if (!registry) {
@@ -607,8 +567,9 @@ static std::string pick_triangle(App &app, View *view, ImVec2 pos) {
         inverseProjection
     );
 
-    PickingRegistry::Hit hit = pick_triangle_refactor(
-        registry,
+    PickingRegistry::Hit hit = registry->pick(rayOrigin, rayDir);
+
+    PickingRegistry::Hit hit2 = registry->pick_tinybvh(
         renderables,
         renderableEntityCount,
         world_transforms,
@@ -616,14 +577,6 @@ static std::string pick_triangle(App &app, View *view, ImVec2 pos) {
         rayDir
     );
 
-    PickingRegistry::Hit hit2 = pick_triangle_tinybvh(
-        registry3,
-        renderables,
-        renderableEntityCount,
-        world_transforms,
-        rayOrigin,
-        rayDir
-    );
     if (hit.entity.getId() == 0 || hit.triangle < 0) {
         return std::to_string(hit.entity.getId()) + " (triangle " + std::to_string(hit.triangle) + ")"
              + " vs "
