@@ -36,6 +36,12 @@
 #include <gltfio/ResourceLoader.h>
 #include <gltfio/TextureProvider.h>
 
+// tinybvh adapter API
+namespace filament::gltfio {
+    PickingRegistry::Hit tinybvh_pick_mesh_world(const MeshData& meshData, const math::mat4f& worldTransformMatrix,
+                                                 const math::float3& rayOriginWorldSpace, const math::float3& rayDirWorldSpace);
+}
+
 #include <viewer/AutomationEngine.h>
 #include <viewer/AutomationSpec.h>
 #include <viewer/ViewerGui.h>
@@ -524,19 +530,11 @@ static std::pair <float3, float3> cast_ray(bool isPerspective, mat4 invView, flo
     return ray;
 }
 
-static std::pair <float3, float3> cast_ray_glm(bool isPerspective, mat4 invView, float3 forwardVector, double3 position, float3 viewPoint) {
-    std::pair <float3, float3> ray;
-
-    // stub
-
-    return ray;
-}
-
 static PickingRegistry::Hit pick_triangle_refactor(
     PickingRegistry *registry,
     const utils::Entity *renderables,
     size_t renderableEntityCount,
-    TransformManager &transform_manager,
+    const mat4f* worldTransforms,
     double nx,
     double ny,
     mat4 projectionMatrix,
@@ -553,21 +551,15 @@ static PickingRegistry::Hit pick_triangle_refactor(
 
     auto [rayOrigin, rayDir] = cast_ray(isPerspective, inverseViewMatrix, forwardVector, position, viewPoint);
 
-    for (size_t i = 0; i < renderableEntityCount; ++i) {
-        auto inst = transform_manager.getInstance(renderables[i]);
-        if (!inst) continue;
-        registry->updateTransform(renderables[i], transform_manager.getWorldTransform(inst));
-    }
-
-    auto hit = registry->pick(rayOrigin, rayDir);
-    return hit;
+    (void)renderables; (void)renderableEntityCount; (void)worldTransforms; // transforms assumed updated externally
+    return registry->pick(rayOrigin, rayDir);
 }
 
 static PickingRegistry::Hit pick_triangle_tinybvh(
     PickingRegistry *registry,
     const utils::Entity *renderables,
     size_t renderableEntityCount,
-    TransformManager &transform_manager,
+    const mat4f* worldTransforms, // parallel array of world transforms, length = renderableEntityCount
     double nx,
     double ny,
     mat4 projectionMatrix,
@@ -582,22 +574,35 @@ static PickingRegistry::Hit pick_triangle_tinybvh(
     double4 viewSpace = inverseProjection * clip;
     auto viewPoint = float3( static_cast<float>(viewSpace.x), static_cast<float>(viewSpace.y), static_cast<float>(viewSpace.z) );
 
-    auto [rayOrigin, rayDir] = cast_ray_glm(isPerspective, inverseViewMatrix, forwardVector, position, viewPoint);
+    auto [rayOrigin, rayDir] = cast_ray(isPerspective, inverseViewMatrix, forwardVector, position, viewPoint);
 
+    // Assume registry transforms are already updated; use provided worldTransforms.
+    PickingRegistry::Hit best{ {}, -1, std::numeric_limits<float>::max() };
     for (size_t i = 0; i < renderableEntityCount; ++i) {
-        auto inst = transform_manager.getInstance(renderables[i]);
-        if (!inst) continue;
-        registry->updateTransform(renderables[i], transform_manager.getWorldTransform(inst));
-    }
+        Entity entity = renderables[i];
+        const MeshData* md = registry->getMesh(entity);
 
-    // stub
-    PickingRegistry::Hit hit = {};
-    return hit;
+        if (!md) continue;
+
+        const mat4f& world = worldTransforms ? worldTransforms[i] : mat4f{};
+        auto hit = tinybvh_pick_mesh_world(*md, world, rayOrigin, rayDir);
+
+        if (hit.triangle < 0 || hit.distance >= best.distance) continue;
+
+        best.entity = entity;
+        best.triangle = hit.triangle;
+        best.distance = hit.distance;
+    }
+    return best;
 }
 
 static std::string pick_triangle(App &app, View *view, ImVec2 pos) {
     auto registry = app.asset->getPickingRegistry2();
     if (!registry) {
+        return "(PickingRegistry2 not available)\n";
+    }
+    auto registry3 = app.asset->getPickingRegistry3();
+    if (!registry3) {
         return "(PickingRegistry2 not available)\n";
     }
 
@@ -626,11 +631,29 @@ static std::string pick_triangle(App &app, View *view, ImVec2 pos) {
     // Convert pixel to NDC (-1..1) where origin is bottom-left after y flip already applied.
     auto position = cam->getPosition();
 
+    // Build world transforms array once outside and pass to both pickers
+    std::vector<mat4f> worlds;
+    worlds.reserve(renderableEntityCount);
+    for (size_t i = 0; i < renderableEntityCount; ++i) {
+        auto inst = transform_manager.getInstance(renderables[i]);
+        mat4f world;
+        if (inst) {
+            world = transform_manager.getWorldTransform(inst);
+            // keep registry3 in sync; refactor path uses registry->pick which reads registry transforms
+            registry3->updateTransform(renderables[i], world);
+            registry->updateTransform(renderables[i], world);
+        } else {
+            world = mat4f{};
+        }
+        worlds.push_back(world);
+    }
+    auto world_transforms = worlds.data();
+
     PickingRegistry::Hit hit = pick_triangle_refactor(
         registry,
         renderables,
         renderableEntityCount,
-        transform_manager,
+        world_transforms,
         nx,
         ny,
         projectionMatrix,
@@ -639,11 +662,12 @@ static std::string pick_triangle(App &app, View *view, ImVec2 pos) {
         forwardVector,
         position
     );
+
     PickingRegistry::Hit hit2 = pick_triangle_tinybvh(
-        registry,
+        registry3,
         renderables,
         renderableEntityCount,
-        transform_manager,
+        world_transforms,
         nx,
         ny,
         projectionMatrix,
@@ -1499,3 +1523,4 @@ int main(int argc, char** argv) {
 
     return 0;
 }
+
