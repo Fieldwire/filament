@@ -335,40 +335,25 @@ Java_com_google_android_filament_gltfio_FilamentAsset_nRayPickScreen(JNIEnv* env
     }
 
     // Screen to NDC conversion. Viewport origin is lower-left in Filament; Java gives top-left.
-    filament::Viewport vp = view->getViewport();
-    if (vp.width <= 0 || vp.height <= 0) return nullptr;
+    Viewport viewport = view->getViewport();
+    if (viewport.width <= 0 || viewport.height <= 0) return nullptr;
 
     // Flip y: incoming sy has top-left origin.
-    int flippedY = (int)vp.height - 1 - sy;
-    double nx = (double(sx) / double(vp.width)) * 2.0 - 1.0;
-    double ny = (double(flippedY) / double(vp.height)) * 2.0 - 1.0;
+    int flippedY = static_cast<int>(viewport.height) - 1 - sy;
 
     // Build ray.
-    using namespace filament::math;
-    mat4 proj = cam->getProjectionMatrix();
-    bool isPerspective = std::abs(proj[3][3]) < 1e-6;
-    mat4 invProj = Camera::inverseProjection(proj);
-    mat4 viewM = cam->getViewMatrix();
-    mat4 invView = inverse(viewM);
-
-    float3 rayOrigin;
-    float3 rayDir;
-    if (isPerspective) {
-        double4 clip{ nx, ny, -1.0, 1.0 }; // near plane
-        double4 viewSpace = invProj * clip;
-        float3 viewPoint = float3(viewSpace.x, viewSpace.y, viewSpace.z);
-        float3 dirView = viewPoint;
-        float3 dirWorld = (invView * float4(dirView, 0)).xyz;
-        rayOrigin = cam->getPosition();
-        rayDir = dirWorld;
-    } else {
-        double4 clip{ nx, ny, -1.0, 1.0 };
-        double4 viewSpace = invProj * clip;
-        float3 viewPoint = float3(viewSpace.x, viewSpace.y, viewSpace.z);
-        float3 worldPoint = (invView * float4(viewPoint, 1)).xyz;
-        rayOrigin = worldPoint;
-        rayDir = cam->getForwardVector();
-    }
+    mat4 projectionMatrix = cam->getProjectionMatrix();
+    auto [rayOrigin, rayDir] = castRay(
+        projectionMatrix,
+        cam->getViewMatrix(),
+        cam->getForwardVector(),
+        cam->getPosition(),
+        sx,
+        flippedY,
+        viewport.width,
+        viewport.height,
+        Camera::inverseProjection(projectionMatrix)
+    );
 
     auto hit = reg->pick(rayOrigin, rayDir);
     if (hit.entity.getId() == 0 || hit.triangle < 0) {
