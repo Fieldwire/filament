@@ -158,7 +158,7 @@ std::pair <float3, float3> castRay(
     return ray;
 }
 
-bool triangleIsValidAndBest(const int32_t triangleIndex, const uint32_t distance1, const uint32_t distance2) {
+bool triangleIsValidAndBest(const int32_t triangleIndex, const float distance1, const float distance2) {
     return triangleIndex >= 0 && distance1 < distance2;
 }
 
@@ -225,6 +225,7 @@ static inline bool rayTriangle(const float3& o, const float3& d,
     tOut = t; uOut = u; vOut = v;
     return true;
 }
+
 
 PickingRegistry::Hit PickingRegistry::pick(const float3& rayOrigin, const float3& rayDir) const {
     Hit best{ Entity{}, -1, std::numeric_limits<float>::max() };
@@ -309,28 +310,29 @@ PickingRegistry::Hit PickingRegistry::pick_tinybvh(
         if (!meshData) continue;
 
         const mat4f& worldTransformMatrix = worldTransforms ? worldTransforms[i] : mat4f{};
-        // auto hit = tinybvh_pick_mesh_world(*md, world, rayOrigin, rayDir);
+
         Hit hit{ {}, -1, BVH_FAR };
         const uint32_t numTriangles = static_cast<uint32_t>(meshData->indices.size()) / 3;
-        if (numTriangles == 0) return hit;
 
-        std::vector<tinybvh::bvhvec4> triangles;
-        triangles.resize(static_cast<size_t>(numTriangles) * 3);
-        for (uint32_t t = 0; t < numTriangles; ++t) {
-            uint32_t base = t * 3;
-            const float3& v0l = meshData->positions[ meshData->indices[base + 0] ];
-            const float3& v1l = meshData->positions[ meshData->indices[base + 1] ];
-            const float3& v2l = meshData->positions[ meshData->indices[base + 2] ];
-            float3 v0 = (worldTransformMatrix * float4(v0l, 1.0f)).xyz;
-            float3 v1 = (worldTransformMatrix * float4(v1l, 1.0f)).xyz;
-            float3 v2 = (worldTransformMatrix * float4(v2l, 1.0f)).xyz;
-            triangles[base + 0] = tinybvh::bvhvec4(v0.x, v0.y, v0.z, 0.0f);
-            triangles[base + 1] = tinybvh::bvhvec4(v1.x, v1.y, v1.z, 0.0f);
-            triangles[base + 2] = tinybvh::bvhvec4(v2.x, v2.y, v2.z, 0.0f);
+        if (numTriangles == 0) continue;
+
+        // Transform positions to world space once and convert to bvhvec4.
+        std::vector<tinybvh::bvhvec4> vertices;
+        vertices.reserve(meshData->positions.size());
+        for (const float3& vLocal : meshData->positions) {
+            float3 vWorld = (worldTransformMatrix * float4(vLocal, 1.0f)).xyz;
+            vertices.emplace_back(vWorld.x, vWorld.y, vWorld.z, 0.0f);
+        }
+
+        // Copy indices (already triangle list in MeshData)
+        std::vector<uint32_t> indices;
+        indices.reserve(meshData->indices.size());
+        for (uint32_t idx : meshData->indices) {
+            indices.push_back(idx);
         }
 
         tinybvh::BVH bvh;
-        bvh.Build(triangles.data(), numTriangles);
+        bvh.Build(vertices.data(), indices.data(), numTriangles);
 
         tinybvh::Ray ray(
             tinybvh::bvhvec3(rayOrigin.x, rayOrigin.y, rayOrigin.z),
@@ -343,12 +345,13 @@ PickingRegistry::Hit PickingRegistry::pick_tinybvh(
         hit.triangle = static_cast<int>(ray.hit.prim);
         hit.distance = ray.hit.t;
 
-        if (hit.triangle < 0 || hit.distance >= best.distance) continue;
+        if (!triangleIsValidAndBest(hit.triangle, hit.distance, best.distance)) continue;
 
         best.entity = entity;
         best.triangle = hit.triangle;
         best.distance = hit.distance;
     }
+
     return best;
 }
 
