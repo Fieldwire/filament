@@ -35,7 +35,6 @@
 #include <gltfio/Picking.h>
 #include <gltfio/ResourceLoader.h>
 #include <gltfio/TextureProvider.h>
-
 #include <viewer/AutomationEngine.h>
 #include <viewer/AutomationSpec.h>
 #include <viewer/ViewerGui.h>
@@ -505,6 +504,95 @@ static void createOverdrawVisualizerEntities(Engine* engine, Scene* scene, App& 
     app.scene.fullScreenTriangleIndexBuffer = indexBuffer;
 }
 
+static std::string pick_triangle(App &app, View *view, ImVec2 pos) {
+    auto registry = app.asset->getPickingRegistry2();
+    if (!registry) {
+        return "(PickingRegistry2 not available)\n";
+    }
+    auto registry3 = app.asset->getPickingRegistry3();
+    if (!registry3) {
+        return "(PickingRegistry2 not available)\n";
+    }
+
+    const utils::Entity* renderables = app.asset->getRenderableEntities();
+    size_t renderableEntityCount = app.asset->getRenderableEntityCount();
+    if (!renderables) {
+        return "(No renderable entities in refactor impl)\n";
+    }
+
+    // Update transforms for accuracy (could be done once per frame elsewhere).
+    Engine* engine = app.engine; // guaranteed set
+    auto& transform_manager = engine->getTransformManager();
+
+    // CPU-side triangle picking using ray from camera.
+    Camera* cam = &view->getCamera();
+    const Viewport& viewport = view->getViewport();
+
+    // Perspective vs Ortho heuristic: perspective projection matrix has m[3][3] == 0.
+    mat4 projectionMatrix = cam->getProjectionMatrix();
+
+    mat4 inverseProjection = Camera::inverseProjection(projectionMatrix);
+    mat4 viewMatrix = cam->getViewMatrix();
+    auto forwardVector = cam->getForwardVector();
+    // Convert pixel to NDC (-1..1) where origin is bottom-left after y flip already applied.
+    auto position = cam->getPosition();
+
+    std::vector<mat4f> worlds;
+    worlds.reserve(renderableEntityCount);
+    for (size_t i = 0; i < renderableEntityCount; ++i) {
+        auto inst = transform_manager.getInstance(renderables[i]);
+        mat4f world;
+        if (!inst) {
+            world = mat4f{};
+            continue;
+        }
+
+        world = transform_manager.getWorldTransform(inst);
+        // keep registry3 in sync; refactor path uses registry->pick which reads registry transforms
+        registry3->updateTransform(renderables[i], world);
+        registry->updateTransform(renderables[i], world);
+        worlds.push_back(world);
+    }
+    auto world_transforms = worlds.data();
+
+    auto [rayOrigin, rayDir] = castRay(
+        projectionMatrix,
+        viewMatrix,
+        forwardVector,
+        position,
+        pos.x,
+        pos.y,
+        viewport.width,
+        viewport.height,
+        inverseProjection
+    );
+
+    PickingRegistry::Hit hit = registry->pick(rayOrigin, rayDir);
+
+    PickingRegistry::Hit hit2 = registry->pick_tinybvh(
+        renderables,
+        renderableEntityCount,
+        world_transforms,
+        rayOrigin,
+        rayDir
+    );
+
+    if (hit.entity.getId() == 0 || hit.triangle < 0) {
+        return std::to_string(hit.entity.getId()) + " (triangle " + std::to_string(hit.triangle) + ")"
+             + " vs "
+             + std::to_string(hit2.entity.getId()) + " (triangle " + std::to_string(hit2.triangle) + ")\n";
+    }
+
+    const char* name = app.asset->getName(hit.entity);
+    std::string text = name ? name : "Entity " + std::to_string(hit.entity.getId());
+    std::string output = text + " (triangle " + std::to_string(hit.triangle) + ") (Refactor 1)\n";
+    const char* name2 = app.asset->getName(hit2.entity);
+    std::string text2 = name2 ? name2 : "Entity " + std::to_string(hit2.entity.getId());
+    std::string output2 = text2 + " (triangle " + std::to_string(hit2.triangle) + ") (TinyBVH)\n";
+
+    return output + output2;
+}
+
 static void onClick(App& app, View* view, ImVec2 pos) {
     // existing pixel-based GPU picking
     view->pick(pos.x, pos.y, [&app](View::PickingQueryResult const& result){
@@ -552,6 +640,8 @@ static void onClick(App& app, View* view, ImVec2 pos) {
         rayDir = normalize(cam->getForwardVector());
     }
 
+    std::ostringstream oss;
+    oss << std::endl;
     auto reg = app.asset->getPickingRegistry();
     if (reg) {
         // Update transforms for accuracy (could be done once per frame elsewhere).
@@ -570,18 +660,21 @@ static void onClick(App& app, View* view, ImVec2 pos) {
         auto hit = reg->pick(rayOrigin, rayDir);
         if (hit.entity.getId() != 0 && hit.triangle >= 0) {
             const char* name = app.asset->getName(hit.entity);
-            std::ostringstream oss;
             if (name) {
                 oss << name << " (triangle " << hit.triangle << ")";
             } else {
                 oss << "Entity " << hit.entity.getId() << " (triangle " << hit.triangle << ")";
             }
-            // Include barycentric and distance for debugging.
-            oss << " dist=" << std::fixed << std::setprecision(3) << hit.distance
-                << " bary=(" << hit.bary.x << "," << hit.bary.y << "," << hit.bary.z << ")";
+
+            oss << "(Original)" << std::endl;
+
             app.notificationText = oss.str();
         }
     }
+
+    oss << pick_triangle(app, view, pos);
+
+    app.notificationText = oss.str();
 }
 
 static utils::Path getPathForIBLAsset(std::string_view string) {
@@ -1248,6 +1341,34 @@ int main(int argc, char** argv) {
                     }
                 }
             }
+            auto reg2 = app.asset->getPickingRegistry2();
+            if (reg2) {
+                auto& tcm = engine->getTransformManager();
+                const utils::Entity* renderables = app.asset->getRenderableEntities();
+                size_t rc = app.asset->getRenderableEntityCount();
+                if (renderables) {
+                    for (size_t i = 0; i < rc; ++i) {
+                        auto inst = tcm.getInstance(renderables[i]);
+                        if (inst) {
+                            reg2->updateTransform(renderables[i], tcm.getWorldTransform(inst));
+                        }
+                    }
+                }
+            }
+            auto reg3 = app.asset->getPickingRegistry3();
+            if (reg3) {
+                auto& tcm = engine->getTransformManager();
+                const utils::Entity* renderables = app.asset->getRenderableEntities();
+                size_t rc = app.asset->getRenderableEntityCount();
+                if (renderables) {
+                    for (size_t i = 0; i < rc; ++i) {
+                        auto inst = tcm.getInstance(renderables[i]);
+                        if (inst) {
+                            reg3->updateTransform(renderables[i], tcm.getWorldTransform(inst));
+                        }
+                    }
+                }
+            }
         }
     };
 
@@ -1303,3 +1424,4 @@ int main(int argc, char** argv) {
 
     return 0;
 }
+

@@ -297,6 +297,8 @@ public:
 
     /** Access the picking registry (may be empty if no meshes registered yet). */
     PickingRegistry* getPickingRegistry() noexcept;
+    PickingRegistry* getPickingRegistry2() noexcept;
+    PickingRegistry* getPickingRegistry3() noexcept;
 
     /*! \cond PRIVATE */
 

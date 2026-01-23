@@ -897,10 +897,14 @@ void FAssetLoader::createRenderable(const cgltf_node* node, Entity entity, const
     // Picking registration now uses free helper buildMeshDataForPicking.
     {
         MeshData meshData = buildMeshDataForPicking(mesh);
+        MeshData meshData2 = buildMeshDataForPicking(mesh);
+        MeshData meshData3 = buildMeshDataForPicking(mesh);
         if (!meshData.positions.empty() && !meshData.indices.empty()) {
             meshData.localBounds.min = aabb.min;
             meshData.localBounds.max = aabb.max;
             fAsset->mPickingRegistry.registerMesh(entity, std::move(meshData));
+            fAsset->mPickingRegistry2.registerMesh(entity, std::move(meshData2));
+            fAsset->mPickingRegistry3.registerMesh(entity, std::move(meshData3));
         }
     }
 
@@ -1014,7 +1018,6 @@ bool FAssetLoader::createPrimitive(const cgltf_primitive& inPrim, const char* na
         const int index = attribute.index;
         const cgltf_attribute_type atype = attribute.type;
         const cgltf_accessor* accessor = attribute.data;
-        int8_t customIndex = -1;
 
         // The glTF tangent data is ignored here, but honored in ResourceLoader.
         if (atype == cgltf_attribute_type_tangent) {

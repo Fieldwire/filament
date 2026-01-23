@@ -375,6 +375,8 @@ struct FFilamentAsset : public FilamentAsset {
     std::variant<ResourceInfo, ResourceInfoExtended> mResourceInfo;
 
     PickingRegistry mPickingRegistry; // per-asset picking registry
+    PickingRegistry mPickingRegistry2;
+    PickingRegistry mPickingRegistry3;
 };
 
 FILAMENT_DOWNCAST(FilamentAsset)

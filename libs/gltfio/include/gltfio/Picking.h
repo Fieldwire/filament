@@ -25,9 +25,10 @@
 
 #include <vector>
 #include <unordered_map>
-#include <cstdint>
 
 #include <cgltf.h>
+
+using namespace filament::math;
 
 namespace filament::gltfio {
 
@@ -37,15 +38,15 @@ using Entity = utils::Entity;
 struct MeshTriangle { uint32_t i0, i1, i2; };
 
 struct MeshBVHNode {
-    filament::math::float3 min;
-    filament::math::float3 max;
+    float3 min;
+    float3 max;
     uint32_t left;   // child index OR start of triangle range if leaf
     uint32_t right;  // child index OR triangle count if leaf
     bool leaf;
 };
 
 struct MeshData {
-    std::vector<filament::math::float3> positions;   // local-space vertex positions
+    std::vector<float3> positions;   // local-space vertex positions
     std::vector<uint32_t> indices;                   // triangle list (3 * triCount)
     std::vector<MeshBVHNode> bvh;                    // BVH nodes (empty until built)
     std::vector<uint32_t> leafTris;                  // triangle ordinals for leaves
@@ -60,10 +61,28 @@ class UTILS_PUBLIC PickingRegistry {
 public:
     void registerMesh(Entity e, MeshData&& mesh);
     [[nodiscard]] const MeshData* getMesh(Entity e) const;
-    void updateTransform(Entity e, const filament::math::mat4f& world);
+    void updateTransform(Entity e, const mat4f& world);
 
-    struct Hit { Entity entity; int triangle; float distance; filament::math::float3 bary; };
-    [[nodiscard]] Hit pick(const filament::math::float3& rayOrigin, const filament::math::float3& rayDir) const;
+    struct Hit { Entity entity; int triangle; float distance; };
+    [[nodiscard]] Hit pick(const float3& rayOrigin, const float3& rayDir) const;
+
+    [[nodiscard]] Hit pick_tinybvh(
+        const utils::Entity *renderables,
+        size_t renderableEntityCount,
+        const mat4f* worldTransforms, // parallel array of world transforms, length = renderableEntityCount
+        float3 rayOrigin,
+        float3 rayDir
+    ) const;
+
+    // New: pick against a single entity, filtering by triangle index range [startTriangleInclusive, endTriangleInclusive].
+    [[nodiscard]] Hit pick_tinybvh_filtered(
+        Entity entity,
+        const mat4f& worldTransform,
+        float3 rayOrigin,
+        float3 rayDir,
+        int32_t startTriangleInclusive,
+        int32_t endTriangleInclusive
+    ) const;
 
     struct SceneItem { Entity e; filament::Aabb worldBounds; };
 private:
@@ -71,8 +90,26 @@ private:
     MeshData* getMeshMutable(Entity e);
 
     std::unordered_map<Entity, MeshData, Entity::Hasher> mMeshes;
-    std::unordered_map<Entity, filament::math::mat4f, Entity::Hasher> mWorldTransforms;
+    std::unordered_map<Entity, mat4f, Entity::Hasher> mWorldTransforms;
 };
+
+// Utility: construct a world-space ray from view parameters.
+// isPerspective: true for perspective camera, false for orthographic
+// invView: inverse of the camera view matrix
+// forwardVector: camera forward direction in world space (used for ortho)
+// position: camera position in world space
+// viewPoint: a point in view space on the near plane (e.g., unprojected cursor)
+std::pair<float3, float3> castRay(
+    mat4 projectionMatrix,
+    mat4 viewMatrix,
+    float3 forwardVector,
+    double3 position,
+    float x,
+    float y,
+    uint32_t width,
+    uint32_t height,
+    mat4 inverseProjection
+);
 
 } // namespace filament::gltfio
 

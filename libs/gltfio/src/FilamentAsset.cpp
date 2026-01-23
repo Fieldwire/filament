@@ -445,4 +445,14 @@ PickingRegistry* FilamentAsset::getPickingRegistry() noexcept {
     return &impl->mPickingRegistry;
 }
 
+PickingRegistry* FilamentAsset::getPickingRegistry2() noexcept {
+    auto* impl = static_cast<FFilamentAsset*>(this);
+    return &impl->mPickingRegistry2;
+}
+
+PickingRegistry* FilamentAsset::getPickingRegistry3() noexcept {
+    auto* impl = static_cast<FFilamentAsset*>(this);
+    return &impl->mPickingRegistry3;
+}
+
 } // namespace filament::gltfio

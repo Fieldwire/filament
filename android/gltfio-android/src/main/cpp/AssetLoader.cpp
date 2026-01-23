@@ -270,7 +270,7 @@ Java_com_google_android_filament_gltfio_AssetLoader_nCreateAsset(JNIEnv* env, jc
 
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_com_google_android_filament_gltfio_AssetLoader_nCreateAssetLoaderExtended(JNIEnv* env, jclass,
+Java_com_google_android_filament_gltfio_AssetLoader_nCreateAssetLoaderExtended__JLjava_lang_Object_2JLjava_lang_String_2Ljava_lang_String_2(JNIEnv* env, jclass,
                                                                                jlong nativeEngine, jobject provider, jlong nativeEntities, jstring filePath, jstring defaultNodeName) {
     Engine* engine = (Engine*) nativeEngine;
     MaterialProvider* materialProvider = nullptr;
@@ -315,7 +315,7 @@ Java_com_google_android_filament_gltfio_AssetLoader_nCreateAssetLoaderExtended(J
 
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_com_google_android_filament_gltfio_AssetLoader_nCreateAssetLoaderExtended(JNIEnv* env, jclass,
+Java_com_google_android_filament_gltfio_AssetLoader_nCreateAssetLoaderExtended__JLjava_lang_Object_2JLjava_lang_String_2(JNIEnv* env, jclass,
                                                                                jlong nativeEngine, jobject provider, jlong nativeEntities, jstring filePath) {
     Engine* engine = (Engine*) nativeEngine;
     MaterialProvider* materialProvider = nullptr;

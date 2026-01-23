@@ -303,82 +303,165 @@ Java_com_google_android_filament_gltfio_FilamentAsset_nRayPick(JNIEnv* env, jcla
     jmethodID ctor = env->GetMethodID(hitClass, "<init>", "(IIFFFF)V");
     if (!ctor) return nullptr; // constructor not found
     return env->NewObject(hitClass, ctor,
-            (jint) hit.entity.getId(), (jint) hit.triangle,
-            (jfloat) hit.distance, (jfloat) hit.bary.x, (jfloat) hit.bary.y, (jfloat) hit.bary.z);
+            (jint) hit.entity.getId(), (jint) hit.triangle);
 }
 
 extern "C" JNIEXPORT jobject JNICALL
 Java_com_google_android_filament_gltfio_FilamentAsset_nRayPickScreen(JNIEnv* env, jclass,
         jlong nativeAsset, jlong nativeView, jint sx, jint sy) {
-    FilamentAsset* asset = (FilamentAsset*) nativeAsset;
+    FilamentAsset* asset = reinterpret_cast<FilamentAsset*>(static_cast<uintptr_t>(nativeAsset));
     if (!asset) return nullptr;
-    View* view = (View*) nativeView;
+    View* view = reinterpret_cast<View*>(static_cast<uintptr_t>(nativeView));
     if (!view) return nullptr;
     Camera* cam = &view->getCamera();
     PickingRegistry* reg = asset->getPickingRegistry();
     if (!reg || !cam) return nullptr;
 
+    std::vector<mat4f> worlds;
+
     // Update transforms before picking.
     Engine* engine = asset->getEngine();
-    if (engine) {
-        auto& tcm = engine->getTransformManager();
-        size_t rc = asset->getRenderableEntityCount();
-        const utils::Entity* renderables = asset->getRenderableEntities();
-        if (renderables) {
-            for (size_t i = 0; i < rc; ++i) {
-                auto inst = tcm.getInstance(renderables[i]);
-                if (inst) {
-                    reg->updateTransform(renderables[i], tcm.getWorldTransform(inst));
-                }
-            }
+
+    if (!engine) return nullptr;
+
+    auto& transform_manager = engine->getTransformManager();
+    size_t renderableEntityCount = asset->getRenderableEntityCount();
+    const utils::Entity* renderables = asset->getRenderableEntities();
+    worlds.reserve(renderableEntityCount);
+
+    if (!renderables) return nullptr;
+
+    for (size_t i = 0; i < renderableEntityCount; ++i) {
+        auto inst = transform_manager.getInstance(renderables[i]);
+        mat4f world;
+        if (!inst) {
+            world = mat4f{};
+            continue;
         }
+
+        world = transform_manager.getWorldTransform(inst);
+        reg->updateTransform(renderables[i], transform_manager.getWorldTransform(inst));
+        worlds.push_back(world);
     }
+    auto worldTransforms = worlds.data();
 
     // Screen to NDC conversion. Viewport origin is lower-left in Filament; Java gives top-left.
-    filament::Viewport vp = view->getViewport();
-    if (vp.width <= 0 || vp.height <= 0) return nullptr;
+    Viewport viewport = view->getViewport();
+
+    if (viewport.width <= 0 || viewport.height <= 0) return nullptr;
 
     // Flip y: incoming sy has top-left origin.
-    int flippedY = (int)vp.height - 1 - sy;
-    double nx = (double(sx) / double(vp.width)) * 2.0 - 1.0;
-    double ny = (double(flippedY) / double(vp.height)) * 2.0 - 1.0;
+    int flippedY = static_cast<int>(viewport.height) - 1 - sy;
 
     // Build ray.
-    using namespace filament::math;
-    mat4 proj = cam->getProjectionMatrix();
-    bool isPerspective = std::abs(proj[3][3]) < 1e-6;
-    mat4 invProj = Camera::inverseProjection(proj);
-    mat4 viewM = cam->getViewMatrix();
-    mat4 invView = inverse(viewM);
+    mat4 projectionMatrix = cam->getProjectionMatrix();
+    auto [rayOrigin, rayDir] = castRay(
+        projectionMatrix,
+        cam->getViewMatrix(),
+        cam->getForwardVector(),
+        cam->getPosition(),
+        sx,
+        flippedY,
+        viewport.width,
+        viewport.height,
+        Camera::inverseProjection(projectionMatrix)
+    );
 
-    float3 rayOrigin;
-    float3 rayDir;
-    if (isPerspective) {
-        double4 clip{ nx, ny, -1.0, 1.0 }; // near plane
-        double4 viewSpace = invProj * clip;
-        float3 viewPoint = float3(viewSpace.x, viewSpace.y, viewSpace.z);
-        float3 dirView = viewPoint;
-        float3 dirWorld = (invView * float4(dirView, 0)).xyz;
-        rayOrigin = cam->getPosition();
-        rayDir = dirWorld;
-    } else {
-        double4 clip{ nx, ny, -1.0, 1.0 };
-        double4 viewSpace = invProj * clip;
-        float3 viewPoint = float3(viewSpace.x, viewSpace.y, viewSpace.z);
-        float3 worldPoint = (invView * float4(viewPoint, 1)).xyz;
-        rayOrigin = worldPoint;
-        rayDir = cam->getForwardVector();
-    }
+    auto hit = reg->pick_tinybvh(
+        renderables,
+        renderableEntityCount,
+        worldTransforms,
+        rayOrigin,
+        rayDir
+    );
 
-    auto hit = reg->pick(rayOrigin, rayDir);
-    if (hit.entity.getId() == 0 || hit.triangle < 0) {
-        return nullptr;
+    if (hit.entity.getId() == 0 || hit.triangle < 0) return nullptr;
+
+    jclass hitClass = env->FindClass("com/google/android/filament/gltfio/FilamentAsset$Hit");
+
+    if (!hitClass) return nullptr;
+
+    jmethodID ctor = env->GetMethodID(hitClass, "<init>", "(IIFFFF)V");
+
+    if (!ctor) return nullptr;
+
+    return env->NewObject(hitClass, ctor,
+            (jint) hit.entity.getId(), (jint) hit.triangle);
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_com_google_android_filament_gltfio_FilamentAsset_nRayPickScreenByEntityId(JNIEnv* env, jclass,
+        jlong nativeAsset, jlong nativeView, jint sx, jint sy, jint entityId,
+        jint startTriangleInclusive, jint endTriangleInclusive) {
+    FilamentAsset* asset = reinterpret_cast<FilamentAsset*>(static_cast<uintptr_t>(nativeAsset));
+    if (!asset) return nullptr;
+    View* view = reinterpret_cast<View*>(static_cast<uintptr_t>(nativeView));
+    if (!view) return nullptr;
+    Camera* cam = &view->getCamera();
+    PickingRegistry* reg = asset->getPickingRegistry();
+    if (!reg || !cam) return nullptr;
+
+    // Update transforms and gather world transform for the requested entity.
+    Engine* engine = asset->getEngine();
+    if (!engine) return nullptr;
+    auto& transform_manager = engine->getTransformManager();
+
+    const utils::Entity* renderables = asset->getRenderableEntities();
+    size_t renderableEntityCount = asset->getRenderableEntityCount();
+    if (!renderables || renderableEntityCount == 0) return nullptr;
+
+    // Update registry transforms for all renderables for consistency.
+    mat4f targetWorld = mat4f{};
+    bool foundTarget = false;
+    for (size_t i = 0; i < renderableEntityCount; ++i) {
+        auto inst = transform_manager.getInstance(renderables[i]);
+        if (!inst) continue;
+        mat4f world = transform_manager.getWorldTransform(inst);
+        reg->updateTransform(renderables[i], world);
+        if (!foundTarget && renderables[i].getId() == static_cast<uint32_t>(entityId)) {
+            targetWorld = world;
+            foundTarget = true;
+        }
     }
+    if (!foundTarget) return nullptr;
+
+    // Screen to NDC conversion and ray building.
+    Viewport viewport = view->getViewport();
+    if (viewport.width <= 0 || viewport.height <= 0) return nullptr;
+    int flippedY = static_cast<int>(viewport.height) - 1 - sy;
+
+    mat4 projectionMatrix = cam->getProjectionMatrix();
+    auto [rayOrigin, rayDir] = castRay(
+        projectionMatrix,
+        cam->getViewMatrix(),
+        cam->getForwardVector(),
+        cam->getPosition(),
+        sx,
+        flippedY,
+        viewport.width,
+        viewport.height,
+        Camera::inverseProjection(projectionMatrix)
+    );
+
+    // Execute filtered pick against the specified entity.
+    utils::Entity target = utils::Entity::import(entityId);
+    auto hit = reg->pick_tinybvh_filtered(
+        target,
+        targetWorld,
+        rayOrigin,
+        rayDir,
+        startTriangleInclusive,
+        endTriangleInclusive
+    );
+
+    if (hit.entity.getId() == 0 || hit.triangle < 0) return nullptr;
+
     jclass hitClass = env->FindClass("com/google/android/filament/gltfio/FilamentAsset$Hit");
     if (!hitClass) return nullptr;
     jmethodID ctor = env->GetMethodID(hitClass, "<init>", "(IIFFFF)V");
     if (!ctor) return nullptr;
+
     return env->NewObject(hitClass, ctor,
-            (jint) hit.entity.getId(), (jint) hit.triangle,
-            (jfloat) hit.distance, (jfloat) hit.bary.x, (jfloat) hit.bary.y, (jfloat) hit.bary.z);
+            (jint) hit.entity.getId(), (jint) hit.triangle);
 }
+

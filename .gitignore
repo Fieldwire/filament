@@ -18,3 +18,26 @@ test*.json
 results
 /compile_commands.json
 /.cache
+
+# Build outputs and generated directories
+/build/
+/cmake-build-*/
+/out/
+/android/.gradle/
+/android/build/
+/ios/build/
+
+# CMake/Make intermediate files
+**/CMakeFiles/
+**/CMakeCache.txt
+**/cmake_install.cmake
+**/Makefile
+
+# Object and archive files in build trees
+**/*.o
+**/*.obj
+**/*.a
+**/*.lib
+**/*.dll
+**/*.so
+**/*.dylib

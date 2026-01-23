@@ -9,14 +9,14 @@
 #include <math/mat4.h>
 #include <math/vec3.h>
 #include <math/fast.h>
-#include <math/norm.h>
 
-#include <utils/Log.h>
-
-#include <cmath>
 #include <algorithm>
 #include <limits>
 #include <stack>
+
+// Define TinyBVH implementation in this TU and include it once via project-relative path.
+#define TINYBVH_IMPLEMENTATION
+#include "../../third_party/tinybvh/tiny_bvh.h"
 
 using namespace filament::math;
 
@@ -118,6 +118,50 @@ static void buildBVH(MeshData& mesh, uint32_t leafSize = 12) {
     mesh.bvhBuilt = true;
 }
 
+bool isPerspective(mat4 projectionMatrix) {
+    return std::abs(projectionMatrix[3][3]) < 1e-6;
+}
+
+std::pair <float3, float3> castRay(
+    mat4 projectionMatrix,
+    mat4 viewMatrix,
+    float3 forwardVector,
+    double3 position,
+    float x,
+    float y,
+    uint32_t width,
+    uint32_t height,
+    mat4 inverseProjection
+) {
+    double nx = static_cast<double>(x) / static_cast<double>(width) * 2.0 - 1.0;
+    double ny = static_cast<double>(y) / static_cast<double>(height) * 2.0 - 1.0;
+    double4 clip{ nx, ny, -1.0, 1.0 }; // z=-1 near
+    double4 viewSpace = inverseProjection * clip;
+    auto viewPoint = float3( static_cast<float>(viewSpace.x), static_cast<float>(viewSpace.y), static_cast<float>(viewSpace.z) );
+    mat4 inverseViewMatrix = inverse(viewMatrix);
+
+    std::pair <float3, float3> ray;
+
+    if (isPerspective(projectionMatrix)) {
+        // Unproject a point on the near plane in view space.
+        // For perspective, direction is from origin toward the unprojected point.
+        float3 dirView = normalize(viewPoint);
+        float3 dirWorld = normalize( (inverseViewMatrix * float4(dirView, 0)).xyz );
+
+        ray = {position, dirWorld};
+    } else {
+        // Orthographic: generate world position of cursor on near plane then forward direction.
+        float3 worldPoint = (inverseViewMatrix * float4(viewPoint, 1)).xyz;
+        ray = {worldPoint, normalize(forwardVector)};
+    }
+
+    return ray;
+}
+
+bool triangleIsValidAndBest(const int32_t triangleIndex, const float distance1, const float distance2) {
+    return triangleIndex >= 0 && distance1 < distance2;
+}
+
 // -------------------------------------------------------------------------------------------------
 // PickingRegistry methods
 // -------------------------------------------------------------------------------------------------
@@ -182,8 +226,9 @@ static inline bool rayTriangle(const float3& o, const float3& d,
     return true;
 }
 
+
 PickingRegistry::Hit PickingRegistry::pick(const float3& rayOrigin, const float3& rayDir) const {
-    Hit best{ Entity{}, -1, std::numeric_limits<float>::max(), {} };
+    Hit best{ Entity{}, -1, std::numeric_limits<float>::max() };
     float3 dirNorm = normalize(rayDir);
 
     for (auto it = mMeshes.begin(); it != mMeshes.end(); ++it) {
@@ -238,7 +283,6 @@ PickingRegistry::Hit PickingRegistry::pick(const float3& rayOrigin, const float3
                         best.entity = entity;
                         best.triangle = (int)triOrd;
                         best.distance = t;
-                        best.bary = float3{ u, v, 1.0f - u - v };
                     }
                 }
             } else {
@@ -248,6 +292,122 @@ PickingRegistry::Hit PickingRegistry::pick(const float3& rayOrigin, const float3
         }
     }
     return best;
+}
+
+PickingRegistry::Hit PickingRegistry::pick_tinybvh(
+    const utils::Entity *renderables,
+    size_t renderableEntityCount,
+    const mat4f* worldTransforms, // parallel array of world transforms, length = renderableEntityCount
+    float3 rayOrigin,
+    float3 rayDir
+) const {
+    // Assume registry transforms are already updated; use provided worldTransforms.
+    Hit best{ {}, -1, std::numeric_limits<float>::max() };
+    for (size_t i = 0; i < renderableEntityCount; ++i) {
+        Entity entity = renderables[i];
+        const MeshData* meshData = getMesh(entity);
+
+        if (!meshData) continue;
+
+        const mat4f& worldTransformMatrix = worldTransforms ? worldTransforms[i] : mat4f{};
+
+        Hit hit{ {}, -1, BVH_FAR };
+        const uint32_t numTriangles = static_cast<uint32_t>(meshData->indices.size()) / 3;
+
+        if (numTriangles == 0) continue;
+
+        // Transform positions to world space once and convert to bvhvec4.
+        std::vector<tinybvh::bvhvec4> vertices;
+        vertices.reserve(meshData->positions.size());
+        for (const float3& vLocal : meshData->positions) {
+            float3 vWorld = (worldTransformMatrix * float4(vLocal, 1.0f)).xyz;
+            vertices.emplace_back(vWorld.x, vWorld.y, vWorld.z, 0.0f);
+        }
+
+        // Copy indices (already triangle list in MeshData)
+        std::vector<uint32_t> indices;
+        indices.reserve(meshData->indices.size());
+        for (uint32_t idx : meshData->indices) {
+            indices.push_back(idx);
+        }
+
+        tinybvh::BVH bvh;
+        bvh.Build(vertices.data(), indices.data(), numTriangles);
+
+        tinybvh::Ray ray(
+            tinybvh::bvhvec3(rayOrigin.x, rayOrigin.y, rayOrigin.z),
+            tinybvh::bvhvec3(rayDir.x, rayDir.y, rayDir.z),
+            BVH_FAR
+        );
+
+        if (const int32_t hitPrim = bvh.Intersect(ray); !triangleIsValidAndBest(hitPrim, ray.hit.prim, numTriangles)) return hit;
+
+        hit.triangle = static_cast<int>(ray.hit.prim);
+        hit.distance = ray.hit.t;
+
+        if (!triangleIsValidAndBest(hit.triangle, hit.distance, best.distance)) continue;
+
+        best.entity = entity;
+        best.triangle = hit.triangle;
+        best.distance = hit.distance;
+    }
+
+    return best;
+}
+
+PickingRegistry::Hit PickingRegistry::pick_tinybvh_filtered(
+    Entity entity,
+    const mat4f& worldTransform,
+    float3 rayOrigin,
+    float3 rayDir,
+    int32_t startTriangleInclusive,
+    int32_t endTriangleInclusive
+) const {
+    Hit none{ {}, -1, std::numeric_limits<float>::max() };
+
+    const MeshData* meshData = getMesh(entity);
+    if (!meshData) return none;
+
+    const uint32_t numTriangles = static_cast<uint32_t>(meshData->indices.size()) / 3;
+    if (numTriangles == 0) return none;
+
+    // Clamp range to valid bounds and ensure start <= end.
+    int32_t start = std::max<int32_t>(0, startTriangleInclusive);
+    int32_t end = std::min<int32_t>(static_cast<int32_t>(numTriangles - 1), endTriangleInclusive);
+    if (start > end) return none;
+
+    // Transform positions to world space once and convert to bvhvec4.
+    std::vector<tinybvh::bvhvec4> vertices;
+    vertices.reserve(meshData->positions.size());
+    for (const float3& vLocal : meshData->positions) {
+        float3 vWorld = (worldTransform * float4(vLocal, 1.0f)).xyz;
+        vertices.emplace_back(vWorld.x, vWorld.y, vWorld.z, 0.0f);
+    }
+
+    // Copy indices.
+    std::vector<uint32_t> indices;
+    indices.reserve(meshData->indices.size());
+    for (uint32_t idx : meshData->indices) {
+        indices.push_back(idx);
+    }
+
+    tinybvh::BVH bvh;
+    bvh.Build(vertices.data(), indices.data(), numTriangles);
+
+    tinybvh::Ray ray(
+        tinybvh::bvhvec3(rayOrigin.x, rayOrigin.y, rayOrigin.z),
+        tinybvh::bvhvec3(rayDir.x, rayDir.y, rayDir.z),
+        BVH_FAR
+    );
+
+    int32_t hitPrim = bvh.Intersect(ray);
+    if (hitPrim < 0) return none;
+
+    // Enforce triangle range filter.
+    if (hitPrim < start || hitPrim > end) return none;
+
+    Hit hit{ entity, hitPrim, ray.hit.t };
+    return hit;
 }
 
 } // namespace filament::gltfio
