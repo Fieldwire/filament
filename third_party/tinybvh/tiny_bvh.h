@@ -191,6 +191,10 @@ THE SOFTWARE.
 #include <stdlib.h> // for exit(1)
 #else // Emscripten / gcc / clang
 #include <cstdlib>
+#if defined(__ANDROID__)
+#include <errno.h>
+#include <stdlib.h>
+#endif
 #include <cstdio>
 #include <cmath>
 #include <cstring>
@@ -271,7 +275,18 @@ inline size_t make_multiple_of( size_t x, size_t alignment ) { return (x + (alig
 #define _ALIGNED_ALLOC(alignment,size) _mm_malloc( make_multiple_of( size, alignment ), alignment );
 #define _ALIGNED_FREE(ptr) _mm_free( ptr );
 #else
-#if defined __APPLE__ || defined __aarch64__ || (defined __ANDROID_API__ && (__ANDROID_API__ >= 28))
+// On Android, prefer posix_memalign; aligned_alloc is not reliably available for API <= 28, and __aarch64__ is defined.
+#if defined(__ANDROID__)
+#include <stdlib.h>
+static inline void* tinybvh_aligned_alloc(size_t alignment, size_t size) {
+    void* ptr = nullptr;
+    if (posix_memalign(&ptr, alignment, make_multiple_of( size, alignment )) != 0) return nullptr;
+    return ptr;
+}
+#define _ALIGNED_ALLOC(alignment,size) tinybvh_aligned_alloc( alignment, size )
+#define _ALIGNED_FREE(ptr) free( ptr )
+#else
+#if defined __APPLE__ || (defined __aarch64__ && !defined(__ANDROID__)) || (defined __ANDROID_API__ && (__ANDROID_API__ >= 28))
 #define _ALIGNED_ALLOC(alignment,size) aligned_alloc( alignment, make_multiple_of( size, alignment ) );
 #elif defined __GNUC__
 #ifdef __linux__
@@ -281,6 +296,7 @@ inline size_t make_multiple_of( size_t x, size_t alignment ) { return (x + (alig
 #endif
 #endif
 #define _ALIGNED_FREE(ptr) free( ptr );
+#endif // __ANDROID__
 #endif
 #endif
 inline void* malloc64( size_t size, void* = nullptr ) { return size == 0 ? 0 : _ALIGNED_ALLOC( 64, size ); }
@@ -289,7 +305,7 @@ inline void* malloc32k( size_t size, void* = nullptr ) { return size == 0 ? 0 : 
 inline void free64( void* ptr, void* = nullptr ) { _ALIGNED_FREE( ptr ); }
 inline void free4k( void* ptr, void* = nullptr ) { _ALIGNED_FREE( ptr ); }
 inline void free32k( void* ptr, void* = nullptr ) { _ALIGNED_FREE( ptr ); }
-}; // namespace tiybvh
+}; // namespace tinybvh
 
 // Derived TLAS things; for convenience.
 #define INST_IDX_SHFT (32 - INST_IDX_BITS)
@@ -301,9 +317,12 @@ inline void free32k( void* ptr, void* = nullptr ) { _ALIGNED_FREE( ptr ); }
 
 // Forced inlining.
 #ifdef _MSC_VER
-#define __FORCEINLINE __forceinline
+#define FORCEINLINE __forceinline
 #else
-#define __FORCEINLINE __attribute__((always_inline)) inline
+#define FORCEINLINE __attribute__((always_inline)) inline
+#endif
+#ifndef __FORCEINLINE
+#define __FORCEINLINE FORCEINLINE
 #endif
 
 namespace tinybvh {
@@ -4343,7 +4362,7 @@ void BVH_Verbose::Optimize( const uint32_t iterations, const bool extreme, bool 
 		int start = 0;
 		if (stochastic)
 		{
-			float r = (float)rand() / RAND_MAX;
+			float r = (float)((double)rand() / (double)RAND_MAX);
 			r = tinybvh_max( 0.0f, (r * 1.2f) - 0.3f ); // 0 .. 0.9f
 			start = (int)((float)limit * r);
 		}
