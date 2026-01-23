@@ -303,8 +303,7 @@ Java_com_google_android_filament_gltfio_FilamentAsset_nRayPick(JNIEnv* env, jcla
     jmethodID ctor = env->GetMethodID(hitClass, "<init>", "(IIFFFF)V");
     if (!ctor) return nullptr; // constructor not found
     return env->NewObject(hitClass, ctor,
-            (jint) hit.entity.getId(), (jint) hit.triangle,
-            (jfloat) hit.distance, (jfloat) hit.bary.x, (jfloat) hit.bary.y, (jfloat) hit.bary.z);
+            (jint) hit.entity.getId(), (jint) hit.triangle);
 }
 
 extern "C" JNIEXPORT jobject JNICALL
@@ -387,6 +386,5 @@ Java_com_google_android_filament_gltfio_FilamentAsset_nRayPickScreen(JNIEnv* env
     if (!ctor) return nullptr;
 
     return env->NewObject(hitClass, ctor,
-            (jint) hit.entity.getId(), (jint) hit.triangle,
-            (jfloat) hit.distance, (jfloat) hit.bary.x, (jfloat) hit.bary.y, (jfloat) hit.bary.z);
+            (jint) hit.entity.getId(), (jint) hit.triangle);
 }
