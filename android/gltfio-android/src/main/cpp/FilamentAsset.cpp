@@ -309,9 +309,9 @@ Java_com_google_android_filament_gltfio_FilamentAsset_nRayPick(JNIEnv* env, jcla
 extern "C" JNIEXPORT jobject JNICALL
 Java_com_google_android_filament_gltfio_FilamentAsset_nRayPickScreen(JNIEnv* env, jclass,
         jlong nativeAsset, jlong nativeView, jint sx, jint sy) {
-    FilamentAsset* asset = static_cast<FilamentAsset *>(nativeAsset);
+    FilamentAsset* asset = reinterpret_cast<FilamentAsset*>(static_cast<uintptr_t>(nativeAsset));
     if (!asset) return nullptr;
-    View* view = static_cast<View *>(nativeView);
+    View* view = reinterpret_cast<View*>(static_cast<uintptr_t>(nativeView));
     if (!view) return nullptr;
     Camera* cam = &view->getCamera();
     PickingRegistry* reg = asset->getPickingRegistry();
