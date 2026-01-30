@@ -64,7 +64,11 @@ public:
     ostream& operator<<(std::string const& s) noexcept;
     ostream& operator<<(std::string_view const& s) noexcept;
 
+    // Support stream manipulators (e.g., io::endl). Some manipulators are declared noexcept,
+    // so we provide both overloads to avoid ambiguous calls on compilers where noexcept is part
+    // of the function type.
     ostream& operator<<(ostream& (* f)(ostream&)) noexcept { return f(*this); }
+    ostream& operator<<(ostream& (* f)(ostream&) noexcept) noexcept { return f(*this); }
 
     ostream& dec() noexcept;
     ostream& hex() noexcept;

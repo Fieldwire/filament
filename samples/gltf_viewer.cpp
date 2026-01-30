@@ -32,9 +32,9 @@
 
 #include <gltfio/AssetLoader.h>
 #include <gltfio/FilamentAsset.h>
+#include <gltfio/Picking.h>
 #include <gltfio/ResourceLoader.h>
 #include <gltfio/TextureProvider.h>
-
 #include <viewer/AutomationEngine.h>
 #include <viewer/AutomationSpec.h>
 #include <viewer/ViewerGui.h>
@@ -52,6 +52,7 @@
 #include <math/vec4.h>
 #include <math/mat3.h>
 #include <math/norm.h>
+#include <cmath>
 
 #include <imgui.h>
 #include <filagui/ImGuiExtensions.h>
@@ -503,14 +504,105 @@ static void createOverdrawVisualizerEntities(Engine* engine, Scene* scene, App& 
     app.scene.fullScreenTriangleIndexBuffer = indexBuffer;
 }
 
+static std::string pick_triangle(App &app, View *view, ImVec2 pos) {
+    auto registry = app.asset->getPickingRegistry();
+    if (!registry) {
+        return "(PickingRegistry2 not available)\n";
+    }
+
+    const utils::Entity* renderables = app.asset->getRenderableEntities();
+    size_t renderableEntityCount = app.asset->getRenderableEntityCount();
+    if (!renderables) {
+        return "(No renderable entities in refactor impl)\n";
+    }
+
+    // Update transforms for accuracy (could be done once per frame elsewhere).
+    Engine* engine = app.engine; // guaranteed set
+    auto& transform_manager = engine->getTransformManager();
+
+    // CPU-side triangle picking using ray from camera.
+    Camera* cam = &view->getCamera();
+    const Viewport& viewport = view->getViewport();
+
+    // Perspective vs Ortho heuristic: perspective projection matrix has m[3][3] == 0.
+    mat4 projectionMatrix = cam->getProjectionMatrix();
+
+    mat4 inverseProjection = Camera::inverseProjection(projectionMatrix);
+    mat4 viewMatrix = cam->getViewMatrix();
+    auto forwardVector = cam->getForwardVector();
+    // Convert pixel to NDC (-1..1) where origin is bottom-left after y flip already applied.
+    auto position = cam->getPosition();
+
+    for (size_t i = 0; i < renderableEntityCount; ++i) {
+        auto inst = transform_manager.getInstance(renderables[i]);
+        if (!inst) {
+            continue;
+        }
+
+        registry->updateTransform(renderables[i], transform_manager.getWorldTransform(inst));
+    }
+
+    auto [rayOrigin, rayDir] = castRay(
+        projectionMatrix,
+        viewMatrix,
+        forwardVector,
+        position,
+        pos.x,
+        pos.y,
+        viewport.width,
+        viewport.height,
+        inverseProjection
+    );
+
+
+    auto start = std::chrono::high_resolution_clock::now();
+    PickingRegistry::Hit hit = registry->pick(rayOrigin, rayDir);
+    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> time1 = end - start;
+
+    start = std::chrono::high_resolution_clock::now();
+    PickingRegistry::Hit hit2 = registry->pick_tinybvh(
+        renderables,
+        renderableEntityCount,
+        rayOrigin,
+        rayDir
+    );
+    end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> time2 = end - start;
+
+    if (hit.entity.getId() == 0 || hit.triangle < 0) {
+        return std::to_string(hit.entity.getId()) + " (triangle " + std::to_string(hit.triangle) + ")"
+             + " vs "
+             + std::to_string(hit2.entity.getId()) + " (triangle " + std::to_string(hit2.triangle) + ")\n";
+    }
+
+    const char* name = app.asset->getName(hit.entity);
+    std::string text = name ? name : "Entity " + std::to_string(hit.entity.getId());
+    std::string output = text + " (triangle " + std::to_string(hit.triangle) + ") (Custom)\n";
+    const char* name2 = app.asset->getName(hit2.entity);
+    std::string text2 = name2 ? name2 : "Entity " + std::to_string(hit2.entity.getId());
+    std::string output2 = text2 + " (triangle " + std::to_string(hit2.triangle) + ") (TinyBVH)\n";
+
+    auto finalOutputAndTime = output + "Picked in " + std::to_string(time1.count()) + " ms\n"
+                        + output2 + "Picked in " + std::to_string(time2.count()) + " ms\n";
+    return finalOutputAndTime;
+}
+
 static void onClick(App& app, View* view, ImVec2 pos) {
+    // existing pixel-based GPU picking
     view->pick(pos.x, pos.y, [&app](View::PickingQueryResult const& result){
-        if (const char* name = app.asset->getName(result.renderable); name) {
-            app.notificationText = name;
+        /*if (const char* name = app.asset->getName(result.renderable); name) {
+            app.notificationText = name; // will be augmented by CPU picking below
         } else {
             app.notificationText.clear();
-        }
+        }*/
     });
+
+    std::ostringstream oss;
+    oss << std::endl;
+    oss << pick_triangle(app, view, pos) << std::endl;
+
+    app.notificationText = oss.str();
 }
 
 static utils::Path getPathForIBLAsset(std::string_view string) {
@@ -779,7 +871,17 @@ int main(int argc, char** argv) {
                 createJitShaderProvider(engine, OPTIMIZE_MATERIALS) :
                 createUbershaderProvider(engine, UBERARCHIVE_DEFAULT_DATA, UBERARCHIVE_DEFAULT_SIZE);
 
-        app.assetLoader = AssetLoader::create({engine, app.materials, app.names });
+        // app.assetLoader = AssetLoader::create({ engine, app.materials, app.names });
+        AssetConfigurationExtended ext = {
+                .gltfPath = filename.c_str(),
+            };
+        AssetConfiguration config = {
+                .engine = engine,
+                .materials = app.materials,
+                .names = app.names,
+                .ext = &ext,
+            };
+        app.assetLoader = AssetLoader::create(config);
         app.mainCamera = &view->getCamera();
         if (filename.isEmpty()) {
             app.asset = app.assetLoader->createAsset(
@@ -813,7 +915,12 @@ int main(int argc, char** argv) {
             const ImVec4 yellow(1.0f,1.0f,0.0f,1.0f);
 
             if (!app.notificationText.empty()) {
-                ImGui::TextColored(yellow, "Picked %s", app.notificationText.c_str());
+                // Word-wrap the picked notification within the available content region.
+                ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x);
+                ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetColorU32(yellow));
+                ImGui::TextWrapped("Picked %s", app.notificationText.c_str());
+                ImGui::PopStyleColor();
+                ImGui::PopTextWrapPos();
                 ImGui::Spacing();
             }
 
@@ -1145,6 +1252,24 @@ int main(int argc, char** argv) {
         } else {
             view->setColorGrading(nullptr);
         }
+
+        // After updating transforms, refresh picking world transforms once per frame for all renderables.
+        if (app.asset) {
+            auto reg = app.asset->getPickingRegistry();
+            if (reg) {
+                auto& tcm = engine->getTransformManager();
+                const utils::Entity* renderables = app.asset->getRenderableEntities();
+                size_t rc = app.asset->getRenderableEntityCount();
+                if (renderables) {
+                    for (size_t i = 0; i < rc; ++i) {
+                        auto inst = tcm.getInstance(renderables[i]);
+                        if (inst) {
+                            reg->updateTransform(renderables[i], tcm.getWorldTransform(inst));
+                        }
+                    }
+                }
+            }
+        }
     };
 
     auto postRender = [&app](Engine* engine, View* view, Scene*, Renderer* renderer) {
@@ -1199,3 +1324,4 @@ int main(int argc, char** argv) {
 
     return 0;
 }
+

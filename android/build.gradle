@@ -47,7 +47,10 @@
 buildscript {
     def path = providers
             .gradleProperty("com.google.android.filament.dist-dir")
-            .get()
+            .orNull
+    if (path == null || path.trim().isEmpty()) {
+        throw new GradleException("Missing required property: -Pcom.google.android.filament.dist-dir. Please provide the Filament Android distribution directory (e.g., ../dist-android-release)")
+    }
 
     def directory = objects.fileProperty().fileValue(new File(path)).getAsFile().get()
     def filamentPath = directory.absolutePath
@@ -70,10 +73,10 @@ buildscript {
             .isPresent()
 
     def abis = ["arm64-v8a", "armeabi-v7a", "x86_64", "x86"]
-    def newAbis = providers
+    def abisProp = providers
             .gradleProperty("com.google.android.filament.abis")
-            .get()
-            .split(',')
+            .getOrElse("all")
+    def newAbis = abisProp.split(',')
     if (!newAbis.contains("all")) {
         abis = newAbis
     }

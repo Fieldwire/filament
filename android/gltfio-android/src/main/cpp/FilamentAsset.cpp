@@ -17,6 +17,13 @@
 #include <jni.h>
 
 #include <gltfio/FilamentAsset.h>
+#include <gltfio/Picking.h>
+#include <filament/TransformManager.h>
+#include <filament/Engine.h>
+#include <filament/View.h>
+#include <filament/Camera.h>
+#include <filament/Viewport.h> // Added to provide full definition of filament::Viewport
+#include <math/mat4.h>
 
 using namespace filament;
 using namespace filament::math;
@@ -263,4 +270,86 @@ Java_com_google_android_filament_gltfio_FilamentAsset_nReleaseSourceData(JNIEnv*
         jlong nativeAsset) {
     FilamentAsset* asset = (FilamentAsset*) nativeAsset;
     asset->releaseSourceData();
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_com_google_android_filament_gltfio_FilamentAsset_nRayPick(JNIEnv* env, jclass,
+                                                               jlong nativeAsset, jlong nativeView, jint sx, jint sy) {
+    FilamentAsset* asset = reinterpret_cast<FilamentAsset*>(static_cast<uintptr_t>(nativeAsset));
+    if (!asset) return nullptr;
+    View* view = reinterpret_cast<View*>(static_cast<uintptr_t>(nativeView));
+    if (!view) return nullptr;
+    Camera* cam = &view->getCamera();
+    PickingRegistry* reg = asset->getPickingRegistry();
+    if (!reg || !cam) return nullptr;
+
+    std::vector<mat4f> worlds;
+
+    // Update transforms before picking.
+    Engine* engine = asset->getEngine();
+
+    if (!engine) return nullptr;
+
+    auto& transform_manager = engine->getTransformManager();
+    size_t renderableEntityCount = asset->getRenderableEntityCount();
+    const utils::Entity* renderables = asset->getRenderableEntities();
+    worlds.reserve(renderableEntityCount);
+
+    if (!renderables) return nullptr;
+
+    for (size_t i = 0; i < renderableEntityCount; ++i) {
+        auto inst = transform_manager.getInstance(renderables[i]);
+        mat4f world;
+        if (!inst) {
+            world = mat4f{};
+            continue;
+        }
+
+        world = transform_manager.getWorldTransform(inst);
+        reg->updateTransform(renderables[i], transform_manager.getWorldTransform(inst));
+        worlds.push_back(world);
+    }
+    auto worldTransforms = worlds.data();
+
+    // Screen to NDC conversion. Viewport origin is lower-left in Filament; Java gives top-left.
+    Viewport viewport = view->getViewport();
+
+    if (viewport.width <= 0 || viewport.height <= 0) return nullptr;
+
+    // Flip y: incoming sy has top-left origin.
+    int flippedY = static_cast<int>(viewport.height) - 1 - sy;
+
+    // Build ray.
+    mat4 projectionMatrix = cam->getProjectionMatrix();
+    auto [rayOrigin, rayDir] = castRay(
+        projectionMatrix,
+        cam->getViewMatrix(),
+        cam->getForwardVector(),
+        cam->getPosition(),
+        sx,
+        flippedY,
+        viewport.width,
+        viewport.height,
+        Camera::inverseProjection(projectionMatrix)
+    );
+
+    auto hit = reg->pick_tinybvh(
+        renderables,
+        renderableEntityCount,
+        worldTransforms,
+        rayOrigin,
+        rayDir
+    );
+
+    if (hit.entity.getId() == 0 || hit.triangle < 0) return nullptr;
+
+    jclass hitClass = env->FindClass("com/google/android/filament/gltfio/FilamentAsset$Hit");
+
+    if (!hitClass) return nullptr;
+
+    jmethodID ctor = env->GetMethodID(hitClass, "<init>", "(II)V");
+
+    if (!ctor) return nullptr;
+
+    return env->NewObject(hitClass, ctor, (jint) hit.entity.getId(), (jint) hit.triangle);
 }

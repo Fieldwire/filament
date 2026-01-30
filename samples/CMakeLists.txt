@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.19)
 project(filament-samples C ASM)
 
+# Local include directories for header-only tinybvh
+if (NOT TINYBVH_DIR)
+    set(TINYBVH_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/tinybvh)
+endif()
+
 if (FILAMENT_SKIP_SAMPLES)
     return()
 endif()
@@ -272,6 +277,18 @@ if (NOT ANDROID)
     # Sample app specific
     target_link_libraries(frame_generator PRIVATE imageio)
     target_link_libraries(gltf_viewer PRIVATE gltf-demo-resources uberarchive gltfio viewer)
+    if (EXISTS ${TINYBVH_DIR})
+        message(STATUS "Using local tinybvh at ${TINYBVH_DIR}")
+        target_include_directories(gltf_viewer PRIVATE ${TINYBVH_DIR})
+    else()
+        message(WARNING "TINYBVH_DIR not found at ${TINYBVH_DIR}. Provide -DTINYBVH_DIR or vendor headers under third_party/tinybvh.")
+    endif()
+
+    # Ensure tinybvh headers available to samples
+    if (EXISTS ${TINYBVH_DIR})
+        include_directories(${TINYBVH_DIR})
+    endif()
+
     target_link_libraries(gltf_instances PRIVATE gltf-demo-resources uberarchive gltfio viewer)
     target_link_libraries(hellopbr PRIVATE filameshio suzanne-resources)
     target_link_libraries(image_viewer PRIVATE viewer imageio)

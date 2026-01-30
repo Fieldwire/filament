@@ -55,6 +55,7 @@
 #include <tsl/robin_map.h>
 
 #include <cgltf.h>
+#include <gltfio/Picking.h>
 
 #include "downcast.h"
 
@@ -892,6 +893,16 @@ void FAssetLoader::createRenderable(const cgltf_node* node, Entity entity, const
         .castShadows(true)
         .receiveShadows(true)
         .build(mEngine, entity);
+
+    // Picking registration now uses free helper buildMeshDataForPicking.
+    {
+        MeshData meshData = buildMeshDataForPicking(mesh);
+        if (!meshData.positions.empty() && !meshData.indices.empty()) {
+            meshData.localBounds.min = aabb.min;
+            meshData.localBounds.max = aabb.max;
+            fAsset->mPickingRegistry.registerMesh(entity, std::move(meshData));
+        }
+    }
 
     // According to the spec, the mesh may or may not specify default weights, regardless of whether
     // it actually has morph targets. If it has morphing enabled then the default weights are 0. If

@@ -86,6 +86,8 @@ set(GLTFIO_SRCS
         ${GLTFIO_DIR}/src/Utility.h
         ${GLTFIO_DIR}/src/Wireframe.cpp
         ${GLTFIO_DIR}/src/Wireframe.h
+        ${GLTFIO_DIR}/src/Picking.cpp
+        ${GLTFIO_DIR}/src/PickingUtility.cpp
         ${GLTFIO_DIR}/src/downcast.h
         ${GLTFIO_DIR}/src/extended/AssetLoaderExtended.cpp
         ${GLTFIO_DIR}/src/extended/AssetLoaderExtended.h
