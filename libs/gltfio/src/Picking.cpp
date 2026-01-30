@@ -365,6 +365,8 @@ PickingRegistry::Hit PickingRegistry::pick_tinybvh(
         view, xy
     );
 
+    float3 dirNorm = normalize(rayDir);
+
     // Assume registry transforms are already updated; use provided worldTransforms.
     Hit best{ {}, -1, std::numeric_limits<float>::max() };
     for (size_t i = 0; i < renderableEntityCount; ++i) {
@@ -377,6 +379,20 @@ PickingRegistry::Hit PickingRegistry::pick_tinybvh(
 
         auto worldIt = mWorldTransforms.find(entity);
         const mat4f* worldTransforms = worldIt != mWorldTransforms.end() ? &worldIt->second : nullptr;
+
+        mat4f world; // identity init (default constructor may not zero)
+        if (auto wIt = mWorldTransforms.find(entity); wIt != mWorldTransforms.end()) {
+            world = wIt->second;
+        }
+        mat4f invWorld = inverse(world);
+        float4 o4(rayOrigin, 1.0f);
+        float4 d4(dirNorm, 0.0f);
+        float3 localO = (invWorld * o4).xyz;
+        float3 localD = normalize((invWorld * d4).xyz);
+
+        if (float3 localDInv{ 1.0f / localD.x, 1.0f / localD.y, 1.0f / localD.z }; !intersectAabb(localO, localDInv, meshData->localBounds.min, meshData->localBounds.max, best.distance)) {
+            continue;
+        }
 
         const mat4f& worldTransformMatrix = worldTransforms ? worldTransforms[i] : mat4f{};
 
