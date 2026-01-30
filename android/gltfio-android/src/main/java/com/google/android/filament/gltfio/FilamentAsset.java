@@ -296,7 +296,6 @@ public class FilamentAsset {
      * @param sy   vertical pixel coordinate within the viewport (top-left origin).
      */
     public @Nullable Hit pick(@NonNull View view, int sx, int sy) {
-        if (view == null) throw new IllegalArgumentException("view cannot be null");
         if (mNativeObject == 0) return null;
         Viewport vp = view.getViewport();
         if (sx < 0 || sy < 0 || sx >= vp.width || sy >= vp.height) {

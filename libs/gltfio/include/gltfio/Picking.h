@@ -28,6 +28,7 @@
 
 #include <cgltf.h>
 
+#include "FilamentAsset.h"
 #include "filament/TransformManager.h"
 #include "filament/View.h"
 using namespace filament::math;
@@ -66,24 +67,21 @@ public:
 
     struct Hit { Entity entity; int triangle; float distance; };
     void updateTransforms(
-        const utils::Entity* entities,
-        size_t entityCount,
-        const TransformManager & transformManager
+        const FilamentAsset& asset,
+        Engine& engine
     );
     [[nodiscard]] Hit pick(
+        FilamentAsset& asset,
         View *view,
-        const utils::Entity *renderables,
-        size_t renderableEntityCount,
         Engine *engine,
-        float2 xy
+        float2 coordinates
     );
 
     [[nodiscard]] Hit pick_tinybvh(
+        FilamentAsset& asset,
         View *view,
-        const utils::Entity *renderables,
-        size_t renderableEntityCount,
         Engine *engine,
-        float2 xy
+        float2 coordinates
     );
 
     struct SceneItem { Entity e; Aabb worldBounds; };

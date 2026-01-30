@@ -506,25 +506,19 @@ static void createOverdrawVisualizerEntities(Engine* engine, Scene* scene, App& 
 
 static std::string pick(const App &app, View *view, const ImVec2 pos) {
     const auto start = std::chrono::high_resolution_clock::now();
-    const auto registry = app.asset->getPickingRegistry();
+    const auto asset = app.asset;
+    const auto registry = asset->getPickingRegistry();
     if (!registry) {
         return "(Picking Registry not available)\n";
     }
 
-    const utils::Entity* renderables = app.asset->getRenderableEntities();
-    if (!renderables) {
-        return "(No renderable entities in refactor impl)\n";
-    }
-
     // Update transforms for accuracy (could be done once per frame elsewhere).
-    const size_t renderableEntityCount = app.asset->getRenderableEntityCount();
     Engine* engine = app.engine; // guaranteed set
     const float2 xy = {pos.x, pos.y};
 
     const PickingRegistry::Hit hit = registry->pick(
+        *asset,
         view,
-        renderables,
-        renderableEntityCount,
         engine,
         xy
     );
@@ -546,25 +540,19 @@ static std::string pick(const App &app, View *view, const ImVec2 pos) {
 
 static std::string pick2(const App &app, View *view, const ImVec2 pos) {
     const auto start = std::chrono::high_resolution_clock::now();
-    const auto registry = app.asset->getPickingRegistry();
+    const auto asset = app.asset;
+    const auto registry = asset->getPickingRegistry();
     if (!registry) {
         return "(Picking Registry not available)\n";
     }
 
-    const utils::Entity* renderables = app.asset->getRenderableEntities();
-    if (!renderables) {
-        return "(No renderable entities in refactor impl)\n";
-    }
-
     // Update transforms for accuracy (could be done once per frame elsewhere).
-    const size_t renderableEntityCount = app.asset->getRenderableEntityCount();
     Engine* engine = app.engine; // guaranteed set
     const float2 xy = {pos.x, pos.y};
 
     const PickingRegistry::Hit hit = registry->pick_tinybvh(
+        *asset,
         view,
-        renderables,
-        renderableEntityCount,
         engine,
         xy
     );
@@ -1251,14 +1239,9 @@ int main(int argc, char** argv) {
         }
 
         // After updating transforms, refresh picking world transforms once per frame for all renderables.
-        if (app.asset) {
-            if (const auto registry = app.asset->getPickingRegistry()) {
-                const auto& transformManager = engine->getTransformManager();
-                const utils::Entity* renderables = app.asset->getRenderableEntities();
-                const size_t entityCount = app.asset->getRenderableEntityCount();
-                if (renderables) {
-                    registry->updateTransforms(renderables, entityCount, transformManager);
-                }
+        if (const auto asset = app.asset) {
+            if (const auto registry = asset->getPickingRegistry()) {
+                registry->updateTransforms(*asset, *engine);
             }
         }
     };

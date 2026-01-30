@@ -279,66 +279,28 @@ Java_com_google_android_filament_gltfio_FilamentAsset_nRayPick(JNIEnv* env, jcla
     if (!asset) return nullptr;
     View* view = reinterpret_cast<View*>(static_cast<uintptr_t>(nativeView));
     if (!view) return nullptr;
-    Camera* cam = &view->getCamera();
     PickingRegistry* reg = asset->getPickingRegistry();
-    if (!reg || !cam) return nullptr;
-
-    std::vector<mat4f> worlds;
+    if (!reg) return nullptr;
 
     // Update transforms before picking.
     Engine* engine = asset->getEngine();
 
     if (!engine) return nullptr;
 
-    auto& transform_manager = engine->getTransformManager();
-    size_t renderableEntityCount = asset->getRenderableEntityCount();
-    const utils::Entity* renderables = asset->getRenderableEntities();
-    worlds.reserve(renderableEntityCount);
-
-    if (!renderables) return nullptr;
-
-    for (size_t i = 0; i < renderableEntityCount; ++i) {
-        auto inst = transform_manager.getInstance(renderables[i]);
-        mat4f world;
-        if (!inst) {
-            world = mat4f{};
-            continue;
-        }
-
-        world = transform_manager.getWorldTransform(inst);
-        reg->updateTransform(renderables[i], transform_manager.getWorldTransform(inst));
-        worlds.push_back(world);
-    }
-    auto worldTransforms = worlds.data();
-
     // Screen to NDC conversion. Viewport origin is lower-left in Filament; Java gives top-left.
     Viewport viewport = view->getViewport();
-
     if (viewport.width <= 0 || viewport.height <= 0) return nullptr;
 
     // Flip y: incoming sy has top-left origin.
     int flippedY = static_cast<int>(viewport.height) - 1 - sy;
 
-    // Build ray.
-    mat4 projectionMatrix = cam->getProjectionMatrix();
-    auto [rayOrigin, rayDir] = castRay(
-        projectionMatrix,
-        cam->getViewMatrix(),
-        cam->getForwardVector(),
-        cam->getPosition(),
-        sx,
-        flippedY,
-        viewport.width,
-        viewport.height,
-        Camera::inverseProjection(projectionMatrix)
-    );
+    const float2 coordinates = {sx, flippedY};
 
-    auto hit = reg->pick_tinybvh(
-        renderables,
-        renderableEntityCount,
-        worldTransforms,
-        rayOrigin,
-        rayDir
+    auto hit = reg->pick(
+        *asset,
+        view,
+        engine,
+        coordinates
     );
 
     if (hit.entity.getId() == 0 || hit.triangle < 0) return nullptr;

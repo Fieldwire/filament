@@ -125,17 +125,31 @@ bool isPerspective(mat4 projectionMatrix) {
     return std::abs(projectionMatrix[3][3]) < 1e-6;
 }
 
-std::pair <float3, float3> castRay(
-    mat4 projectionMatrix,
-    mat4 viewMatrix,
-    float3 forwardVector,
-    double3 position,
-    float2 pos,
-    uint2 viewportSize,
-    mat4 inverseProjection
+std::pair<float3, float3> castRay(
+    View *view,
+    float2 coordinates
 ) {
-    float x = pos.x;
-    float y = pos.y;
+    // CPU-side triangle picking using ray from camera.
+    Camera* cam = &view->getCamera();
+
+    if (!cam) {
+        return { float3{0}, float3{0} };
+    }
+
+    const Viewport& viewport = view->getViewport();
+
+    // Perspective vs Ortho heuristic: perspective projection matrix has m[3][3] == 0.
+    mat4 projectionMatrix = cam->getProjectionMatrix();
+
+    mat4 inverseProjection = Camera::inverseProjection(projectionMatrix);
+    mat4 viewMatrix = cam->getViewMatrix();
+    auto forwardVector = cam->getForwardVector();
+    // Convert pixel to NDC (-1..1) where origin is bottom-left after y flip already applied.
+    auto position = cam->getPosition();
+    auto viewportSize = uint2{ static_cast<uint32_t>(viewport.width), static_cast<uint32_t>(viewport.height) };
+
+    float x = coordinates.x;
+    float y = coordinates.y;
     uint32_t width = viewportSize.x;
     uint32_t height = viewportSize.y;
 
@@ -162,35 +176,6 @@ std::pair <float3, float3> castRay(
     }
 
     return ray;
-}
-
-std::pair<float3, float3> castRay(
-    View *view,
-    float2 coordinates
-) {
-    // CPU-side triangle picking using ray from camera.
-    Camera* cam = &view->getCamera();
-    const Viewport& viewport = view->getViewport();
-
-    // Perspective vs Ortho heuristic: perspective projection matrix has m[3][3] == 0.
-    mat4 projectionMatrix = cam->getProjectionMatrix();
-
-    mat4 inverseProjection = Camera::inverseProjection(projectionMatrix);
-    mat4 viewMatrix = cam->getViewMatrix();
-    auto forwardVector = cam->getForwardVector();
-    // Convert pixel to NDC (-1..1) where origin is bottom-left after y flip already applied.
-    auto position = cam->getPosition();
-    auto viewportSize = uint2{ static_cast<uint32_t>(viewport.width), static_cast<uint32_t>(viewport.height) };
-
-    return castRay(
-        projectionMatrix,
-        viewMatrix,
-        forwardVector,
-        position,
-        coordinates,
-        viewportSize,
-        inverseProjection
-    );
 }
 
 bool triangleIsValidAndBest(const int32_t triangleIndex, const float distance1, const float distance2) {
@@ -237,10 +222,12 @@ void PickingRegistry::buildBVHIfNeeded(Entity e) {
 }
 
 void PickingRegistry::updateTransforms(
-    const utils::Entity* entities,
-    const size_t entityCount,
-    const TransformManager & transformManager
+    const FilamentAsset& asset,
+    Engine& engine
 ) {
+    const auto& transformManager = engine.getTransformManager();
+    const Entity* entities = asset.getRenderableEntities();
+    const size_t entityCount = asset.getRenderableEntityCount();
     for (size_t i = 0; i < entityCount; ++i) {
         Entity entity = entities[i];
         const auto inst = transformManager.getInstance(entity);
@@ -276,15 +263,14 @@ static bool rayTriangle(const float3& o, const float3& d,
 }
 
 PickingRegistry::Hit PickingRegistry::pick(
+    FilamentAsset& asset,
     View *view,
-    const utils::Entity *renderables,
-    const size_t renderableEntityCount,
     Engine *engine,
-    const float2 xy
+    const float2 coordinates
 ) {
-    updateTransforms(renderables, renderableEntityCount, engine->getTransformManager());
+    updateTransforms(asset, *engine);
 
-    auto [rayOrigin, rayDir] = castRay(view, xy);
+    auto [rayOrigin, rayDir] = castRay(view, coordinates);
 
     Hit best{ Entity{}, -1, std::numeric_limits<float>::max() };
     float3 dirNorm = normalize(rayDir);
@@ -353,22 +339,30 @@ PickingRegistry::Hit PickingRegistry::pick(
 }
 
 PickingRegistry::Hit PickingRegistry::pick_tinybvh(
+    FilamentAsset& asset,
     View *view,
-    const utils::Entity *renderables,
-    const size_t renderableEntityCount,
     Engine *engine,
-    const float2 xy
+    const float2 coordinates
 ) {
-    updateTransforms(renderables, renderableEntityCount, engine->getTransformManager());
+    Hit best{ {}, -1, std::numeric_limits<float>::max() };
+
+    if (!engine) {
+        return best;
+    }
+
+    updateTransforms(asset, *engine);
 
     auto [rayOrigin, rayDir] = castRay(
-        view, xy
+        view, coordinates
     );
 
     float3 dirNorm = normalize(rayDir);
 
+    const utils::Entity* renderables = asset.getRenderableEntities();
+    if (!renderables) return best;
+
+    const size_t renderableEntityCount = asset.getRenderableEntityCount();
     // Assume registry transforms are already updated; use provided worldTransforms.
-    Hit best{ {}, -1, std::numeric_limits<float>::max() };
     for (size_t i = 0; i < renderableEntityCount; ++i) {
         Hit hit{ {}, -1, BVH_FAR };
 
