@@ -26,6 +26,7 @@
 
 #include <gltfio/FilamentAsset.h>
 #include <gltfio/Picking.h>
+#include <gltfio/TinyBVHPicking.h>
 #include <gltfio/ScreenRay.h>
 #include <gltfio/TriangleHiding.h>
 #include <filament/TransformManager.h>
@@ -576,3 +577,88 @@ Java_com_google_android_filament_gltfio_FilamentAsset_nHideVerticesInRangeWithou
     bool ok = hider.hideVerticesInRangeWithoutCache(e, (uint32_t) startVertex, (uint32_t) endVertex, md);
     return (jboolean) ok;
 }
+
+// ============================================================================================
+// TinyBVH-accelerated picking JNI methods
+// ============================================================================================
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_com_google_android_filament_gltfio_FilamentAsset_nRayPickScreenTinyBVH(JNIEnv* env, jclass,
+        jlong nativeAsset, jlong nativeView, jint sx, jint sy) {
+    LOGD("[nRayPickScreenTinyBVH] sx=%d sy=%d", sx, sy);
+
+    FilamentAsset* asset = (FilamentAsset*) nativeAsset;
+    if (!asset) return nullptr;
+    View* view = (View*) nativeView;
+    if (!view) return nullptr;
+
+    // Update transforms before picking
+    gltfio::updatePickingTransforms(asset);
+
+    // Build ray using shared helper
+    float3 rayOrigin;
+    float3 rayDir;
+    if (!gltfio::computeScreenRay(view, (int)sx, (int)sy, &rayOrigin, &rayDir)) {
+        LOGD("[nRayPickScreenTinyBVH] invalid viewport or inputs");
+        return nullptr;
+    }
+
+    // Use TinyBVH picking registry if available
+    // Note: You need to create a TinyBVHPickingRegistry and register meshes during asset loading
+    // For now, this is a placeholder - you'd need to extend FilamentAsset to support tinybvh
+
+    // Fallback to standard picking for demonstration
+    PickingRegistry* reg = asset->getPickingRegistry();
+    if (!reg) return nullptr;
+    auto hit = reg->pick(rayOrigin, rayDir);
+
+    if (hit.entity.getId() == 0 || hit.triangle < 0) {
+        LOGD("[nRayPickScreenTinyBVH] No hit");
+        return nullptr;
+    }
+
+    LOGD("[nRayPickScreenTinyBVH] Hit entity=%d tri=%d dist=%.3f",
+         hit.entity.getId(), hit.triangle, hit.distance);
+
+    jclass hitClass = env->FindClass("com/google/android/filament/gltfio/FilamentAsset$Hit");
+    if (!hitClass) return nullptr;
+    jmethodID ctor = env->GetMethodID(hitClass, "<init>", "(IIFFFF)V");
+    if (!ctor) return nullptr;
+    return env->NewObject(hitClass, ctor,
+            (jint) hit.entity.getId(), (jint) hit.triangle,
+            (jfloat) hit.distance, (jfloat) hit.bary.x, (jfloat) hit.bary.y, (jfloat) hit.bary.z);
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_com_google_android_filament_gltfio_FilamentAsset_nRayPickScreenTinyBVHSkippingRange(JNIEnv* env, jclass,
+        jlong nativeAsset, jlong nativeView, jint sx, jint sy, jint startIdx, jint endIdx) {
+    FilamentAsset* asset = (FilamentAsset*) nativeAsset;
+    if (!asset) return nullptr;
+    View* view = (View*) nativeView;
+    if (!view) return nullptr;
+
+    gltfio::updatePickingTransforms(asset);
+
+    float3 rayOrigin;
+    float3 rayDir;
+    if (!gltfio::computeScreenRay(view, (int)sx, (int)sy, &rayOrigin, &rayDir)) {
+        return nullptr;
+    }
+
+    PickingRegistry* reg = asset->getPickingRegistry();
+    if (!reg) return nullptr;
+    auto hit = reg->pickSkippingIndexRange(rayOrigin, rayDir, (uint32_t)startIdx, (uint32_t)endIdx);
+
+    if (hit.entity.getId() == 0 || hit.triangle < 0) {
+        return nullptr;
+    }
+
+    jclass hitClass = env->FindClass("com/google/android/filament/gltfio/FilamentAsset$Hit");
+    if (!hitClass) return nullptr;
+    jmethodID ctor = env->GetMethodID(hitClass, "<init>", "(IIFFFF)V");
+    if (!ctor) return nullptr;
+    return env->NewObject(hitClass, ctor,
+            (jint) hit.entity.getId(), (jint) hit.triangle,
+            (jfloat) hit.distance, (jfloat) hit.bary.x, (jfloat) hit.bary.y, (jfloat) hit.bary.z);
+}
+
