@@ -17,6 +17,9 @@
 // Define TinyBVH implementation in this TU and include it once via project-relative path.
 #define TINYBVH_IMPLEMENTATION
 #include "../../third_party/tinybvh/tiny_bvh.h"
+#include "filament/Camera.h"
+#include "filament/Engine.h"
+#include "filament/Viewport.h"
 
 using namespace filament::math;
 
@@ -127,12 +130,15 @@ std::pair <float3, float3> castRay(
     mat4 viewMatrix,
     float3 forwardVector,
     double3 position,
-    float x,
-    float y,
-    uint32_t width,
-    uint32_t height,
+    float2 pos,
+    uint2 viewportSize,
     mat4 inverseProjection
 ) {
+    float x = pos.x;
+    float y = pos.y;
+    uint32_t width = viewportSize.x;
+    uint32_t height = viewportSize.y;
+
     double nx = static_cast<double>(x) / static_cast<double>(width) * 2.0 - 1.0;
     double ny = static_cast<double>(y) / static_cast<double>(height) * 2.0 - 1.0;
     double4 clip{ nx, ny, -1.0, 1.0 }; // z=-1 near
@@ -156,6 +162,35 @@ std::pair <float3, float3> castRay(
     }
 
     return ray;
+}
+
+std::pair<float3, float3> castRay(
+    View *view,
+    float2 coordinates
+) {
+    // CPU-side triangle picking using ray from camera.
+    Camera* cam = &view->getCamera();
+    const Viewport& viewport = view->getViewport();
+
+    // Perspective vs Ortho heuristic: perspective projection matrix has m[3][3] == 0.
+    mat4 projectionMatrix = cam->getProjectionMatrix();
+
+    mat4 inverseProjection = Camera::inverseProjection(projectionMatrix);
+    mat4 viewMatrix = cam->getViewMatrix();
+    auto forwardVector = cam->getForwardVector();
+    // Convert pixel to NDC (-1..1) where origin is bottom-left after y flip already applied.
+    auto position = cam->getPosition();
+    auto viewportSize = uint2{ static_cast<uint32_t>(viewport.width), static_cast<uint32_t>(viewport.height) };
+
+    return castRay(
+        projectionMatrix,
+        viewMatrix,
+        forwardVector,
+        position,
+        coordinates,
+        viewportSize,
+        inverseProjection
+    );
 }
 
 bool triangleIsValidAndBest(const int32_t triangleIndex, const float distance1, const float distance2) {
@@ -201,13 +236,27 @@ void PickingRegistry::buildBVHIfNeeded(Entity e) {
     }
 }
 
-void PickingRegistry::updateTransform(Entity e, const mat4f& world) {
-    mWorldTransforms[e] = world;
+void PickingRegistry::updateTransforms(
+    const utils::Entity* entities,
+    const size_t entityCount,
+    const TransformManager & transformManager
+) {
+    for (size_t i = 0; i < entityCount; ++i) {
+        Entity entity = entities[i];
+        const auto inst = transformManager.getInstance(entity);
+
+        if (!inst) continue;
+
+        // Update world transform cache.
+        // world transform is the 4x4 matrix transforming local space to world space.
+        const auto world_transform = transformManager.getWorldTransform(inst);
+        mWorldTransforms[entity] = world_transform;
+    }
 }
 
-static inline bool rayTriangle(const float3& o, const float3& d,
-                               const float3& v0, const float3& v1, const float3& v2,
-                               float& tOut, float& uOut, float& vOut) noexcept {
+static bool rayTriangle(const float3& o, const float3& d,
+                        const float3& v0, const float3& v1, const float3& v2,
+                        float& tOut, float& uOut, float& vOut) noexcept {
     const float3 e1 = v1 - v0;
     const float3 e2 = v2 - v0;
     const float3 p = cross(d, e2);
@@ -226,8 +275,17 @@ static inline bool rayTriangle(const float3& o, const float3& d,
     return true;
 }
 
+PickingRegistry::Hit PickingRegistry::pick(
+    View *view,
+    const utils::Entity *renderables,
+    const size_t renderableEntityCount,
+    Engine *engine,
+    const float2 xy
+) {
+    updateTransforms(renderables, renderableEntityCount, engine->getTransformManager());
 
-PickingRegistry::Hit PickingRegistry::pick(const float3& rayOrigin, const float3& rayDir) const {
+    auto [rayOrigin, rayDir] = castRay(view, xy);
+
     Hit best{ Entity{}, -1, std::numeric_limits<float>::max() };
     float3 dirNorm = normalize(rayDir);
 
@@ -295,14 +353,23 @@ PickingRegistry::Hit PickingRegistry::pick(const float3& rayOrigin, const float3
 }
 
 PickingRegistry::Hit PickingRegistry::pick_tinybvh(
+    View *view,
     const utils::Entity *renderables,
-    size_t renderableEntityCount,
-    float3 rayOrigin,
-    float3 rayDir
-) const {
+    const size_t renderableEntityCount,
+    Engine *engine,
+    const float2 xy
+) {
+    updateTransforms(renderables, renderableEntityCount, engine->getTransformManager());
+
+    auto [rayOrigin, rayDir] = castRay(
+        view, xy
+    );
+
     // Assume registry transforms are already updated; use provided worldTransforms.
     Hit best{ {}, -1, std::numeric_limits<float>::max() };
     for (size_t i = 0; i < renderableEntityCount; ++i) {
+        Hit hit{ {}, -1, BVH_FAR };
+
         Entity entity = renderables[i];
         const MeshData* meshData = getMesh(entity);
 
@@ -313,7 +380,6 @@ PickingRegistry::Hit PickingRegistry::pick_tinybvh(
 
         const mat4f& worldTransformMatrix = worldTransforms ? worldTransforms[i] : mat4f{};
 
-        Hit hit{ {}, -1, BVH_FAR };
         const uint32_t numTriangles = static_cast<uint32_t>(meshData->indices.size()) / 3;
 
         if (numTriangles == 0) continue;

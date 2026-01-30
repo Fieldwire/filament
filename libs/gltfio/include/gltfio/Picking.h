@@ -28,6 +28,8 @@
 
 #include <cgltf.h>
 
+#include "filament/TransformManager.h"
+#include "filament/View.h"
 using namespace filament::math;
 
 namespace filament::gltfio {
@@ -61,44 +63,39 @@ class UTILS_PUBLIC PickingRegistry {
 public:
     void registerMesh(Entity e, MeshData&& mesh);
     [[nodiscard]] const MeshData* getMesh(Entity e) const;
-    void updateTransform(Entity e, const mat4f& world);
 
     struct Hit { Entity entity; int triangle; float distance; };
-    [[nodiscard]] Hit pick(const float3& rayOrigin, const float3& rayDir) const;
-
-    [[nodiscard]] Hit pick_tinybvh(
+    void updateTransforms(
+        const utils::Entity* entities,
+        size_t entityCount,
+        const TransformManager & transformManager
+    );
+    [[nodiscard]] Hit pick(
+        View *view,
         const utils::Entity *renderables,
         size_t renderableEntityCount,
-        float3 rayOrigin,
-        float3 rayDir
-    ) const;
+        Engine *engine,
+        float2 xy
+    );
 
-    struct SceneItem { Entity e; filament::Aabb worldBounds; };
+    [[nodiscard]] Hit pick_tinybvh(
+        View *view,
+        const utils::Entity *renderables,
+        size_t renderableEntityCount,
+        Engine *engine,
+        float2 xy
+    );
+
+    struct SceneItem { Entity e; Aabb worldBounds; };
 private:
+
     void buildBVHIfNeeded(Entity e);
+
     MeshData* getMeshMutable(Entity e);
 
     std::unordered_map<Entity, MeshData, Entity::Hasher> mMeshes;
     std::unordered_map<Entity, mat4f, Entity::Hasher> mWorldTransforms;
 };
-
-// Utility: construct a world-space ray from view parameters.
-// isPerspective: true for perspective camera, false for orthographic
-// invView: inverse of the camera view matrix
-// forwardVector: camera forward direction in world space (used for ortho)
-// position: camera position in world space
-// viewPoint: a point in view space on the near plane (e.g., unprojected cursor)
-std::pair<float3, float3> castRay(
-    mat4 projectionMatrix,
-    mat4 viewMatrix,
-    float3 forwardVector,
-    double3 position,
-    float x,
-    float y,
-    uint32_t width,
-    uint32_t height,
-    mat4 inverseProjection
-);
 
 } // namespace filament::gltfio
 

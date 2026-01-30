@@ -504,87 +504,83 @@ static void createOverdrawVisualizerEntities(Engine* engine, Scene* scene, App& 
     app.scene.fullScreenTriangleIndexBuffer = indexBuffer;
 }
 
-static std::string pick_triangle(App &app, View *view, ImVec2 pos) {
-    auto registry = app.asset->getPickingRegistry();
+static std::string pick(const App &app, View *view, const ImVec2 pos) {
+    const auto start = std::chrono::high_resolution_clock::now();
+    const auto registry = app.asset->getPickingRegistry();
     if (!registry) {
-        return "(PickingRegistry2 not available)\n";
+        return "(Picking Registry not available)\n";
     }
 
     const utils::Entity* renderables = app.asset->getRenderableEntities();
-    size_t renderableEntityCount = app.asset->getRenderableEntityCount();
     if (!renderables) {
         return "(No renderable entities in refactor impl)\n";
     }
 
     // Update transforms for accuracy (could be done once per frame elsewhere).
+    const size_t renderableEntityCount = app.asset->getRenderableEntityCount();
     Engine* engine = app.engine; // guaranteed set
-    auto& transform_manager = engine->getTransformManager();
+    const float2 xy = {pos.x, pos.y};
 
-    // CPU-side triangle picking using ray from camera.
-    Camera* cam = &view->getCamera();
-    const Viewport& viewport = view->getViewport();
-
-    // Perspective vs Ortho heuristic: perspective projection matrix has m[3][3] == 0.
-    mat4 projectionMatrix = cam->getProjectionMatrix();
-
-    mat4 inverseProjection = Camera::inverseProjection(projectionMatrix);
-    mat4 viewMatrix = cam->getViewMatrix();
-    auto forwardVector = cam->getForwardVector();
-    // Convert pixel to NDC (-1..1) where origin is bottom-left after y flip already applied.
-    auto position = cam->getPosition();
-
-    for (size_t i = 0; i < renderableEntityCount; ++i) {
-        auto inst = transform_manager.getInstance(renderables[i]);
-        if (!inst) {
-            continue;
-        }
-
-        registry->updateTransform(renderables[i], transform_manager.getWorldTransform(inst));
-    }
-
-    auto [rayOrigin, rayDir] = castRay(
-        projectionMatrix,
-        viewMatrix,
-        forwardVector,
-        position,
-        pos.x,
-        pos.y,
-        viewport.width,
-        viewport.height,
-        inverseProjection
-    );
-
-
-    auto start = std::chrono::high_resolution_clock::now();
-    PickingRegistry::Hit hit = registry->pick(rayOrigin, rayDir);
-    auto end = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double, std::milli> time1 = end - start;
-
-    start = std::chrono::high_resolution_clock::now();
-    PickingRegistry::Hit hit2 = registry->pick_tinybvh(
+    const PickingRegistry::Hit hit = registry->pick(
+        view,
         renderables,
         renderableEntityCount,
-        rayOrigin,
-        rayDir
+        engine,
+        xy
     );
-    end = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double, std::milli> time2 = end - start;
+
+    const auto end = std::chrono::high_resolution_clock::now();
+    const std::chrono::duration<double, std::milli> time = end - start;
 
     if (hit.entity.getId() == 0 || hit.triangle < 0) {
-        return std::to_string(hit.entity.getId()) + " (triangle " + std::to_string(hit.triangle) + ")"
-             + " vs "
-             + std::to_string(hit2.entity.getId()) + " (triangle " + std::to_string(hit2.triangle) + ")\n";
+        return std::to_string(hit.entity.getId()) + " (triangle " + std::to_string(hit.triangle) + ")";
     }
 
     const char* name = app.asset->getName(hit.entity);
-    std::string text = name ? name : "Entity " + std::to_string(hit.entity.getId());
-    std::string output = text + " (triangle " + std::to_string(hit.triangle) + ") (Custom)\n";
-    const char* name2 = app.asset->getName(hit2.entity);
-    std::string text2 = name2 ? name2 : "Entity " + std::to_string(hit2.entity.getId());
-    std::string output2 = text2 + " (triangle " + std::to_string(hit2.triangle) + ") (TinyBVH)\n";
+    const std::string text = name ? name : "Entity " + std::to_string(hit.entity.getId());
+    const std::string output = text + " (triangle " + std::to_string(hit.triangle) + ") (Custom)\n";
 
-    auto finalOutputAndTime = output + "Picked in " + std::to_string(time1.count()) + " ms\n"
-                        + output2 + "Picked in " + std::to_string(time2.count()) + " ms\n";
+    auto finalOutputAndTime = output + "Picked in " + std::to_string(time.count()) + " ms\n";
+    return finalOutputAndTime;
+}
+
+static std::string pick2(const App &app, View *view, const ImVec2 pos) {
+    const auto start = std::chrono::high_resolution_clock::now();
+    const auto registry = app.asset->getPickingRegistry();
+    if (!registry) {
+        return "(Picking Registry not available)\n";
+    }
+
+    const utils::Entity* renderables = app.asset->getRenderableEntities();
+    if (!renderables) {
+        return "(No renderable entities in refactor impl)\n";
+    }
+
+    // Update transforms for accuracy (could be done once per frame elsewhere).
+    const size_t renderableEntityCount = app.asset->getRenderableEntityCount();
+    Engine* engine = app.engine; // guaranteed set
+    const float2 xy = {pos.x, pos.y};
+
+    const PickingRegistry::Hit hit = registry->pick_tinybvh(
+        view,
+        renderables,
+        renderableEntityCount,
+        engine,
+        xy
+    );
+
+    const auto end = std::chrono::high_resolution_clock::now();
+    const std::chrono::duration<double, std::milli> time = end - start;
+
+    if (hit.entity.getId() == 0 || hit.triangle < 0) {
+        return std::to_string(hit.entity.getId()) + " (triangle " + std::to_string(hit.triangle) + ")";
+    }
+
+    const char* name = app.asset->getName(hit.entity);
+    const std::string text = name ? name : "Entity " + std::to_string(hit.entity.getId());
+    const std::string output = text + " (triangle " + std::to_string(hit.triangle) + ") (Custom)\n";
+
+    auto finalOutputAndTime = output + "Picked in " + std::to_string(time.count()) + " ms\n";
     return finalOutputAndTime;
 }
 
@@ -600,7 +596,8 @@ static void onClick(App& app, View* view, ImVec2 pos) {
 
     std::ostringstream oss;
     oss << std::endl;
-    oss << pick_triangle(app, view, pos) << std::endl;
+    oss << pick(app, view, pos) << std::endl;
+    oss << pick2(app, view, pos) << std::endl;
 
     app.notificationText = oss.str();
 }
@@ -1255,18 +1252,12 @@ int main(int argc, char** argv) {
 
         // After updating transforms, refresh picking world transforms once per frame for all renderables.
         if (app.asset) {
-            auto reg = app.asset->getPickingRegistry();
-            if (reg) {
-                auto& tcm = engine->getTransformManager();
+            if (const auto registry = app.asset->getPickingRegistry()) {
+                const auto& transformManager = engine->getTransformManager();
                 const utils::Entity* renderables = app.asset->getRenderableEntities();
-                size_t rc = app.asset->getRenderableEntityCount();
+                const size_t entityCount = app.asset->getRenderableEntityCount();
                 if (renderables) {
-                    for (size_t i = 0; i < rc; ++i) {
-                        auto inst = tcm.getInstance(renderables[i]);
-                        if (inst) {
-                            reg->updateTransform(renderables[i], tcm.getWorldTransform(inst));
-                        }
-                    }
+                    registry->updateTransforms(renderables, entityCount, transformManager);
                 }
             }
         }
