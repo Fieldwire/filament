@@ -645,41 +645,53 @@ static void hideTriangle(App& app, View* view, const PickingRegistry::Hit& hit, 
 }
 
 static void onClick(App& app, View* view, ImVec2 pos) {
+    std::ostringstream oss;
+
+    // start time
+    auto startTime = std::chrono::high_resolution_clock::now();
     // Update transforms for accuracy (could be done once per frame elsewhere).
-    gltfio::updatePickingTransforms(app.asset);
+    updatePickingTransforms(app.asset);
 
     // CPU-side triangle picking using ray from camera via shared utility.
     float3 rayOrigin;
     float3 rayDir;
-    if (!gltfio::computeScreenRay(view, (int)pos.x, (int)pos.y, &rayOrigin, &rayDir)) {
+    if (!computeScreenRay(view, (int)pos.x, (int)pos.y, &rayOrigin, &rayDir)) {
         return;
     }
 
     auto reg = app.asset->getPickingRegistry();
-    if (reg) {
-        auto hit = reg->pick(rayOrigin, rayDir);
-        if (hit.entity.getId() != 0 && hit.triangle >= 0) {
-            const char* name = app.asset->getName(hit.entity);
-            std::ostringstream oss;
-            if (name) {
-                oss << name << " (triangle " << hit.triangle << ")";
-            } else {
-                oss << "Entity " << hit.entity.getId() << " (triangle " << hit.triangle << ")";
-            }
+    if (!reg) return;
 
-            oss << " (index " << hit.triangle * 3 << ")";
-            oss << " dist=" << std::fixed << std::setprecision(3) << hit.distance;
-            app.notificationText = oss.str();
+    auto hit = reg->pick(rayOrigin, rayDir);
 
-            // Check if Shift key is pressed to hide instead of highlight
-            ImGuiIO& io = ImGui::GetIO();
-            auto meshData = reg->getMesh(hit.entity);
-            if (io.KeyShift) {
-                hideTriangle(app, view, hit, meshData);
-            } else {
-                highlightTriangle(app, view, hit);
-            }
-        }
+    // end time
+    auto endTime = std::chrono::high_resolution_clock::now();
+    // duration in nanoseconds
+    auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(endTime - startTime).count();
+
+    if (hit.entity.getId() == 0 || hit.triangle < 0) return;
+
+    const char* name = app.asset->getName(hit.entity);
+
+    if (name) {
+        oss << name << " (triangle " << hit.triangle << ")";
+    } else {
+        oss << "Entity " << hit.entity.getId() << " (triangle " << hit.triangle << ")";
+    }
+
+    oss << " (index " << hit.triangle * 3 << ")";
+    oss << " dist=" << std::fixed << std::setprecision(3) << hit.distance << std::endl;
+    oss << "Picked in " << std::fixed << std::setprecision(4) << (duration * 1e-6) << " milliseconds";
+
+    app.notificationText = oss.str();
+
+    // Check if Shift key is pressed to hide instead of highlight
+    ImGuiIO& io = ImGui::GetIO();
+    auto meshData = reg->getMesh(hit.entity);
+    if (io.KeyShift) {
+        hideTriangle(app, view, hit, meshData);
+    } else {
+        highlightTriangle(app, view, hit);
     }
 }
 
