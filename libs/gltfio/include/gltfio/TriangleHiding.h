@@ -20,7 +20,7 @@
 #include <filament/Engine.h>
 #include <filament/IndexBuffer.h>
 #include <filament/VertexBuffer.h>
-#include <gltfio/Picking.h>
+#include <gltfio/PickingRegistry.h>
 
 #include <utils/Entity.h>
 

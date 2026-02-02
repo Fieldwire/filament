@@ -3,7 +3,7 @@
  */
 
 #include <cgltf.h> // ensure cgltf definitions available for any forward references (no heavy use here)
-#include <gltfio/Picking.h>
+#include <gltfio/PickingRegistry.h>
 
 #include <math/vec4.h>
 #include <math/mat4.h>
@@ -326,17 +326,15 @@ PickingRegistry::Hit PickingRegistry::pick(std::pair<float3, float3> *ray) const
     return best;
 }
 
-PickingRegistry::Hit * PickingRegistry::pick(View *view, const int2 &position, FilamentAsset *asset) {
+PickingRegistry::Hit *PickingRegistry::pick(View *view, const math::int2 &position, FilamentAsset *asset) const {
     if (!view || !asset) return nullptr;
     // Update transforms for accuracy (could be done once per frame elsewhere).
     updatePickingTransforms(asset);
 
-    const auto registry = asset->getPickingRegistry();
-    if (!registry) return nullptr;
-
     std::pair<math::float3, math::float3> *ray = computeScreenRay(view, position);
     if (!ray) return nullptr;
-    const auto hit = registry->pick(ray);
+
+    const auto hit = this->pick(ray);
 
     if (hit.entity.getId() == 0 || hit.triangle < 0) {
         return nullptr;

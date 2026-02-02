@@ -2,11 +2,14 @@
  * TinyBVHPicking.cpp - Implementation using tinybvh for ray-triangle intersection
  */
 
-#include <gltfio/TinyBVHPicking.h>
+#include <gltfio/TinyBVHPickingRegistry.h>
+#include <gltfio/Picking.h>
 
 // Include tinybvh (header-only library)
 #define TINYBVH_IMPLEMENTATION
-#include "../../../third_party/tinybvh.h"
+#include "../../../third_party/tinybvh/tiny_bvh.h"
+#include "gltfio/PickingUtils.h"
+#include "gltfio/ScreenRay.h"
 
 // ============================================================================
 // TINYBVH VERSION COMPATIBILITY CHECK
@@ -59,6 +62,10 @@ using namespace filament::math;
 using namespace utils;
 
 namespace filament::gltfio {
+
+using Entity = utils::Entity;
+using mat4f = math::mat4f;
+using float3 = math::float3;
 
 // Context for custom intersection callback
 struct TriangleFilterContext {
@@ -244,13 +251,30 @@ struct TinyBVHPickingRegistry::EntityMesh {
     }
 
     void buildBVH() {
-        const size_t triCount = meshData.indices.size() / 3;
+        const size_t indexCount = meshData.indices.size();
+        const size_t positionCount = meshData.positions.size();
+
+        // Validate indices & positions before building BVH
+        if (positionCount == 0) {
+            utils::slog.w << "TinyBVH build skipped: mesh has no positions" << '\n';
+            return;
+        }
+        if (indexCount == 0) {
+            utils::slog.w << "TinyBVH build skipped: mesh has no indices" << '\n';
+            return;
+        }
+        if (indexCount % 3 != 0) {
+            utils::slog.w << "TinyBVH build skipped: index count (" << indexCount << ") is not a multiple of 3" << '\n';
+            return;
+        }
+
+        const size_t triCount = indexCount / 3;
+        if (triCount == 0) {
+            utils::slog.w << "TinyBVH build skipped: zero triangles" << '\n';
+            return;
+        }
 
         // Create temporary bvhvec4 array for BVH building ONLY
-        // TinyBVH will automatically compute AABBs (bounding boxes) from these vertices:
-        // - For each triangle, it computes min/max of the 3 vertices → per-triangle AABB
-        // - Then recursively merges AABBs to build the BVH hierarchy
-        // - Only the BVH tree structure is kept; these temp vertices are freed after Build()
         std::vector<tinybvh::bvhvec4> tempTriangles;
         tempTriangles.reserve(triCount * 3);
 
@@ -259,6 +283,14 @@ struct TinyBVHPickingRegistry::EntityMesh {
             uint32_t idx0 = meshData.indices[i * 3 + 0];
             uint32_t idx1 = meshData.indices[i * 3 + 1];
             uint32_t idx2 = meshData.indices[i * 3 + 2];
+
+            // Defensive: ensure indices are within positions range
+            if (idx0 >= positionCount || idx1 >= positionCount || idx2 >= positionCount) {
+                utils::slog.w << "TinyBVH build aborted: triangle " << i << " has out-of-range vertex index(es)"
+                              << " [" << idx0 << "," << idx1 << "," << idx2 << "] vs positions count " << positionCount << '\n';
+                tempTriangles.clear();
+                return;
+            }
 
             const float3& v0 = meshData.positions[idx0];
             const float3& v1 = meshData.positions[idx1];
@@ -273,16 +305,22 @@ struct TinyBVHPickingRegistry::EntityMesh {
         bvh.Build(tempTriangles.data(), (unsigned int)triCount);
 
         // tempTriangles automatically freed here - no duplicate storage!
-        // TinyBVH only keeps the BVH tree structure, not the vertex data
 
-        utils::slog.d << "TinyBVH built for mesh: " << triCount << " triangles (no duplicate positions)" << utils::io::endl;
+        utils::slog.d << "TinyBVH built for mesh: " << triCount << " triangles (no duplicate positions)" << '\n';
     }
 };
 
 TinyBVHPickingRegistry::~TinyBVHPickingRegistry() = default;
 
+// Implement custom deleter declared in header
+void TinyBVHPickingRegistry::EntityMeshDeleter::operator()(EntityMesh* p) const {
+    delete p;
+}
+
 void TinyBVHPickingRegistry::registerMesh(Entity e, MeshData&& mesh) {
-    mMeshes[e] = std::make_unique<EntityMesh>(std::move(mesh));
+    // Construct unique_ptr with the custom deleter to match mMeshes value_type
+    std::unique_ptr<EntityMesh, EntityMeshDeleter> ptr(new EntityMesh(std::move(mesh)));
+    mMeshes[e] = std::move(ptr);
 }
 
 void TinyBVHPickingRegistry::updateTransform(Entity e, const mat4f& world) {
@@ -333,6 +371,59 @@ TinyBVHPickingRegistry::Hit TinyBVHPickingRegistry::pick(
     }
 
     return best;
+}
+
+TinyBVHPickingRegistry::Hit *TinyBVHPickingRegistry::pick(
+    View *view, const int2 &position, FilamentAsset *asset
+) {
+    updateTinybvhPickingTransforms(asset);
+
+    std::pair<math::float3, math::float3> *ray = computeScreenRay(view, position);
+
+    if (!ray) return nullptr;
+
+    const float3& rayOrigin = ray->first;
+    const float3& rayDir = ray->second;
+
+    Hit best{ Entity{}, -1, std::numeric_limits<float>::max(), {} };
+    float3 dirNorm = normalize(rayDir);
+
+    for (const auto& [entity, entityMesh] : mMeshes) {
+        // Get world transform
+        mat4f world = mat4f(1.0f); // Identity
+        auto wIt = mWorldTransforms.find(entity);
+        if (wIt != mWorldTransforms.end()) {
+            world = wIt->second;
+        }
+
+        // Transform ray to local space
+        mat4f invWorld = inverse(world);
+        float4 o4(rayOrigin, 1.0f);
+        float4 d4(dirNorm, 0.0f);
+        float3 localO = (invWorld * o4).xyz;
+        float3 localD = normalize((invWorld * d4).xyz);
+
+        // Setup tinybvh ray
+        tinybvh::Ray ray;
+        ray.O = tinybvh::bvhvec3(localO.x, localO.y, localO.z);
+        ray.D = tinybvh::bvhvec3(localD.x, localD.y, localD.z);
+        ray.hit.t = best.distance; // Only find closer hits
+
+        // Intersect with BVH
+        entityMesh->bvh.Intersect(ray);
+
+        if (ray.hit.t < best.distance && ray.hit.t > 0) {
+            best.entity = entity;
+            best.triangle = ray.hit.prim; // Triangle index
+            best.distance = ray.hit.t;
+            best.bary = float3{ ray.hit.u, ray.hit.v, 1.0f - ray.hit.u - ray.hit.v };
+        }
+    }
+
+    if (best.entity.getId() == 0 || best.triangle < 0) {
+        return nullptr;
+    }
+    return new Hit(best);
 }
 
 TinyBVHPickingRegistry::Hit TinyBVHPickingRegistry::pickSkippingIndexRange(
@@ -390,7 +481,7 @@ TinyBVHPickingRegistry::Hit TinyBVHPickingRegistry::pickSkippingIndexRange(
         utils::slog.d << "BVH Efficiency - Callback invoked: " << ctx.callbackInvocationCount
                      << " times out of " << totalTriangles << " total triangles"
                      << " (tested only " << (100.0f * ctx.callbackInvocationCount / totalTriangles) << "%)"
-                     << utils::io::endl;
+                     << '\n';
 
         // Check if we found a closer hit
         if (ray.hit.t < best.distance && ray.hit.t > 0) {
@@ -405,4 +496,3 @@ TinyBVHPickingRegistry::Hit TinyBVHPickingRegistry::pickSkippingIndexRange(
 }
 
 } // namespace filament::gltfio
-

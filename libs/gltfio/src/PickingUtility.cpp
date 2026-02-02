@@ -3,7 +3,7 @@
  */
 
 #include <cgltf.h>
-#include <gltfio/Picking.h>
+#include <gltfio/PickingRegistry.h>
 
 #include <vector>
 

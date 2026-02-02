@@ -17,7 +17,7 @@
 #include "FFilamentAsset.h"
 
 #include <gltfio/Animator.h>
-#include <gltfio/Picking.h>
+#include <gltfio/PickingRegistry.h>
 
 #include <filament/RenderableManager.h>
 #include <filament/Scene.h>
@@ -28,6 +28,7 @@
 
 #include "GltfEnums.h"
 #include "Wireframe.h"
+#include "../include/gltfio/TinyBVHPickingRegistry.h"
 
 using namespace filament;
 using namespace utils;
@@ -445,6 +446,10 @@ void FilamentAsset::addEntitiesToScene(Scene& targetScene, const Entity* entitie
 PickingRegistry* FilamentAsset::getPickingRegistry() noexcept {
     auto* impl = static_cast<FFilamentAsset*>(this);
     return &impl->mPickingRegistry;
+}
+
+TinyBVHPickingRegistry* FilamentAsset::getTinyBVHPickingRegistry() noexcept {
+    return &downcast(this)->mTinyBVHPickingRegistry;
 }
 
 } // namespace filament::gltfio

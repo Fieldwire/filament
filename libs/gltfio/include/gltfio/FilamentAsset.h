@@ -37,6 +37,7 @@ namespace filament::gltfio {
 class Animator;
 class FilamentInstance;
 class PickingRegistry; // forward declaration
+class TinyBVHPickingRegistry;
 
 /**
  * \class FilamentAsset FilamentAsset.h gltfio/FilamentAsset.h
@@ -297,6 +298,7 @@ public:
 
     /** Access the picking registry (may be empty if no meshes registered yet). */
     PickingRegistry* getPickingRegistry() noexcept;
+    TinyBVHPickingRegistry* getTinyBVHPickingRegistry() noexcept;
 
     /*! \cond PRIVATE */
 

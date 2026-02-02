@@ -2,12 +2,15 @@
  * TinyBVHPicking.h - Wrapper to use tinybvh library for accelerated ray-triangle picking
  */
 
-#ifndef GLTFIO_TINYBVH_PICKING_H
-#define GLTFIO_TINYBVH_PICKING_H
+#ifndef GLTFIO_TINYBVH_PICKING_REGISTRY_H
+#define GLTFIO_TINYBVH_PICKING_REGISTRY_H
 
-#include <gltfio/Picking.h>
+#include "Picking.h"
 #include <utils/Entity.h>
 #include <math/vec3.h>
+#include <math/mat4.h>
+#include <unordered_map>
+#include <memory>
 
 namespace filament::gltfio {
 
@@ -16,7 +19,7 @@ namespace filament::gltfio {
  * Drop-in replacement for the custom BVH in PickingRegistry.
  * Uses custom intersection callbacks to properly handle hidden triangles.
  */
-class TinyBVHPickingRegistry {
+class UTILS_PUBLIC TinyBVHPickingRegistry {
 public:
     struct Hit {
         utils::Entity entity;
@@ -49,6 +52,10 @@ public:
     Hit pick(const filament::math::float3& rayOrigin,
              const filament::math::float3& rayDir) const;
 
+    Hit *pick(
+        View *view, const int2 &position, FilamentAsset *asset
+    );
+
     /**
      * Perform ray picking, skipping triangles whose index positions fall in [startIdx, endIdx].
      * Uses custom intersection callbacks to properly handle hidden triangles that are
@@ -70,12 +77,23 @@ public:
     const MeshData* getMesh(utils::Entity e) const;
 
 private:
+    // Forward declaration; defined in TinyBVHPicking.cpp
     struct EntityMesh;
-    std::unordered_map<utils::Entity, std::unique_ptr<EntityMesh>> mMeshes;
-    std::unordered_map<utils::Entity, filament::math::mat4f> mWorldTransforms;
+    // Custom deleter so unique_ptr doesn't require a complete type here
+    struct EntityMeshDeleter {
+        void operator()(EntityMesh* p) const;
+    };
+
+    // Use utils::Entity hasher; rely on default std::equal_to for KeyEqual
+    std::unordered_map<utils::Entity,
+                       std::unique_ptr<EntityMesh, EntityMeshDeleter>,
+                       utils::Entity::Hasher> mMeshes;
+
+    std::unordered_map<utils::Entity,
+                       filament::math::mat4f,
+                       utils::Entity::Hasher> mWorldTransforms;
 };
 
 } // namespace filament::gltfio
 
-#endif // GLTFIO_TINYBVH_PICKING_H
-
+#endif // GLTFIO_TINYBVH_PICKING_REGISTRY_H

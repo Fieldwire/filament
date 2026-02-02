@@ -21,42 +21,50 @@
 #include <math/vec3.h>
 #include <math/mat4.h>
 #include <utils/Entity.h>
-#include <utils/compiler.h>
 
 #include <vector>
-#include <unordered_map>
-#include <cstdint>
 
 #include <cgltf.h>
 
-#include "FilamentAsset.h"
 #include "filament/View.h"
 
+// Forward declaration to avoid include-order issues.
 namespace filament::gltfio {
+    class FilamentAsset;
+}
 
-// Use the same alias pattern as other gltfio headers.
+namespace filament::gltfio {
+using namespace math;    
+
+
+    // Use the same alias pattern as other gltfio headers.
 using Entity = utils::Entity;
+using mat4f = mat4f;
+using float3 = float3;
+using float4 = float4;
+using float2 = float2;
+using int2 = int2;
 
 struct MeshTriangle { uint32_t i0, i1, i2; };
 
 struct MeshBVHNode {
-    filament::math::float3 min;
-    filament::math::float3 max;
+    float3 min;
+    float3 max;
     uint32_t left;   // child index OR start of triangle range if leaf
     uint32_t right;  // child index OR triangle count if leaf
     bool leaf;
 };
 
 struct MeshData {
-    std::vector<filament::math::float3> positions;   // local-space vertex positions
-    std::vector<filament::math::float3> normals;     // vertex normals
-    std::vector<filament::math::float4> tangents;    // vertex tangents (w component is handedness)
-    std::vector<filament::math::float2> uvs;         // texture coordinates (TEXCOORD_0)
-    std::vector<filament::math::float4> colors;      // vertex colors (COLOR_0)
+    std::vector<float3> positions;   // local-space vertex positions
+    std::vector<float3> normals;     // vertex normals
+    std::vector<float4> tangents;    // vertex tangents (w component is handedness)
+    std::vector<float2> uvs;         // texture coordinates (TEXCOORD_0)
+    std::vector<float4> colors;      // vertex colors (COLOR_0)
     std::vector<uint32_t> indices;                   // triangle list (3 * triCount)
     std::vector<MeshBVHNode> bvh;                    // BVH nodes (empty until built)
     std::vector<uint32_t> leafTris;                  // triangle ordinals for leaves
-    filament::Aabb localBounds;                      // un-transformed bounds
+    Aabb localBounds;                      // un-transformed bounds
     bool bvhBuilt = false;                           // BVH build flag
 
     // Flags to indicate which attributes are present
@@ -68,32 +76,6 @@ struct MeshData {
 
 // Build CPU mesh data for picking from a cgltf mesh (triangles only). localBounds left empty.
 MeshData buildMeshDataForPicking(const cgltf_mesh* mesh);
-
-class UTILS_PUBLIC PickingRegistry {
-public:
-    void registerMesh(Entity e, MeshData&& mesh);
-    [[nodiscard]] const MeshData* getMesh(Entity e) const;
-    void updateTransform(Entity e, const filament::math::mat4f& world);
-
-    struct Hit { Entity entity; int triangle; float distance; filament::math::float3 bary; };
-    [[nodiscard]] Hit pick(const filament::math::float3& rayOrigin, const filament::math::float3& rayDir) const;
-    [[nodiscard]] Hit pick(std::pair<math::float3, math::float3> *ray) const;
-    [[nodiscard]] static Hit *pick(View *view, const math::int2 &position, FilamentAsset *asset);
-    [[nodiscard]] Hit pickSkippingIndexRange(const filament::math::float3& rayOrigin,
-                                            const filament::math::float3& rayDir,
-                                            uint32_t startIdx,
-                                            uint32_t endIdx) const;
-
-    struct SceneItem { Entity e; filament::Aabb worldBounds; };
-private:
-    void buildBVHIfNeeded(Entity e);
-    MeshData* getMeshMutable(Entity e);
-
-    std::unordered_map<Entity, MeshData, Entity::Hasher> mMeshes;
-    std::unordered_map<Entity, filament::math::mat4f, Entity::Hasher> mWorldTransforms;
-};
-
 } // namespace filament::gltfio
-
 
 #endif // GLTFIO_PICKING_H

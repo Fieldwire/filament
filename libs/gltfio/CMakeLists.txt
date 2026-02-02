@@ -20,7 +20,8 @@ set(PUBLIC_HDRS
         include/gltfio/ResourceLoader.h
         include/gltfio/TextureProvider.h
         include/gltfio/math.h
-        include/gltfio/Picking.h
+        include/gltfio/PickingRegistry.h
+        include/gltfio/TinyBVHPickingRegistry.h
         include/gltfio/TriangleHiding.h
 )
 
@@ -62,7 +63,8 @@ set(SRCS
         src/extended/TangentsJobExtended.h
         src/extended/TangentSpaceMeshWrapper.cpp
         src/extended/TangentSpaceMeshWrapper.h
-        src/Picking.cpp
+        src/PickingRegistry.cpp
+        src/TinyBVHPickingRegistry.cpp
         src/PickingUtility.cpp  # moved buildMeshDataForPicking here
         src/ScreenRay.cpp
         src/TriangleHiding.cpp

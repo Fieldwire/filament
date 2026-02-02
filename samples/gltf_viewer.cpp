@@ -35,11 +35,10 @@
 
 #include <gltfio/AssetLoader.h>
 #include <gltfio/FilamentAsset.h>
-#include <gltfio/Picking.h>
+#include <gltfio/PickingRegistry.h>
 #include <gltfio/ResourceLoader.h>
 #include <gltfio/TextureProvider.h>
-#include <gltfio/ScreenRay.h>
-#include <gltfio/PickingUtils.h>
+#include <gltfio/Picking.h>
 #include <gltfio/TriangleHiding.h>
 
 // Access to internal asset structures for getting vertex/index buffers
@@ -648,40 +647,59 @@ static void onClick(App& app, View* view, ImVec2 pos) {
     std::ostringstream oss;
     FilamentAsset *asset = app.asset;
 
-    const auto startTime = std::chrono::high_resolution_clock::now();
+    const auto startTime1 = std::chrono::high_resolution_clock::now();
 
-    const auto registry = asset->getPickingRegistry();
-    if (!registry) return;
+    const auto registry1 = asset->getPickingRegistry();
+    if (!registry1) return;
 
-    const auto hit = registry->pick(view, { static_cast<int>(pos.x), static_cast<int>(pos.y) }, asset);
+    const auto hit1 = registry1->pick(view, {pos.x, pos.y}, asset);
 
-    if (!hit) {
+    if (!hit1) {
         return;
     }
 
-    const auto endTime = std::chrono::high_resolution_clock::now();
-    const auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(endTime - startTime).count();
+    const auto endTime1 = std::chrono::high_resolution_clock::now();
+    const auto duration1 = std::chrono::duration_cast<std::chrono::nanoseconds>(endTime1 - startTime1).count();
 
-    if (const char* name = asset->getName(hit->entity)) {
-        oss << name << " (triangle " << hit->triangle << ")";
+    const auto startTime2 = std::chrono::high_resolution_clock::now();
+
+    const auto registry2 = asset->getTinyBVHPickingRegistry();
+    if (!registry2) return;
+    const auto hit2 = registry2->pick(view, {pos.x, pos.y}, asset);
+
+    const auto endTime2 = std::chrono::high_resolution_clock::now();
+    const auto duration2 = std::chrono::duration_cast<std::chrono::nanoseconds>(endTime2 - startTime2).count();
+
+    if (const char* name1 = asset->getName(hit1->entity)) {
+        oss << name1 << " (triangle " << hit1->triangle << ")";
     } else {
-        oss << "Entity " << hit->entity.getId() << " (triangle " << hit->triangle << ")";
+        oss << "Entity " << hit1->entity.getId() << " (triangle " << hit1->triangle << ")";
     }
 
-    oss << " (index " << hit->triangle * 3 << ")";
-    oss << " dist=" << std::fixed << std::setprecision(3) << hit->distance << std::endl;
-    oss << "Picked in " << std::fixed << std::setprecision(4) << (duration * 1e-6) << " milliseconds";
+    oss << " (index " << hit1->triangle * 3 << ")";
+    oss << " dist=" << std::fixed << std::setprecision(3) << hit1->distance << std::endl;
+    oss << "Picked in " << std::fixed << std::setprecision(4) << (duration1 * 1e-6) << " milliseconds" << std::endl;
+
+    if (const char* name2 = asset->getName(hit2->entity)) {
+        oss << "\n" << name2 << " (triangle " << hit2->triangle << ")";
+    } else {
+        oss << "\nEntity " << hit2->entity.getId() << " (triangle " << hit2->triangle << ")";
+    }
+
+    oss << " (index " << hit2->triangle * 3 << ")";
+    oss << " dist=" << std::fixed << std::setprecision(3) << hit2->distance << std::endl;
+    oss << "Picked in " << std::fixed << std::setprecision(4) << (duration2 * 1e-6) << " milliseconds" << std::endl;
 
     app.notificationText = oss.str();
 
     // Check if Shift key is pressed to hide instead of highlight
     const ImGuiIO& io = ImGui::GetIO();
 
-    const auto meshData = registry->getMesh(hit->entity);
+    const auto meshData = registry1->getMesh(hit1->entity);
     if (io.KeyShift) {
-        hideTriangle(app, view, *hit, meshData);
+        hideTriangle(app, view, *hit1, meshData);
     } else {
-        highlightTriangle(app, view, *hit);
+        highlightTriangle(app, view, *hit1);
     }
 }
 

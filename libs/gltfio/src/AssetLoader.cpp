@@ -56,7 +56,7 @@
 #include <tsl/robin_map.h>
 
 #include <cgltf.h>
-#include <gltfio/Picking.h>
+#include <gltfio/PickingRegistry.h>
 
 #include "downcast.h"
 
@@ -902,6 +902,7 @@ void FAssetLoader::createRenderable(const cgltf_node* node, Entity entity, const
             meshData.localBounds.min = aabb.min;
             meshData.localBounds.max = aabb.max;
             fAsset->mPickingRegistry.registerMesh(entity, std::move(meshData));
+            fAsset->mTinyBVHPickingRegistry.registerMesh(entity, std::move(meshData));
         }
     }
 

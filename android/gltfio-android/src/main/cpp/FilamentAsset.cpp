@@ -25,7 +25,7 @@
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 #include <gltfio/FilamentAsset.h>
-#include <gltfio/Picking.h>
+#include <gltfio/PickingRegistry.h>
 #include <gltfio/TinyBVHPicking.h>
 #include <gltfio/ScreenRay.h>
 #include <gltfio/TriangleHiding.h>

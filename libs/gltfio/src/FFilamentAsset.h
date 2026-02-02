@@ -20,7 +20,8 @@
 #include <gltfio/FilamentAsset.h>
 #include <gltfio/NodeManager.h>
 #include <gltfio/TrsTransformManager.h>
-#include <gltfio/Picking.h>
+#include <gltfio/PickingRegistry.h>
+#include <gltfio/TinyBVHPickingRegistry.h>
 
 #include <filament/Engine.h>
 #include <filament/IndexBuffer.h>
@@ -479,6 +480,7 @@ struct FFilamentAsset : public FilamentAsset {
     std::variant<ResourceInfo, ResourceInfoExtended> mResourceInfo;
 
     PickingRegistry mPickingRegistry; // per-asset picking registry
+    TinyBVHPickingRegistry mTinyBVHPickingRegistry;
 };
 
 FILAMENT_DOWNCAST(FilamentAsset)

@@ -19,7 +19,7 @@
 
 #include "math/norm.h"
 
-#include <gltfio/Picking.h>
+#include <gltfio/PickingRegistry.h>
 #include <gltfio/FilamentAsset.h>
 #include "FFilamentAsset.h"
 
