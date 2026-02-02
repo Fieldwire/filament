@@ -18,6 +18,9 @@
 #include <limits>
 #include <stack>
 
+#include "gltfio/PickingUtils.h"
+#include "gltfio/ScreenRay.h"
+
 using namespace filament::math;
 
 namespace filament::gltfio {
@@ -248,6 +251,98 @@ PickingRegistry::Hit PickingRegistry::pick(const float3& rayOrigin, const float3
         }
     }
     return best;
+}
+
+PickingRegistry::Hit PickingRegistry::pick(std::pair<float3, float3> *ray) const {
+    if (!ray) {
+        return { Entity{}, -1, std::numeric_limits<float>::max(), {} };
+    }
+    const float3& rayOrigin = ray->first;
+    const float3& rayDir = ray->second;
+    Hit best{ Entity{}, -1, std::numeric_limits<float>::max(), {} };
+    float3 dirNorm = normalize(rayDir);
+
+    for (auto it = mMeshes.begin(); it != mMeshes.end(); ++it) {
+        Entity entity = it->first;
+        MeshData const& mesh = it->second;
+        mat4f world; // identity init (default constructor may not zero)
+        auto wIt = mWorldTransforms.find(entity);
+        if (wIt != mWorldTransforms.end()) {
+            world = wIt->second;
+        }
+        mat4f invWorld = inverse(world);
+        float4 o4(rayOrigin, 1.0f);
+        float4 d4(dirNorm, 0.0f);
+        float3 localO = (invWorld * o4).xyz;
+        float3 localD = normalize((invWorld * d4).xyz);
+        float3 localDInv{ 1.0f / localD.x, 1.0f / localD.y, 1.0f / localD.z };
+
+        if (!intersectAabb(localO, localDInv, mesh.localBounds.min, mesh.localBounds.max, best.distance)) {
+            continue;
+        }
+        MeshData const* mdConst = &mesh;
+        if (!mdConst->bvhBuilt) {
+            const_cast<PickingRegistry*>(this)->buildBVHIfNeeded(entity);
+            mdConst = getMesh(entity);
+            if (!mdConst) continue;
+        }
+        MeshData const& md = *mdConst;
+        if (md.bvh.empty()) {
+            continue;
+        }
+        struct StackNode { uint32_t index; };
+        StackNode stack[128];
+        int sp = 0;
+        stack[sp++] = { 0u };
+        while (sp) {
+            uint32_t ni = stack[--sp].index;
+            const MeshBVHNode& node = md.bvh[ni];
+            if (!intersectAabb(localO, localDInv, node.min, node.max, best.distance)) {
+                continue;
+            }
+            if (node.leaf) {
+                uint32_t start = node.left;
+                uint32_t count = node.right;
+                for (uint32_t i = 0; i < count; ++i) {
+                    uint32_t triOrd = md.leafTris[start + i];
+                    uint32_t base = triOrd * 3;
+                    const float3& v0 = md.positions[ md.indices[base + 0] ];
+                    const float3& v1 = md.positions[ md.indices[base + 1] ];
+                    const float3& v2 = md.positions[ md.indices[base + 2] ];
+                    float t, u, v;
+                    if (rayTriangle(localO, localD, v0, v1, v2, t, u, v) && t < best.distance) {
+                        best.entity = entity;
+                        best.triangle = (int)triOrd;
+                        best.distance = t;
+                        best.bary = float3{ u, v, 1.0f - u - v };
+                    }
+                }
+            } else {
+                stack[sp++] = { node.left };
+                stack[sp++] = { node.right };
+            }
+        }
+    }
+    return best;
+}
+
+PickingRegistry::Hit * PickingRegistry::pick(View *view, const int2 &position, FilamentAsset *asset) {
+    if (!view || !asset) return nullptr;
+    // Update transforms for accuracy (could be done once per frame elsewhere).
+    updatePickingTransforms(asset);
+
+    const auto registry = asset->getPickingRegistry();
+    if (!registry) return nullptr;
+
+    std::pair<math::float3, math::float3> *ray = computeScreenRay(view, position);
+    if (!ray) return nullptr;
+    const auto hit = registry->pick(ray);
+
+    if (hit.entity.getId() == 0 || hit.triangle < 0) {
+        return nullptr;
+    }
+
+    return new Hit(hit);
 }
 
 PickingRegistry::Hit PickingRegistry::pickSkippingIndexRange(const float3& rayOrigin,

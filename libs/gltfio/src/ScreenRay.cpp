@@ -68,5 +68,50 @@ bool computeScreenRay(filament::View* view, int sx, int sy,
     return true;
 }
 
-} // namespace filament::gltfio
+std::pair<math::float3, math::float3> *computeScreenRay(View* view, math::int2 position) {
 
+    auto sx = position.x;
+    auto sy = position.y;
+
+    math::float3 outOrigin;
+    math::float3 outDirection;
+
+    if (!view) return nullptr;
+    Camera* cam = &view->getCamera();
+    if (!cam) return nullptr;
+
+    const Viewport& vp = view->getViewport();
+    if (vp.width <= 0 || vp.height <= 0) return nullptr;
+
+    double nx = (double(sx) / double(vp.width)) * 2.0 - 1.0;
+    double ny = (double(sy) / double(vp.height)) * 2.0 - 1.0;
+
+    using namespace filament::math;
+
+    mat4 proj = cam->getProjectionMatrix();
+    bool isPerspective = std::abs(proj[3][3]) < 1e-6;
+
+    mat4 invProj = Camera::inverseProjection(proj);
+    mat4 viewM = cam->getViewMatrix();
+    mat4 invView = inverse(viewM);
+
+    if (isPerspective) {
+        double4 clip{ nx, ny, -1.0, 1.0 }; // near plane
+        double4 viewSpace = invProj * clip;
+        auto viewPoint = float3( (float)viewSpace.x, (float)viewSpace.y, (float)viewSpace.z );
+        float3 dirView = normalize(viewPoint);
+        float3 dirWorld = normalize( (invView * float4(dirView, 0)).xyz );
+        outOrigin = cam->getPosition();
+        outDirection = dirWorld;
+    } else {
+        double4 clip{ nx, ny, -1.0, 1.0 };
+        double4 viewSpace = invProj * clip;
+        auto viewPoint = float3( (float)viewSpace.x, (float)viewSpace.y, (float)viewSpace.z );
+        float3 worldPoint = (invView * float4(viewPoint, 1)).xyz;
+        outOrigin = worldPoint;
+        outDirection = normalize(cam->getForwardVector());
+    }
+    return new std::pair(outOrigin, outDirection);
+}
+
+} // namespace filament::gltfio

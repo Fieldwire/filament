@@ -12,6 +12,6 @@ namespace gltfio {
 bool computeScreenRay(filament::View* view, int sx, int sy,
                       filament::math::float3* outOrigin,
                       filament::math::float3* outDirection);
+std::pair<math::float3, math::float3> *computeScreenRay(View* view, math::int2 position);
 } // namespace gltfio
 } // namespace filament
-

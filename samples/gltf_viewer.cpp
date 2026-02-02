@@ -646,52 +646,42 @@ static void hideTriangle(App& app, View* view, const PickingRegistry::Hit& hit, 
 
 static void onClick(App& app, View* view, ImVec2 pos) {
     std::ostringstream oss;
+    FilamentAsset *asset = app.asset;
 
-    // start time
-    auto startTime = std::chrono::high_resolution_clock::now();
-    // Update transforms for accuracy (could be done once per frame elsewhere).
-    updatePickingTransforms(app.asset);
+    const auto startTime = std::chrono::high_resolution_clock::now();
 
-    // CPU-side triangle picking using ray from camera via shared utility.
-    float3 rayOrigin;
-    float3 rayDir;
-    if (!computeScreenRay(view, (int)pos.x, (int)pos.y, &rayOrigin, &rayDir)) {
+    const auto registry = asset->getPickingRegistry();
+    if (!registry) return;
+
+    const auto hit = registry->pick(view, { static_cast<int>(pos.x), static_cast<int>(pos.y) }, asset);
+
+    if (!hit) {
         return;
     }
 
-    auto reg = app.asset->getPickingRegistry();
-    if (!reg) return;
+    const auto endTime = std::chrono::high_resolution_clock::now();
+    const auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(endTime - startTime).count();
 
-    auto hit = reg->pick(rayOrigin, rayDir);
-
-    // end time
-    auto endTime = std::chrono::high_resolution_clock::now();
-    // duration in nanoseconds
-    auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(endTime - startTime).count();
-
-    if (hit.entity.getId() == 0 || hit.triangle < 0) return;
-
-    const char* name = app.asset->getName(hit.entity);
-
-    if (name) {
-        oss << name << " (triangle " << hit.triangle << ")";
+    if (const char* name = asset->getName(hit->entity)) {
+        oss << name << " (triangle " << hit->triangle << ")";
     } else {
-        oss << "Entity " << hit.entity.getId() << " (triangle " << hit.triangle << ")";
+        oss << "Entity " << hit->entity.getId() << " (triangle " << hit->triangle << ")";
     }
 
-    oss << " (index " << hit.triangle * 3 << ")";
-    oss << " dist=" << std::fixed << std::setprecision(3) << hit.distance << std::endl;
+    oss << " (index " << hit->triangle * 3 << ")";
+    oss << " dist=" << std::fixed << std::setprecision(3) << hit->distance << std::endl;
     oss << "Picked in " << std::fixed << std::setprecision(4) << (duration * 1e-6) << " milliseconds";
 
     app.notificationText = oss.str();
 
     // Check if Shift key is pressed to hide instead of highlight
-    ImGuiIO& io = ImGui::GetIO();
-    auto meshData = reg->getMesh(hit.entity);
+    const ImGuiIO& io = ImGui::GetIO();
+
+    const auto meshData = registry->getMesh(hit->entity);
     if (io.KeyShift) {
-        hideTriangle(app, view, hit, meshData);
+        hideTriangle(app, view, *hit, meshData);
     } else {
-        highlightTriangle(app, view, hit);
+        highlightTriangle(app, view, *hit);
     }
 }
 

@@ -29,6 +29,9 @@
 
 #include <cgltf.h>
 
+#include "FilamentAsset.h"
+#include "filament/View.h"
+
 namespace filament::gltfio {
 
 // Use the same alias pattern as other gltfio headers.
@@ -74,6 +77,8 @@ public:
 
     struct Hit { Entity entity; int triangle; float distance; filament::math::float3 bary; };
     [[nodiscard]] Hit pick(const filament::math::float3& rayOrigin, const filament::math::float3& rayDir) const;
+    [[nodiscard]] Hit pick(std::pair<math::float3, math::float3> *ray) const;
+    [[nodiscard]] static Hit *pick(View *view, const math::int2 &position, FilamentAsset *asset);
     [[nodiscard]] Hit pickSkippingIndexRange(const filament::math::float3& rayOrigin,
                                             const filament::math::float3& rayDir,
                                             uint32_t startIdx,
