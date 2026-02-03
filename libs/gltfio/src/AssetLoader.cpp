@@ -901,8 +901,13 @@ void FAssetLoader::createRenderable(const cgltf_node* node, Entity entity, const
         if (!meshData.positions.empty() && !meshData.indices.empty()) {
             meshData.localBounds.min = aabb.min;
             meshData.localBounds.max = aabb.max;
+
+            // Make a copy for TinyBVH before moving to PickingRegistry
+            // (can't std::move twice - the second move would get empty data!)
+            MeshData meshDataCopy = meshData; // Copy for TinyBVH
+
             fAsset->mPickingRegistry.registerMesh(entity, std::move(meshData));
-            fAsset->mTinyBVHPickingRegistry.registerMesh(entity, std::move(meshData));
+            fAsset->mTinyBVHPickingRegistry.registerMesh(entity, std::move(meshDataCopy));
         }
     }
 

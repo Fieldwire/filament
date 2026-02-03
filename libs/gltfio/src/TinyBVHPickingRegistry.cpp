@@ -243,8 +243,10 @@ static bool customTriangleIntersectWithFiltering(tinybvh::Ray& ray, const unsign
 struct TinyBVHPickingRegistry::EntityMesh {
     MeshData meshData;
     tinybvh::BVH bvh;
-    // NOTE: We don't store duplicate positions! TinyBVH keeps a reference to the data
-    // we pass to Build(), and we can access positions from meshData.positions
+    std::vector<tinybvh::bvhvec4> bvhTriangles; // MUST persist - BVH stores pointer to this!
+
+    // IMPORTANT: TinyBVH stores a pointer to the vertex data passed to Build().
+    // We MUST keep bvhTriangles alive for the lifetime of the BVH!
 
     EntityMesh(MeshData&& md) : meshData(std::move(md)) {
         buildBVH();
@@ -274,9 +276,9 @@ struct TinyBVHPickingRegistry::EntityMesh {
             return;
         }
 
-        // Create temporary bvhvec4 array for BVH building ONLY
-        std::vector<tinybvh::bvhvec4> tempTriangles;
-        tempTriangles.reserve(triCount * 3);
+        // Store triangle data persistently - BVH needs this to stay alive!
+        bvhTriangles.clear();
+        bvhTriangles.reserve(triCount * 3);
 
         // Convert mesh data to tinybvh format (vec4 per vertex)
         for (size_t i = 0; i < triCount; ++i) {
@@ -288,7 +290,7 @@ struct TinyBVHPickingRegistry::EntityMesh {
             if (idx0 >= positionCount || idx1 >= positionCount || idx2 >= positionCount) {
                 utils::slog.w << "TinyBVH build aborted: triangle " << i << " has out-of-range vertex index(es)"
                               << " [" << idx0 << "," << idx1 << "," << idx2 << "] vs positions count " << positionCount << '\n';
-                tempTriangles.clear();
+                bvhTriangles.clear();
                 return;
             }
 
@@ -296,17 +298,16 @@ struct TinyBVHPickingRegistry::EntityMesh {
             const float3& v1 = meshData.positions[idx1];
             const float3& v2 = meshData.positions[idx2];
 
-            tempTriangles.push_back(tinybvh::bvhvec4(v0.x, v0.y, v0.z, 0));
-            tempTriangles.push_back(tinybvh::bvhvec4(v1.x, v1.y, v1.z, 0));
-            tempTriangles.push_back(tinybvh::bvhvec4(v2.x, v2.y, v2.z, 0));
+            bvhTriangles.push_back(tinybvh::bvhvec4(v0.x, v0.y, v0.z, 0));
+            bvhTriangles.push_back(tinybvh::bvhvec4(v1.x, v1.y, v1.z, 0));
+            bvhTriangles.push_back(tinybvh::bvhvec4(v2.x, v2.y, v2.z, 0));
         }
 
-        // Build the BVH
-        bvh.Build(tempTriangles.data(), (unsigned int)triCount);
+        // Build the BVH - it stores a pointer to bvhTriangles!
+        bvh.Build(bvhTriangles.data(), (unsigned int)triCount);
 
-        // tempTriangles automatically freed here - no duplicate storage!
-
-        utils::slog.d << "TinyBVH built for mesh: " << triCount << " triangles (no duplicate positions)" << '\n';
+        utils::slog.d << "TinyBVH built for mesh: " << triCount << " triangles ("
+                      << (bvhTriangles.size() * sizeof(tinybvh::bvhvec4)) << " bytes for BVH vertices)" << '\n';
     }
 };
 
@@ -339,6 +340,27 @@ TinyBVHPickingRegistry::Hit TinyBVHPickingRegistry::pick(
     float3 dirNorm = normalize(rayDir);
 
     for (const auto& [entity, entityMesh] : mMeshes) {
+        // Safety checks: ensure BVH was built successfully
+        if (!entityMesh) {
+            utils::slog.e << "Skipping entity - entityMesh is null!" << '\n';
+            continue;
+        }
+
+        if (entityMesh->bvhTriangles.empty()) {
+            utils::slog.w << "Skipping entity - BVH not built (no triangle data)" << '\n';
+            continue;
+        }
+
+        if (entityMesh->bvh.bvhNode == nullptr) {
+            utils::slog.e << "Skipping entity - BVH nodes not allocated!" << '\n';
+            continue;
+        }
+
+        if (entityMesh->meshData.indices.empty() || entityMesh->meshData.positions.empty()) {
+            utils::slog.w << "Skipping entity - mesh has no geometry data" << '\n';
+            continue;
+        }
+
         // Get world transform
         mat4f world = mat4f(1.0f); // Identity
         auto wIt = mWorldTransforms.find(entity);
@@ -353,11 +375,10 @@ TinyBVHPickingRegistry::Hit TinyBVHPickingRegistry::pick(
         float3 localO = (invWorld * o4).xyz;
         float3 localD = normalize((invWorld * d4).xyz);
 
-        // Setup tinybvh ray
-        tinybvh::Ray ray;
-        ray.O = tinybvh::bvhvec3(localO.x, localO.y, localO.z);
-        ray.D = tinybvh::bvhvec3(localD.x, localD.y, localD.z);
-        ray.hit.t = best.distance; // Only find closer hits
+        // Setup tinybvh ray - use constructor to initialize rD properly
+        tinybvh::bvhvec3 origin(localO.x, localO.y, localO.z);
+        tinybvh::bvhvec3 direction(localD.x, localD.y, localD.z);
+        tinybvh::Ray ray(origin, direction, best.distance);
 
         // Intersect with BVH
         entityMesh->bvh.Intersect(ray);
@@ -376,24 +397,67 @@ TinyBVHPickingRegistry::Hit TinyBVHPickingRegistry::pick(
 TinyBVHPickingRegistry::Hit *TinyBVHPickingRegistry::pick(
     View *view, const int2 &position, FilamentAsset *asset
 ) {
+    utils::slog.d << "TinyBVH pick called at screen position (" << position.x << ", " << position.y << ")" << '\n';
+
     updateTinybvhPickingTransforms(asset);
 
-    std::pair<math::float3, math::float3> *ray = computeScreenRay(view, position);
+    std::pair<math::float3, math::float3> *rayPtr = computeScreenRay(view, position);
 
-    if (!ray) return nullptr;
+    if (!rayPtr) {
+        utils::slog.w << "TinyBVH pick failed: computeScreenRay returned null" << '\n';
+        return nullptr;
+    }
 
-    const float3& rayOrigin = ray->first;
-    const float3& rayDir = ray->second;
+    // Extract ray data and delete the allocated pair to prevent memory leak
+    const float3 rayOrigin = rayPtr->first;
+    const float3 rayDir = rayPtr->second;
+    delete rayPtr;
+
+    utils::slog.i << "=== TinyBVH Pick Debug ===" << '\n';
+    utils::slog.i << "Ray origin: (" << rayOrigin.x << ", " << rayOrigin.y << ", " << rayOrigin.z << ")" << '\n';
+    utils::slog.i << "Ray direction: (" << rayDir.x << ", " << rayDir.y << ", " << rayDir.z << ")" << '\n';
+    utils::slog.i << "Number of meshes registered: " << mMeshes.size() << '\n';
+    utils::slog.i << "Number of transforms: " << mWorldTransforms.size() << '\n';
 
     Hit best{ Entity{}, -1, std::numeric_limits<float>::max(), {} };
     float3 dirNorm = normalize(rayDir);
 
+    int entityIndex = 0;
     for (const auto& [entity, entityMesh] : mMeshes) {
+        entityIndex++;
+        utils::slog.d << "  Entity " << entityIndex << " (ID=" << entity.getId() << "): Checking..." << '\n';
+
+        // Safety checks: ensure BVH was built successfully
+        if (!entityMesh) {
+            utils::slog.e << "    SKIP: entityMesh is null!" << '\n';
+            continue;
+        }
+
+        if (entityMesh->bvhTriangles.empty()) {
+            utils::slog.w << "    SKIP: BVH not built (no triangle data)" << '\n';
+            continue;
+        }
+
+        if (entityMesh->bvh.bvhNode == nullptr) {
+            utils::slog.e << "    SKIP: BVH nodes not allocated!" << '\n';
+            continue;
+        }
+
+        if (entityMesh->meshData.indices.empty() || entityMesh->meshData.positions.empty()) {
+            utils::slog.w << "    SKIP: mesh has no geometry data" << '\n';
+            continue;
+        }
+
+        utils::slog.d << "    Mesh: " << entityMesh->meshData.positions.size() << " verts, "
+                      << (entityMesh->meshData.indices.size() / 3) << " tris" << '\n';
+
         // Get world transform
         mat4f world = mat4f(1.0f); // Identity
         auto wIt = mWorldTransforms.find(entity);
         if (wIt != mWorldTransforms.end()) {
             world = wIt->second;
+        } else {
+            utils::slog.w << "    WARNING: No transform found, using identity" << '\n';
         }
 
         // Transform ray to local space
@@ -403,26 +467,46 @@ TinyBVHPickingRegistry::Hit *TinyBVHPickingRegistry::pick(
         float3 localO = (invWorld * o4).xyz;
         float3 localD = normalize((invWorld * d4).xyz);
 
-        // Setup tinybvh ray
-        tinybvh::Ray ray;
-        ray.O = tinybvh::bvhvec3(localO.x, localO.y, localO.z);
-        ray.D = tinybvh::bvhvec3(localD.x, localD.y, localD.z);
-        ray.hit.t = best.distance; // Only find closer hits
+        utils::slog.d << "    Local ray origin: (" << localO.x << ", " << localO.y << ", " << localO.z << ")" << '\n';
+        utils::slog.d << "    Local ray dir: (" << localD.x << ", " << localD.y << ", " << localD.z << ")" << '\n';
+
+        // Setup tinybvh ray - MUST use constructor to properly initialize rD (reciprocal direction)!
+        // The constructor normalizes D and computes rD = 1/D which is required for BVH traversal
+        tinybvh::bvhvec3 origin(localO.x, localO.y, localO.z);
+        tinybvh::bvhvec3 direction(localD.x, localD.y, localD.z);
+        tinybvh::Ray bvhRay(origin, direction, best.distance);
+
+        utils::slog.d << "    BVH has " << entityMesh->bvhTriangles.size() / 3 << " triangles" << '\n';
+        utils::slog.d << "    BVH node count: " << (entityMesh->bvh.bvhNode ? "allocated" : "NULL") << '\n';
+        utils::slog.d << "    Ray.hit.t initialized to: " << bvhRay.hit.t << '\n';
 
         // Intersect with BVH
-        entityMesh->bvh.Intersect(ray);
+        entityMesh->bvh.Intersect(bvhRay);
 
-        if (ray.hit.t < best.distance && ray.hit.t > 0) {
+        utils::slog.d << "    BVH Intersect result: t=" << bvhRay.hit.t << " (best so far: " << best.distance << ")" << '\n';
+        utils::slog.d << "    BVH hit.prim=" << bvhRay.hit.prim << ", hit.u=" << bvhRay.hit.u << ", hit.v=" << bvhRay.hit.v << '\n';
+
+        if (bvhRay.hit.t < best.distance && bvhRay.hit.t > 0) {
+            utils::slog.i << "    ✓ NEW BEST HIT: tri=" << bvhRay.hit.prim << ", t=" << bvhRay.hit.t << '\n';
             best.entity = entity;
-            best.triangle = ray.hit.prim; // Triangle index
-            best.distance = ray.hit.t;
-            best.bary = float3{ ray.hit.u, ray.hit.v, 1.0f - ray.hit.u - ray.hit.v };
+            best.triangle = bvhRay.hit.prim; // Triangle index
+            best.distance = bvhRay.hit.t;
+            best.bary = float3{ bvhRay.hit.u, bvhRay.hit.v, 1.0f - bvhRay.hit.u - bvhRay.hit.v };
+        } else if (bvhRay.hit.t > 0) {
+            utils::slog.d << "    Hit found but farther than current best" << '\n';
+        } else {
+            utils::slog.d << "    No intersection with this entity" << '\n';
         }
     }
 
     if (best.entity.getId() == 0 || best.triangle < 0) {
+        utils::slog.d << "TinyBVH pick: No hit found (ray missed all objects)" << '\n';
         return nullptr;
     }
+
+    utils::slog.d << "TinyBVH pick HIT: entity=" << best.entity.getId()
+                  << ", triangle=" << best.triangle
+                  << ", distance=" << best.distance << '\n';
     return new Hit(best);
 }
 
@@ -438,6 +522,27 @@ TinyBVHPickingRegistry::Hit TinyBVHPickingRegistry::pickSkippingIndexRange(
     }
 
     for (const auto& [entity, entityMesh] : mMeshes) {
+        // Safety checks: ensure BVH was built successfully
+        if (!entityMesh) {
+            utils::slog.e << "Skipping entity - entityMesh is null!" << '\n';
+            continue;
+        }
+
+        if (entityMesh->bvhTriangles.empty()) {
+            utils::slog.w << "Skipping entity - BVH not built (no triangle data)" << '\n';
+            continue;
+        }
+
+        if (entityMesh->bvh.bvhNode == nullptr) {
+            utils::slog.e << "Skipping entity - BVH nodes not allocated!" << '\n';
+            continue;
+        }
+
+        if (entityMesh->meshData.indices.empty() || entityMesh->meshData.positions.empty()) {
+            utils::slog.w << "Skipping entity - mesh has no geometry data" << '\n';
+            continue;
+        }
+
         // Get world transform
         mat4f world = mat4f(1.0f);
         auto wIt = mWorldTransforms.find(entity);
@@ -458,11 +563,10 @@ TinyBVHPickingRegistry::Hit TinyBVHPickingRegistry::pickSkippingIndexRange(
         ctx.skipEndIdx = endIdx;
         ctx.meshData = &entityMesh->meshData;  // Direct reference - no duplication!
 
-        // Setup tinybvh ray
-        tinybvh::Ray ray;
-        ray.O = tinybvh::bvhvec3(localO.x, localO.y, localO.z);
-        ray.D = tinybvh::bvhvec3(localD.x, localD.y, localD.z);
-        ray.hit.t = best.distance;
+        // Setup tinybvh ray - use constructor to initialize rD properly
+        tinybvh::bvhvec3 origin(localO.x, localO.y, localO.z);
+        tinybvh::bvhvec3 direction(localD.x, localD.y, localD.z);
+        tinybvh::Ray ray(origin, direction, best.distance);
         ray.hit.auxData = &ctx;  // Pass context to callback
 
         // Temporarily set custom intersection callback

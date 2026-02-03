@@ -647,29 +647,93 @@ static void onClick(App& app, View* view, ImVec2 pos) {
     std::ostringstream oss;
     FilamentAsset *asset = app.asset;
 
-    const auto startTime1 = std::chrono::high_resolution_clock::now();
+    std::cout << "\n=== onClick at screen pos (" << pos.x << ", " << pos.y << ") ===" << std::endl;
 
     const auto registry1 = asset->getPickingRegistry();
     if (!registry1) return;
 
+    const auto registry2 = asset->getTinyBVHPickingRegistry();
+
+    // Compare both registries
+    std::cout << "\n--- REGISTRY COMPARISON ---" << std::endl;
+
+    // Check renderables in the asset
+    size_t renderableCount = asset->getRenderableEntityCount();
+    const utils::Entity* renderables = asset->getRenderableEntities();
+    std::cout << "Asset has " << renderableCount << " renderable entities" << std::endl;
+
+    // Check what's in each registry
+    std::cout << "TinyBVHPickingRegistry: "
+              << (registry2 ? std::to_string(registry2->getMeshCount()) : "NULL")
+              << " meshes" << std::endl;
+
+    // Check each renderable entity
+    if (renderables && renderableCount > 0) {
+        std::cout << "\nChecking entities in registries:" << std::endl;
+        for (size_t i = 0; i < renderableCount; ++i) {
+            utils::Entity e = renderables[i];
+            std::cout << "  Entity " << i << " (ID=" << e.getId() << "): ";
+
+            // Check if in PickingRegistry
+            const auto* meshData1 = registry1->getMesh(e);
+            if (meshData1) {
+                std::cout << "PickingRegistry ✓ (" << meshData1->positions.size() << " verts, "
+                         << (meshData1->indices.size() / 3) << " tris)";
+            } else {
+                std::cout << "PickingRegistry ✗";
+            }
+
+            std::cout << ", ";
+
+            // Check if in TinyBVHPickingRegistry
+            if (registry2) {
+                const auto* meshData2 = registry2->getMesh(e);
+                if (meshData2) {
+                    std::cout << "TinyBVH ✓ (" << meshData2->positions.size() << " verts, "
+                             << (meshData2->indices.size() / 3) << " tris)";
+                } else {
+                    std::cout << "TinyBVH ✗";
+                }
+            } else {
+                std::cout << "TinyBVH registry NULL";
+            }
+
+            std::cout << std::endl;
+        }
+    }
+    std::cout << "--- END COMPARISON ---\n" << std::endl;
+
+    const auto startTime1 = std::chrono::high_resolution_clock::now();
     const auto hit1 = registry1->pick(view, {pos.x, pos.y}, asset);
 
     if (!hit1) {
+        std::cout << "PickingRegistry returned NO HIT" << std::endl;
         return;
     }
+
+    std::cout << "PickingRegistry HIT: entity=" << hit1->entity.getId()
+              << ", triangle=" << hit1->triangle
+              << ", distance=" << hit1->distance << std::endl;
 
     const auto endTime1 = std::chrono::high_resolution_clock::now();
     const auto duration1 = std::chrono::duration_cast<std::chrono::nanoseconds>(endTime1 - startTime1).count();
 
     const auto startTime2 = std::chrono::high_resolution_clock::now();
 
-    const auto registry2 = asset->getTinyBVHPickingRegistry();
-    if (!registry2) return;
-    const auto hit2 = registry2->pick(view, {pos.x, pos.y}, asset);
+    const auto hit2 = registry2 ? registry2->pick(view, {pos.x, pos.y}, asset) : nullptr;
+
+    if (hit2) {
+        std::cout << "TinyBVH HIT: entity=" << hit2->entity.getId()
+                  << ", triangle=" << hit2->triangle
+                  << ", distance=" << hit2->distance << std::endl;
+    } else {
+        std::cout << "TinyBVH returned NO HIT" << std::endl;
+    }
 
     const auto endTime2 = std::chrono::high_resolution_clock::now();
     const auto duration2 = std::chrono::duration_cast<std::chrono::nanoseconds>(endTime2 - startTime2).count();
 
+    // Display hit1 (PickingRegistry) results
     if (const char* name1 = asset->getName(hit1->entity)) {
         oss << name1 << " (triangle " << hit1->triangle << ")";
     } else {
@@ -680,15 +744,26 @@ static void onClick(App& app, View* view, ImVec2 pos) {
     oss << " dist=" << std::fixed << std::setprecision(3) << hit1->distance << std::endl;
     oss << "Picked in " << std::fixed << std::setprecision(4) << (duration1 * 1e-6) << " milliseconds" << std::endl;
 
-    if (const char* name2 = asset->getName(hit2->entity)) {
-        oss << "\n" << name2 << " (triangle " << hit2->triangle << ")";
-    } else {
-        oss << "\nEntity " << hit2->entity.getId() << " (triangle " << hit2->triangle << ")";
-    }
+    // Display hit2 (TinyBVHPickingRegistry) results - with null check
+    if (hit2) {
+        if (const char* name2 = asset->getName(hit2->entity)) {
+            oss << "\n" << name2 << " (triangle " << hit2->triangle << ")";
+        } else {
+            oss << "\nEntity " << hit2->entity.getId() << " (triangle " << hit2->triangle << ")";
+        }
 
-    oss << " (index " << hit2->triangle * 3 << ")";
-    oss << " dist=" << std::fixed << std::setprecision(3) << hit2->distance << std::endl;
-    oss << "Picked in " << std::fixed << std::setprecision(4) << (duration2 * 1e-6) << " milliseconds" << std::endl;
+        oss << " (index " << hit2->triangle * 3 << ")";
+        oss << " dist=" << std::fixed << std::setprecision(3) << hit2->distance << std::endl;
+        oss << "Picked in " << std::fixed << std::setprecision(4) << (duration2 * 1e-6) << " milliseconds" << std::endl;
+    } else {
+        // TinyBVH picking failed or no hit
+        if (!registry2) {
+            oss << "\nTinyBVH: No registry (meshes not registered)" << std::endl;
+        } else {
+            oss << "\nTinyBVH: No hit (registry has " << registry2->getMeshCount()
+                << " meshes, but ray didn't intersect any)" << std::endl;
+        }
+    }
 
     app.notificationText = oss.str();
 
@@ -700,6 +775,12 @@ static void onClick(App& app, View* view, ImVec2 pos) {
         hideTriangle(app, view, *hit1, meshData);
     } else {
         highlightTriangle(app, view, *hit1);
+    }
+
+    // Clean up allocated hit pointers
+    delete hit1;
+    if (hit2) {
+        delete hit2;
     }
 }
 

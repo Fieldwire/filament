@@ -76,6 +76,12 @@ public:
      */
     const MeshData* getMesh(utils::Entity e) const;
 
+    /**
+     * Get the number of registered meshes.
+     * Useful for debugging - check this is > 0 before picking.
+     */
+    size_t getMeshCount() const { return mMeshes.size(); }
+
 private:
     // Forward declaration; defined in TinyBVHPicking.cpp
     struct EntityMesh;
