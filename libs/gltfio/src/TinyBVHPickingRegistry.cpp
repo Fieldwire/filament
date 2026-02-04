@@ -467,6 +467,11 @@ TinyBVHPickingRegistry::Hit *TinyBVHPickingRegistry::pick(
         float3 localO = (invWorld * o4).xyz;
         float3 localD = normalize((invWorld * d4).xyz);
 
+        TriangleFilterContext ctx;
+        ctx.skipStartIdx = 0;
+        ctx.skipEndIdx = 1;
+        ctx.meshData = &entityMesh->meshData;  // Direct reference - no duplication!
+
         // utils::slog.d << "    Local ray origin: (" << localO.x << ", " << localO.y << ", " << localO.z << ")" << '\n';
         // utils::slog.d << "    Local ray dir: (" << localD.x << ", " << localD.y << ", " << localD.z << ")" << '\n';
 
@@ -476,12 +481,22 @@ TinyBVHPickingRegistry::Hit *TinyBVHPickingRegistry::pick(
         tinybvh::bvhvec3 direction(localD.x, localD.y, localD.z);
         tinybvh::Ray bvhRay(origin, direction, best.distance);
 
+        bvhRay.hit.auxData = &ctx;  // Pass context to callback
+
         // utils::slog.d << "    BVH has " << entityMesh->bvhTriangles.size() / 3 << " triangles" << '\n';
         // utils::slog.d << "    BVH node count: " << (entityMesh->bvh.bvhNode ? "allocated" : "NULL") << '\n';
         // utils::slog.d << "    Ray.hit.t initialized to: " << bvhRay.hit.t << '\n';
 
-        // Intersect with BVH
-        entityMesh->bvh.Intersect(bvhRay);
+        // Temporarily set custom intersection callback
+        auto* bvhPtr = const_cast<tinybvh::BVH*>(&entityMesh->bvh);
+        auto originalCallback = bvhPtr->customIntersect;
+        bvhPtr->customIntersect = customTriangleIntersectWithFiltering;
+
+        // Intersect with BVH - callback will skip hidden triangles during traversal
+        bvhPtr->Intersect(bvhRay);
+
+        // Restore original callback
+        bvhPtr->customIntersect = originalCallback;
 
         // utils::slog.d << "    BVH Intersect result: t=" << bvhRay.hit.t << " (best so far: " << best.distance << ")" << '\n';
         // utils::slog.d << "    BVH hit.prim=" << bvhRay.hit.prim << ", hit.u=" << bvhRay.hit.u << ", hit.v=" << bvhRay.hit.v << '\n';
@@ -678,6 +693,11 @@ TinyBVHPickingRegistry::Hit *TinyBVHPickingRegistry::pickSkippingIndexRange(
         float3 localO = (invWorld * o4).xyz;
         float3 localD = normalize((invWorld * d4).xyz);
 
+        TriangleFilterContext ctx;
+        ctx.skipStartIdx = 0;
+        ctx.skipEndIdx = 1;
+        ctx.meshData = &entityMesh->meshData;  // Direct reference - no duplication!
+
         // utils::slog.d << "    Local ray origin: (" << localO.x << ", " << localO.y << ", " << localO.z << ")" << '\n';
         // utils::slog.d << "    Local ray dir: (" << localD.x << ", " << localD.y << ", " << localD.z << ")" << '\n';
 
@@ -686,13 +706,23 @@ TinyBVHPickingRegistry::Hit *TinyBVHPickingRegistry::pickSkippingIndexRange(
         tinybvh::bvhvec3 origin(localO.x, localO.y, localO.z);
         tinybvh::bvhvec3 direction(localD.x, localD.y, localD.z);
         tinybvh::Ray bvhRay(origin, direction, best.distance);
+        bvhRay.hit.auxData = &ctx;  // Pass context to callback
+
 
         // utils::slog.d << "    BVH has " << entityMesh->bvhTriangles.size() / 3 << " triangles" << '\n';
         // utils::slog.d << "    BVH node count: " << (entityMesh->bvh.bvhNode ? "allocated" : "NULL") << '\n';
         // utils::slog.d << "    Ray.hit.t initialized to: " << bvhRay.hit.t << '\n';
 
-        // Intersect with BVH
-        entityMesh->bvh.Intersect(bvhRay);
+        // Temporarily set custom intersection callback
+        auto* bvhPtr = const_cast<tinybvh::BVH*>(&entityMesh->bvh);
+        auto originalCallback = bvhPtr->customIntersect;
+        bvhPtr->customIntersect = customTriangleIntersectWithFiltering;
+
+        // Intersect with BVH - callback will skip hidden triangles during traversal
+        bvhPtr->Intersect(bvhRay);
+
+        // Restore original callback
+        bvhPtr->customIntersect = originalCallback;
 
         // utils::slog.d << "    BVH Intersect result: t=" << bvhRay.hit.t << " (best so far: " << best.distance << ")" << '\n';
         // utils::slog.d << "    BVH hit.prim=" << bvhRay.hit.prim << ", hit.u=" << bvhRay.hit.u << ", hit.v=" << bvhRay.hit.v << '\n';

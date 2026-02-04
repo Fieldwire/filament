@@ -116,7 +116,7 @@ struct App {
     NameComponentManager* names;
 
     MaterialProvider* materials;
-    MaterialSource materialSource = UBERSHADER;  // Default to JitShader (fix now supports both)
+    MaterialSource materialSource = JITSHADER;  // Default to JitShader (fix now supports both)
 
     gltfio::ResourceLoader* resourceLoader = nullptr;
     gltfio::TextureProvider* stbDecoder = nullptr;
@@ -643,7 +643,16 @@ static void hideTriangle(App& app, View* view, const PickingRegistry::Hit& hit, 
     app.triangleHider->hideVerticesInRangeWithoutCache(hit.entity, 0, 107, meshData);
 }
 
+static std::vector<long> pickTimes1;
+static std::vector<long> pickTimes2;
+
 static void onClick(App& app, View* view, ImVec2 pos) {
+
+    // wait to make spamming clicks easier
+    // cap the number of samples to 100 for practicality
+    if (pickTimes1.size() != pickTimes2.size() || pickTimes1.size() >= 100) {
+        return;
+    }
     std::ostringstream oss;
     FilamentAsset *asset = app.asset;
 
@@ -718,10 +727,11 @@ static void onClick(App& app, View* view, ImVec2 pos) {
               << ", distance=" << hit1->distance << std::endl;
 
     const auto duration1 = std::chrono::duration_cast<std::chrono::nanoseconds>(endTime1 - startTime1).count();
+    pickTimes1.push_back(duration1);
 
     const auto startTime2 = std::chrono::high_resolution_clock::now();
 
-    const auto hit2 = registry2 ? registry2->pick(view, {pos.x, pos.y}, asset) : nullptr;
+    const auto hit2 = registry2 ? registry2->pickSkippingIndexRange(view, {pos.x, pos.y}, asset, 0, 1) : nullptr;
 
     if (!hit2) {
         std::cout << "TinyBVH returned NO HIT" << std::endl;
@@ -734,6 +744,7 @@ static void onClick(App& app, View* view, ImVec2 pos) {
               << ", distance=" << hit2->distance << std::endl;
 
     const auto duration2 = std::chrono::duration_cast<std::chrono::nanoseconds>(endTime2 - startTime2).count();
+    pickTimes2.push_back(duration2);
 
     // Display hit1 (PickingRegistry) results
     if (const char* name1 = asset->getName(hit1->entity)) {
@@ -765,6 +776,41 @@ static void onClick(App& app, View* view, ImVec2 pos) {
             oss << "\nTinyBVH: No hit (registry has " << registry2->getMeshCount()
                 << " meshes, but ray didn't intersect any)" << std::endl;
         }
+    }
+
+    // Validate that both hits are the same. crash if not.
+    if (hit1->triangle != hit2->triangle) {
+
+        // print the position pos too
+        oss << "  Position: x: " << pos.x << ", " << pos.y << std::endl;
+
+
+        throw std::runtime_error(oss.str());
+    }
+
+    // running averages based on the recorded times
+    if (!pickTimes1.empty() && !pickTimes2.empty()) {
+        long total1 = 0;
+        for (long t : pickTimes1) total1 += t;
+        long avg1 = total1 / static_cast<long>(pickTimes1.size());
+
+        long total2 = 0;
+        for (long t : pickTimes2) total2 += t;
+        long avg2 = total2 / static_cast<long>(pickTimes2.size());
+
+        oss << "\nAverage pick times over " << pickTimes1.size() << " picks:" << std::endl;
+        oss << "  PickingRegistry: " << std::fixed << std::setprecision(4) << (avg1 * 1e-6) << " milliseconds" << std::endl;
+        oss << "  TinyBVH:         " << std::fixed << std::setprecision(4) << (avg2 * 1e-6) << " milliseconds" << std::endl;
+
+        // ensure avg1 is faster, else swap
+        if (avg2 < avg1) {
+            std::swap(avg1, avg2);
+        }
+        float speedup = static_cast<float>(avg2) / static_cast<float>(avg1);
+        oss << "  Speedup:         " << std::fixed << std::setprecision(2) << speedup << "x" << std::endl;
+        // percent
+        float percent = (1.0f - (static_cast<float>(avg1) / static_cast<float>(avg2))) * 100.0f;
+        oss << "  Improvement:     " << std::fixed << std::setprecision(2) << percent << "%" << std::endl;
     }
 
     app.notificationText = oss.str();
