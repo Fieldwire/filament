@@ -41,7 +41,6 @@ public:
 
     struct Hit { Entity entity; int triangle; float distance; float3 bary; };
     [[nodiscard]] Hit pick(const float3& rayOrigin, const float3& rayDir) const;
-    [[nodiscard]] Hit pick(std::pair<math::float3, math::float3> *ray) const;
     [[nodiscard]] Hit * pick(View *view, const int2 &position, FilamentAsset *asset) const;
     [[nodiscard]] Hit pickSkippingIndexRange(const float3& rayOrigin,
                                             const float3& rayDir,
@@ -50,6 +49,7 @@ public:
 
     struct SceneItem { Entity e; Aabb worldBounds; };
 private:
+    [[nodiscard]] Hit pick(std::pair<math::float3, math::float3> *ray) const;
     void buildBVHIfNeeded(Entity e);
     MeshData* getMeshMutable(Entity e);
 

@@ -704,33 +704,35 @@ static void onClick(App& app, View* view, ImVec2 pos) {
     std::cout << "--- END COMPARISON ---\n" << std::endl;
 
     const auto startTime1 = std::chrono::high_resolution_clock::now();
-    const auto hit1 = registry1->pick(view, {pos.x, pos.y}, asset);
+    const auto hit1 = registry1 ? registry1->pick(view, {pos.x, pos.y}, asset) : nullptr;
 
     if (!hit1) {
         std::cout << "PickingRegistry returned NO HIT" << std::endl;
         return;
     }
 
+    const auto endTime1 = std::chrono::high_resolution_clock::now();
+
     std::cout << "PickingRegistry HIT: entity=" << hit1->entity.getId()
               << ", triangle=" << hit1->triangle
               << ", distance=" << hit1->distance << std::endl;
 
-    const auto endTime1 = std::chrono::high_resolution_clock::now();
     const auto duration1 = std::chrono::duration_cast<std::chrono::nanoseconds>(endTime1 - startTime1).count();
 
     const auto startTime2 = std::chrono::high_resolution_clock::now();
 
     const auto hit2 = registry2 ? registry2->pick(view, {pos.x, pos.y}, asset) : nullptr;
 
-    if (hit2) {
-        std::cout << "TinyBVH HIT: entity=" << hit2->entity.getId()
-                  << ", triangle=" << hit2->triangle
-                  << ", distance=" << hit2->distance << std::endl;
-    } else {
+    if (!hit2) {
         std::cout << "TinyBVH returned NO HIT" << std::endl;
+        return;
     }
-
     const auto endTime2 = std::chrono::high_resolution_clock::now();
+
+    std::cout << "TinyBVH HIT: entity=" << hit2->entity.getId()
+              << ", triangle=" << hit2->triangle
+              << ", distance=" << hit2->distance << std::endl;
+
     const auto duration2 = std::chrono::duration_cast<std::chrono::nanoseconds>(endTime2 - startTime2).count();
 
     // Display hit1 (PickingRegistry) results

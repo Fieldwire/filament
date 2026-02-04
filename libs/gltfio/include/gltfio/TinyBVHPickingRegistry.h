@@ -71,6 +71,11 @@ public:
                                const filament::math::float3& rayDir,
                                uint32_t startIdx, uint32_t endIdx) const;
 
+    Hit *pickSkippingIndexRange(
+        View *view, const int2 &position, FilamentAsset *asset,
+        uint32_t startIdx, uint32_t endIdx
+    );
+
     /**
      * Get mesh data for an entity (read-only).
      */

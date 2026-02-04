@@ -7,7 +7,7 @@
 
 // Include tinybvh (header-only library)
 #define TINYBVH_IMPLEMENTATION
-#include "../../../third_party/tinybvh/tiny_bvh.h"
+#include "../../../third_party/tinybvh.h"
 #include "gltfio/PickingUtils.h"
 #include "gltfio/ScreenRay.h"
 
@@ -397,7 +397,7 @@ TinyBVHPickingRegistry::Hit TinyBVHPickingRegistry::pick(
 TinyBVHPickingRegistry::Hit *TinyBVHPickingRegistry::pick(
     View *view, const int2 &position, FilamentAsset *asset
 ) {
-    utils::slog.d << "TinyBVH pick called at screen position (" << position.x << ", " << position.y << ")" << '\n';
+    // utils::slog.d << "TinyBVH pick called at screen position (" << position.x << ", " << position.y << ")" << '\n';
 
     updateTinybvhPickingTransforms(asset);
 
@@ -413,11 +413,11 @@ TinyBVHPickingRegistry::Hit *TinyBVHPickingRegistry::pick(
     const float3 rayDir = rayPtr->second;
     delete rayPtr;
 
-    utils::slog.i << "=== TinyBVH Pick Debug ===" << '\n';
-    utils::slog.i << "Ray origin: (" << rayOrigin.x << ", " << rayOrigin.y << ", " << rayOrigin.z << ")" << '\n';
-    utils::slog.i << "Ray direction: (" << rayDir.x << ", " << rayDir.y << ", " << rayDir.z << ")" << '\n';
-    utils::slog.i << "Number of meshes registered: " << mMeshes.size() << '\n';
-    utils::slog.i << "Number of transforms: " << mWorldTransforms.size() << '\n';
+    // utils::slog.i << "=== TinyBVH Pick Debug ===" << '\n';
+    // utils::slog.i << "Ray origin: (" << rayOrigin.x << ", " << rayOrigin.y << ", " << rayOrigin.z << ")" << '\n';
+    // utils::slog.i << "Ray direction: (" << rayDir.x << ", " << rayDir.y << ", " << rayDir.z << ")" << '\n';
+    // utils::slog.i << "Number of meshes registered: " << mMeshes.size() << '\n';
+    // utils::slog.i << "Number of transforms: " << mWorldTransforms.size() << '\n';
 
     Hit best{ Entity{}, -1, std::numeric_limits<float>::max(), {} };
     float3 dirNorm = normalize(rayDir);
@@ -425,7 +425,7 @@ TinyBVHPickingRegistry::Hit *TinyBVHPickingRegistry::pick(
     int entityIndex = 0;
     for (const auto& [entity, entityMesh] : mMeshes) {
         entityIndex++;
-        utils::slog.d << "  Entity " << entityIndex << " (ID=" << entity.getId() << "): Checking..." << '\n';
+        // utils::slog.d << "  Entity " << entityIndex << " (ID=" << entity.getId() << "): Checking..." << '\n';
 
         // Safety checks: ensure BVH was built successfully
         if (!entityMesh) {
@@ -448,8 +448,8 @@ TinyBVHPickingRegistry::Hit *TinyBVHPickingRegistry::pick(
             continue;
         }
 
-        utils::slog.d << "    Mesh: " << entityMesh->meshData.positions.size() << " verts, "
-                      << (entityMesh->meshData.indices.size() / 3) << " tris" << '\n';
+        // utils::slog.d << "    Mesh: " << entityMesh->meshData.positions.size() << " verts, "
+        //               << (entityMesh->meshData.indices.size() / 3) << " tris" << '\n';
 
         // Get world transform
         mat4f world = mat4f(1.0f); // Identity
@@ -467,8 +467,8 @@ TinyBVHPickingRegistry::Hit *TinyBVHPickingRegistry::pick(
         float3 localO = (invWorld * o4).xyz;
         float3 localD = normalize((invWorld * d4).xyz);
 
-        utils::slog.d << "    Local ray origin: (" << localO.x << ", " << localO.y << ", " << localO.z << ")" << '\n';
-        utils::slog.d << "    Local ray dir: (" << localD.x << ", " << localD.y << ", " << localD.z << ")" << '\n';
+        // utils::slog.d << "    Local ray origin: (" << localO.x << ", " << localO.y << ", " << localO.z << ")" << '\n';
+        // utils::slog.d << "    Local ray dir: (" << localD.x << ", " << localD.y << ", " << localD.z << ")" << '\n';
 
         // Setup tinybvh ray - MUST use constructor to properly initialize rD (reciprocal direction)!
         // The constructor normalizes D and computes rD = 1/D which is required for BVH traversal
@@ -476,37 +476,37 @@ TinyBVHPickingRegistry::Hit *TinyBVHPickingRegistry::pick(
         tinybvh::bvhvec3 direction(localD.x, localD.y, localD.z);
         tinybvh::Ray bvhRay(origin, direction, best.distance);
 
-        utils::slog.d << "    BVH has " << entityMesh->bvhTriangles.size() / 3 << " triangles" << '\n';
-        utils::slog.d << "    BVH node count: " << (entityMesh->bvh.bvhNode ? "allocated" : "NULL") << '\n';
-        utils::slog.d << "    Ray.hit.t initialized to: " << bvhRay.hit.t << '\n';
+        // utils::slog.d << "    BVH has " << entityMesh->bvhTriangles.size() / 3 << " triangles" << '\n';
+        // utils::slog.d << "    BVH node count: " << (entityMesh->bvh.bvhNode ? "allocated" : "NULL") << '\n';
+        // utils::slog.d << "    Ray.hit.t initialized to: " << bvhRay.hit.t << '\n';
 
         // Intersect with BVH
         entityMesh->bvh.Intersect(bvhRay);
 
-        utils::slog.d << "    BVH Intersect result: t=" << bvhRay.hit.t << " (best so far: " << best.distance << ")" << '\n';
-        utils::slog.d << "    BVH hit.prim=" << bvhRay.hit.prim << ", hit.u=" << bvhRay.hit.u << ", hit.v=" << bvhRay.hit.v << '\n';
+        // utils::slog.d << "    BVH Intersect result: t=" << bvhRay.hit.t << " (best so far: " << best.distance << ")" << '\n';
+        // utils::slog.d << "    BVH hit.prim=" << bvhRay.hit.prim << ", hit.u=" << bvhRay.hit.u << ", hit.v=" << bvhRay.hit.v << '\n';
 
         if (bvhRay.hit.t < best.distance && bvhRay.hit.t > 0) {
-            utils::slog.i << "    ✓ NEW BEST HIT: tri=" << bvhRay.hit.prim << ", t=" << bvhRay.hit.t << '\n';
+            // utils::slog.i << "    ✓ NEW BEST HIT: tri=" << bvhRay.hit.prim << ", t=" << bvhRay.hit.t << '\n';
             best.entity = entity;
             best.triangle = bvhRay.hit.prim; // Triangle index
             best.distance = bvhRay.hit.t;
             best.bary = float3{ bvhRay.hit.u, bvhRay.hit.v, 1.0f - bvhRay.hit.u - bvhRay.hit.v };
         } else if (bvhRay.hit.t > 0) {
-            utils::slog.d << "    Hit found but farther than current best" << '\n';
+            // utils::slog.d << "    Hit found but farther than current best" << '\n';
         } else {
-            utils::slog.d << "    No intersection with this entity" << '\n';
+            // utils::slog.d << "    No intersection with this entity" << '\n';
         }
     }
 
     if (best.entity.getId() == 0 || best.triangle < 0) {
-        utils::slog.d << "TinyBVH pick: No hit found (ray missed all objects)" << '\n';
+        // utils::slog.d << "TinyBVH pick: No hit found (ray missed all objects)" << '\n';
         return nullptr;
     }
 
-    utils::slog.d << "TinyBVH pick HIT: entity=" << best.entity.getId()
-                  << ", triangle=" << best.triangle
-                  << ", distance=" << best.distance << '\n';
+    // utils::slog.d << "TinyBVH pick HIT: entity=" << best.entity.getId()
+    //               << ", triangle=" << best.triangle
+    //               << ", distance=" << best.distance << '\n';
     return new Hit(best);
 }
 
@@ -597,6 +597,128 @@ TinyBVHPickingRegistry::Hit TinyBVHPickingRegistry::pickSkippingIndexRange(
     }
 
     return best;
+}
+
+TinyBVHPickingRegistry::Hit *TinyBVHPickingRegistry::pickSkippingIndexRange(
+    View *view, const int2 &position, FilamentAsset *asset,
+    uint32_t startIdx, uint32_t endIdx
+) {
+    // utils::slog.d << "TinyBVH pick called at screen position (" << position.x << ", " << position.y << ")" << '\n';
+
+    updateTinybvhPickingTransforms(asset);
+
+    std::pair<math::float3, math::float3> *rayPtr = computeScreenRay(view, position);
+
+    if (!rayPtr) {
+        utils::slog.w << "TinyBVH pick failed: computeScreenRay returned null" << '\n';
+        return nullptr;
+    }
+
+    // Extract ray data and delete the allocated pair to prevent memory leak
+    const float3 rayOrigin = rayPtr->first;
+    const float3 rayDir = rayPtr->second;
+    delete rayPtr;
+
+    // utils::slog.i << "=== TinyBVH Pick Debug ===" << '\n';
+    // utils::slog.i << "Ray origin: (" << rayOrigin.x << ", " << rayOrigin.y << ", " << rayOrigin.z << ")" << '\n';
+    // utils::slog.i << "Ray direction: (" << rayDir.x << ", " << rayDir.y << ", " << rayDir.z << ")" << '\n';
+    // utils::slog.i << "Number of meshes registered: " << mMeshes.size() << '\n';
+    // utils::slog.i << "Number of transforms: " << mWorldTransforms.size() << '\n';
+
+    Hit best{ Entity{}, -1, std::numeric_limits<float>::max(), {} };
+
+    if (startIdx > endIdx) {
+        return nullptr;
+    }
+
+    float3 dirNorm = normalize(rayDir);
+
+    int entityIndex = 0;
+    for (const auto& [entity, entityMesh] : mMeshes) {
+        entityIndex++;
+        // utils::slog.d << "  Entity " << entityIndex << " (ID=" << entity.getId() << "): Checking..." << '\n';
+
+        // Safety checks: ensure BVH was built successfully
+        if (!entityMesh) {
+            utils::slog.e << "    SKIP: entityMesh is null!" << '\n';
+            continue;
+        }
+
+        if (entityMesh->bvhTriangles.empty()) {
+            utils::slog.w << "    SKIP: BVH not built (no triangle data)" << '\n';
+            continue;
+        }
+
+        if (entityMesh->bvh.bvhNode == nullptr) {
+            utils::slog.e << "    SKIP: BVH nodes not allocated!" << '\n';
+            continue;
+        }
+
+        if (entityMesh->meshData.indices.empty() || entityMesh->meshData.positions.empty()) {
+            utils::slog.w << "    SKIP: mesh has no geometry data" << '\n';
+            continue;
+        }
+
+        // utils::slog.d << "    Mesh: " << entityMesh->meshData.positions.size() << " verts, "
+        //               << (entityMesh->meshData.indices.size() / 3) << " tris" << '\n';
+
+        // Get world transform
+        mat4f world = mat4f(1.0f); // Identity
+        auto wIt = mWorldTransforms.find(entity);
+        if (wIt != mWorldTransforms.end()) {
+            world = wIt->second;
+        } else {
+            utils::slog.w << "    WARNING: No transform found, using identity" << '\n';
+        }
+
+        // Transform ray to local space
+        mat4f invWorld = inverse(world);
+        float4 o4(rayOrigin, 1.0f);
+        float4 d4(dirNorm, 0.0f);
+        float3 localO = (invWorld * o4).xyz;
+        float3 localD = normalize((invWorld * d4).xyz);
+
+        // utils::slog.d << "    Local ray origin: (" << localO.x << ", " << localO.y << ", " << localO.z << ")" << '\n';
+        // utils::slog.d << "    Local ray dir: (" << localD.x << ", " << localD.y << ", " << localD.z << ")" << '\n';
+
+        // Setup tinybvh ray - MUST use constructor to properly initialize rD (reciprocal direction)!
+        // The constructor normalizes D and computes rD = 1/D which is required for BVH traversal
+        tinybvh::bvhvec3 origin(localO.x, localO.y, localO.z);
+        tinybvh::bvhvec3 direction(localD.x, localD.y, localD.z);
+        tinybvh::Ray bvhRay(origin, direction, best.distance);
+
+        // utils::slog.d << "    BVH has " << entityMesh->bvhTriangles.size() / 3 << " triangles" << '\n';
+        // utils::slog.d << "    BVH node count: " << (entityMesh->bvh.bvhNode ? "allocated" : "NULL") << '\n';
+        // utils::slog.d << "    Ray.hit.t initialized to: " << bvhRay.hit.t << '\n';
+
+        // Intersect with BVH
+        entityMesh->bvh.Intersect(bvhRay);
+
+        // utils::slog.d << "    BVH Intersect result: t=" << bvhRay.hit.t << " (best so far: " << best.distance << ")" << '\n';
+        // utils::slog.d << "    BVH hit.prim=" << bvhRay.hit.prim << ", hit.u=" << bvhRay.hit.u << ", hit.v=" << bvhRay.hit.v << '\n';
+
+        if (bvhRay.hit.t < best.distance && bvhRay.hit.t > 0) {
+            // utils::slog.i << "    ✓ NEW BEST HIT: tri=" << bvhRay.hit.prim << ", t=" << bvhRay.hit.t << '\n';
+            best.entity = entity;
+            best.triangle = bvhRay.hit.prim; // Triangle index
+            best.distance = bvhRay.hit.t;
+            best.bary = float3{ bvhRay.hit.u, bvhRay.hit.v, 1.0f - bvhRay.hit.u - bvhRay.hit.v };
+        } else if (bvhRay.hit.t > 0) {
+            // utils::slog.d << "    Hit found but farther than current best" << '\n';
+        } else {
+            // utils::slog.d << "    No intersection with this entity" << '\n';
+        }
+    }
+
+    if (best.entity.getId() == 0 || best.triangle < 0) {
+        // utils::slog.d << "TinyBVH pick: No hit found (ray missed all objects)" << '\n';
+        return nullptr;
+    }
+
+    // utils::slog.d << "TinyBVH pick HIT: entity=" << best.entity.getId()
+    //               << ", triangle=" << best.triangle
+    //               << ", distance=" << best.distance << '\n';
+    return new Hit(best);
 }
 
 } // namespace filament::gltfio

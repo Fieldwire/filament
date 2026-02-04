@@ -412,6 +412,8 @@ public class FilamentAsset {
             float ox, float oy, float oz, float dx, float dy, float dz);
     private static native @Nullable Hit nRayPickScreen(long nativeAsset, long nativeView, int sx, int sy); // Added native bridge for screen picking.
     private static native @Nullable Hit nRayPickScreenSkippingRange(long nativeAsset, long nativeView, int sx, int sy, int startIdx, int endIdx);
+    private static native @Nullable Hit nRayPickScreenTinybvh(long nativeAsset, long nativeView, int sx, int sy); // Added native bridge for screen picking.
+    private static native @Nullable Hit nRayPickScreenSkippingRangeTinybvh(long nativeAsset, long nativeView, int sx, int sy, int startIdx, int endIdx);
     private static native @Nullable float[] nGetTriangleModelSpaceForHit(long nativeAsset, int entity, int triangleIndex);
     private static native int nGetIndicesSize(long nativeAsset, int entity);
     private static native int nGetPositionsSize(long nativeAsset, int entity);

@@ -398,6 +398,78 @@ Java_com_google_android_filament_gltfio_FilamentAsset_nRayPickScreenSkippingRang
             (jfloat) hit.distance, (jfloat) hit.bary.x, (jfloat) hit.bary.y, (jfloat) hit.bary.z);
 }
 
+extern "C" JNIEXPORT jobject JNICALL
+Java_com_google_android_filament_gltfio_FilamentAsset_nRayPickScreenTinybvh(JNIEnv* env, jclass,
+        jlong nativeAsset, jlong nativeView, jint sx, jint sy) {
+    LOGD("[nRayPickScreen] sx=%d sy=%d", sx, sy);
+
+    FilamentAsset* asset = (FilamentAsset*) nativeAsset;
+    if (!asset) return nullptr;
+    View* view = (View*) nativeView;
+    if (!view) return nullptr;
+
+    // Update transforms before picking.
+    size_t updatedCount = gltfio::updatePickingTransforms(asset);
+    LOGD("[nRayPickScreen] updatedTransforms=%zu", updatedCount);
+
+    TinyBVHPickingRegistry* reg = asset->getTinyBVHPickingRegistry();
+    if (!reg) return nullptr;
+
+    int2 position = { sx, sy };
+    auto hit_ptr = reg ? reg->pick(view, position, asset) : nullptr;
+
+    if (!hitptr) {
+        LOGD("[nRayPickScreen] No hitptr");
+        return nullptr;
+    }
+
+    auto hit = *hitptr;
+
+    if (hit.entity.getId() == 0 || hit.triangle < 0) {
+        LOGD("[nRayPickScreen] No hit");
+        return nullptr;
+    }
+    LOGD("[nRayPickScreen] Hit entity=%d tri=%d dist=%.3f",
+         hit.entity.getId(), hit.triangle, hit.distance);
+
+    jclass hitClass = env->FindClass("com/google/android/filament/gltfio/FilamentAsset$Hit");
+    if (!hitClass) return nullptr;
+    jmethodID ctor = env->GetMethodID(hitClass, "<init>", "(IIFFFF)V");
+    if (!ctor) return nullptr;
+    return env->NewObject(hitClass, ctor,
+            (jint) hit.entity.getId(), (jint) hit.triangle,
+            (jfloat) hit.distance, (jfloat) hit.bary.x, (jfloat) hit.bary.y, (jfloat) hit.bary.z);
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_com_google_android_filament_gltfio_FilamentAsset_nRayPickScreenSkippingRangeTinybvh(JNIEnv* env, jclass,
+        jlong nativeAsset, jlong nativeView, jint sx, jint sy, jint startIdx, jint endIdx) {
+    FilamentAsset* asset = (FilamentAsset*) nativeAsset;
+    if (!asset) return nullptr;
+    View* view = (View*) nativeView;
+    if (!view) return nullptr;
+
+    TinyBVHPickingRegistry* reg = asset->getTinyBVHPickingRegistry();
+    if (!reg) return nullptr;
+
+    auto position = int2{ sx, sy };
+    auto hit_ptr = reg->pickSkippingIndexRange(view, position, static_cast<uint32_t>(startIdx), static_cast<uint32_t>(endIdx));
+
+    auto hit = *hit_ptr;
+
+    if (hit.entity.getId() == 0 || hit.triangle < 0) {
+        return nullptr;
+    }
+
+    jclass hitClass = env->FindClass("com/google/android/filament/gltfio/FilamentAsset$Hit");
+    if (!hitClass) return nullptr;
+    jmethodID ctor = env->GetMethodID(hitClass, "<init>", "(IIFFFF)V");
+    if (!ctor) return nullptr;
+    return env->NewObject(hitClass, ctor,
+            (jint) hit.entity.getId(), (jint) hit.triangle,
+            (jfloat) hit.distance, (jfloat) hit.bary.x, (jfloat) hit.bary.y, (jfloat) hit.bary.z);
+}
+
 extern "C" JNIEXPORT jfloatArray JNICALL
 Java_com_google_android_filament_gltfio_FilamentAsset_nGetTriangleModelSpaceForHit(JNIEnv* env, jclass,
         jlong nativeAsset, jint entityId, jint triangleIndex) {
