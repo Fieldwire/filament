@@ -908,6 +908,10 @@ void FAssetLoader::createRenderable(const cgltf_node* node, Entity entity, const
         }
         mRenderableManager.setMorphWeights(renderable, weights.data(), size);
     }
+
+    // After successfully creating the renderable with RenderableManager::Builder
+    // and the mesh has been assigned, register it for picking
+    fAsset->mPickingRegistry.registerMesh(entity, node->mesh);
 }
 
 void FAssetLoader::createMaterialVariants(const cgltf_mesh* mesh, Entity entity,

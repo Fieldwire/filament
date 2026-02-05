@@ -46,6 +46,7 @@
 #include "DracoCache.h"
 #include "FFilamentInstance.h"
 #include "Utility.h"
+#include "gltfio/PickingRegistry.h"
 
 #include <string>
 #include <unordered_map>
@@ -372,6 +373,8 @@ struct FFilamentAsset : public FilamentAsset {
     };
 
     std::variant<ResourceInfo, ResourceInfoExtended> mResourceInfo;
+
+    PickingRegistry mPickingRegistry;
 };
 
 FILAMENT_DOWNCAST(FilamentAsset)
