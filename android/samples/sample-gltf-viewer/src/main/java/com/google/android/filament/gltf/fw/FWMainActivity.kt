@@ -54,6 +54,17 @@ class FWMainActivity : AppCompatActivity(), BimExecutor.Callback, ProgressDialog
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         logg("onCreate")
 
+        // Configure overlay Toolbar as the ActionBar so it renders on top of content (if present)
+        val toolbar = findViewById<androidx.appcompat.widget.Toolbar?>(R.id.top_toolbar)
+        if (toolbar != null) {
+            setSupportActionBar(toolbar)
+            val titleFromIntent = intent.getStringExtra("model") ?: ""
+            supportActionBar?.title = titleFromIntent
+            // Add back button to the top app bar using a built-in Android drawable
+            toolbar.setNavigationIcon(android.R.drawable.ic_media_previous)
+            toolbar.setNavigationOnClickListener { finishWithResult(RESULT_OK) }
+        }
+
         titlebarHint = findViewById(R.id.user_hint)
 
         bimExecutor = BimExecutor(

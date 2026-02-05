@@ -5,6 +5,16 @@
     android:layout_height="match_parent"
     android:orientation="vertical">
 
+    <!-- Overlay top app bar rendered above content -->
+    <androidx.appcompat.widget.Toolbar
+        android:id="@+id/top_toolbar"
+        android:layout_width="match_parent"
+        android:layout_height="56dp"
+        android:background="@android:color/black"
+        android:alpha="0.9"
+        android:elevation="8dp"
+        android:layout_gravity="top" />
+
     <TextView
         android:id="@+id/user_hint"
         android:layout_width="match_parent"
@@ -23,4 +33,3 @@
         android:layout_height="match_parent" />
 
 </FrameLayout>
-
