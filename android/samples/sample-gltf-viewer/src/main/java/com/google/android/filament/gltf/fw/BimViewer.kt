@@ -35,9 +35,6 @@ class BimViewer(
         .flightStartPosition(0f, 0f, 1f)
         .build(Manipulator.Mode.FREE_FLIGHT_2)
 
-    private val times1 = mutableListOf<Long>()
-    private val times2 = mutableListOf<Long>()
-
     init {
         setupTouchListener()
     }
@@ -238,6 +235,7 @@ class BimViewer(
 
     private inner class SingleTapListener : GestureDetector.SimpleOnGestureListener() {
         override fun onSingleTapUp(event: MotionEvent): Boolean {
+
 //            callback.execute {
                 // If there was a previous selection, remove it & don't start another selection
 //                if (entityHighlighter.unhighlight()) {
@@ -251,7 +249,13 @@ class BimViewer(
                 logg("SurfaceView width: ${surfaceView.width} height: ${surfaceView.height} event.x: ${event.x} event.y: ${event.y}")
 
 //                kotlinTrianglePicking(x, flippedY)
+
+            try {
+
                 cppTrianglePicking(x, flippedY)
+            } catch (e: Exception) {
+                logg("Error in cppTrianglePicking: ${e.message}")
+            }
 
                 // Fallback: highlight entire renderable entity
                 // Filament's pick expects y flipped to viewport origin at bottom-left
@@ -267,66 +271,14 @@ class BimViewer(
     }
 
     private fun cppTrianglePicking(x: Int, y: Int) {
-        if (times2.size >= 100) {
-            return
-        }
-        if (times1.size != times2.size) {
-            logg("Discrepancy in pick counts! Java picks: ${times1.size} C++ picks: ${times2.size}")
-            return
-        }
         val asset = modelViewer.asset
-        if (asset != null) {
-            // Use existing screen-space pick to get entity and triangle index
+        if (asset == null) return
 
-            val startTime1 = System.nanoTime()
-            val hit1 = hit(asset, x, y)
-            val endTime1 = System.nanoTime()
+        // Use existing screen-space pick to get entity and triangle index
 
-            val duration1 = endTime1 - startTime1
+        val hit = hitTinybvh(asset, x, y)
 
-            times1.add(duration1)
-            logg("Custom pick time: ${duration1 / 1_000_000.0} ms")
-
-            val startTime2 = System.nanoTime()
-            val hit2 = hitTinybvh(asset, x, y)
-            val endTime2 = System.nanoTime()
-            val duration2 = endTime2 - startTime2
-            times2.add(duration2)
-            logg("tinybvh pick time: ${duration2 / 1_000_000.0} ms")
-
-            if (hit1?.triangle != hit2?.triangle) {
-                logg("hit1 triangle: ${hit1?.triangle} hit2 triangle: ${hit2?.triangle}")
-                throw RuntimeException("Discrepancy in pick results! Java triangle: ${hit1?.triangle} C++ triangle: ${hit2?.triangle}")
-            }
-
-            if (hit1?.entity != hit2?.entity) {
-                logg("hit1 entity: ${hit1?.entity} hit2 entity: ${hit2?.entity}")
-                throw RuntimeException("Discrepancy in pick results! Java entity: ${hit1?.entity} C++ entity: ${hit2?.entity}")
-            }
-
-            val avgTime1 = times1.average() / 1_000_000
-            logg("Custom BVH Pick average time over ${times1.size} picks: $avgTime1 ms")
-
-            val avgTime2 = times2.average() / 1_000_000
-            logg("tinybvh Pick average time over ${times2.size} picks: $avgTime2 ms")
-
-//            hide(hit1)
-        }
-    }
-
-    private fun hit(
-        asset: FilamentAsset,
-        x: Int,
-        y: Int
-    ): FilamentAsset.Hit? {
-        val hit = if (lastHiddenStartIdx != -1 && lastHiddenEndIdx != -1) {
-            asset.pickScreenSkippingRange(modelViewer.view, x, y, lastHiddenStartIdx, lastHiddenEndIdx)
-        } else {
-            asset.pickScreen(modelViewer.view, x, y)
-        }
-
-//        logg("Pick result: ${hit?.entity} triangle: ${hit?.triangle} ")
-        return hit
+        hide(hit)
     }
 
     private fun hitTinybvh(
@@ -360,7 +312,7 @@ class BimViewer(
 
         // Get entity name for mapping lookup
         val entityName = asset.getName(entity) ?: entity.toString()
-        logg("Hiding triangles for entity: $entityName, triangle: $triangle")
+//        logg("Hiding triangles for entity: $entityName, triangle: $triangle")
 
         // Get the triangle range from mapping
         val mapping = triangleMapping
@@ -368,14 +320,14 @@ class BimViewer(
             val range = mapping.getTriangleRange(entityName, triangle)
             if (range != null) {
                 var (startIdx, endIdx) = range
-                logg("Triangle range from mapping: $startIdx to $endIdx")
+//                logg("Triangle range from mapping: $startIdx to $endIdx")
 
                 // If endIdx is Int.MAX_VALUE, set it to indices.size from FilamentAsset.getIndicesSize
                 if (endIdx == Int.MAX_VALUE) {
                     val indicesSize = asset.getIndicesSize(entity)
                     if (indicesSize > 0) {
                         endIdx = indicesSize - 1
-                        logg("Adjusted endIdx from Int.MAX_VALUE to actual size: $endIdx")
+//                        logg("Adjusted endIdx from Int.MAX_VALUE to actual size: $endIdx")
                     }
                 }
 
@@ -392,26 +344,26 @@ class BimViewer(
                 lastHiddenEndIdx = endIdx
                 asset.hideVerticesInRangeWithoutCache(entity, startIdx, endIdx)
 
-                logg("Successfully hid triangles in range $startIdx to $endIdx")
+//                logg("Successfully hid triangles in range $startIdx to $endIdx")
             } else {
                 // No mapping found, hide single triangle
-                logg("No triangle mapping found, hiding single triangle")
+//                logg("No triangle mapping found, hiding single triangle")
                 val success = asset.hideTriangleWithoutCache(entity, triangle)
-                if (success) {
-                    logg("Successfully hid triangle $triangle")
-                } else {
-                    logg("Failed to hide triangle $triangle")
-                }
+//                if (success) {
+//                    logg("Successfully hid triangle $triangle")
+//                } else {
+//                    logg("Failed to hide triangle $triangle")
+//                }
             }
         } else {
             // No triangle mapping available, hide single triangle
-            logg("No triangle mapping available, hiding single triangle")
+//            logg("No triangle mapping available, hiding single triangle")
             val success = asset.hideTriangleWithoutCache(entity, triangle)
-            if (success) {
-                logg("Successfully hid triangle $triangle")
-            } else {
-                logg("Failed to hide triangle $triangle")
-            }
+//            if (success) {
+//                logg("Successfully hid triangle $triangle")
+//            } else {
+//                logg("Failed to hide triangle $triangle")
+//            }
         }
     }
 
