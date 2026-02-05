@@ -17,35 +17,16 @@
 package com.google.android.filament.gltf.fw
 
 import android.annotation.SuppressLint
-import android.app.Activity
 import android.content.Intent
 import android.content.res.Configuration
 import android.os.Bundle
 import android.util.Log
-import android.view.Choreographer
-import android.view.GestureDetector
-import android.view.MotionEvent
-import android.view.SurfaceView
 import android.view.WindowManager
-import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.view.isVisible
-import com.google.android.filament.Engine
-import com.google.android.filament.Skybox
 import com.google.android.filament.gltf.R
-import com.google.android.filament.utils.KTX1Loader
-import com.google.android.filament.utils.ModelViewer
 import com.google.android.filament.utils.Utils
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.MainScope
-import kotlinx.coroutines.asCoroutineDispatcher
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.launch
-import java.nio.ByteBuffer
-import java.util.concurrent.Executors
 
 fun logg(vararg msg: Any, tag: String = "fml") {
     Log.d(tag, msg.joinToString("\t"))
@@ -89,7 +70,7 @@ class FWMainActivity : AppCompatActivity(), BimExecutor.Callback, ProgressDialog
 
         onBackPressedDispatcher.addCallback(object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                finishWithResult(Activity.RESULT_OK)
+                finishWithResult(RESULT_OK)
             }
         })
     }
@@ -133,9 +114,8 @@ class FWMainActivity : AppCompatActivity(), BimExecutor.Callback, ProgressDialog
 
     override fun onProgressCancelled() {
         logg("destroyingViewer")
-//        bimExecutor.destroyViewerSync()
         bimExecutor.destroyViewer {
-            setResult(Activity.RESULT_OK)
+            setResult(RESULT_OK)
             finish()
             logg("destroyed")
         }

@@ -35,6 +35,9 @@ class BimViewer(
         .flightStartPosition(0f, 0f, 1f)
         .build(Manipulator.Mode.FREE_FLIGHT_2)
 
+    private val times1 = mutableListOf<Long>()
+    private val times2 = mutableListOf<Long>()
+
     init {
         setupTouchListener()
     }
@@ -264,20 +267,81 @@ class BimViewer(
     }
 
     private fun cppTrianglePicking(x: Int, y: Int) {
+        if (times2.size >= 100) {
+            return
+        }
+        if (times1.size != times2.size) {
+            logg("Discrepancy in pick counts! Java picks: ${times1.size} C++ picks: ${times2.size}")
+            return
+        }
         val asset = modelViewer.asset
         if (asset != null) {
             // Use existing screen-space pick to get entity and triangle index
-            val hit = if (lastHiddenStartIdx != -1 && lastHiddenEndIdx != -1) {
-                asset.pickScreenSkippingRange(modelViewer.view, x, y, lastHiddenStartIdx, lastHiddenEndIdx)
-            } else {
-                asset.pickScreen(modelViewer.view, x, y)
+
+            val startTime1 = System.nanoTime()
+            val hit1 = hit(asset, x, y)
+            val endTime1 = System.nanoTime()
+
+            val duration1 = endTime1 - startTime1
+
+            times1.add(duration1)
+            logg("Custom pick time: ${duration1 / 1_000_000.0} ms")
+
+            val startTime2 = System.nanoTime()
+            val hit2 = hitTinybvh(asset, x, y)
+            val endTime2 = System.nanoTime()
+            val duration2 = endTime2 - startTime2
+            times2.add(duration2)
+            logg("tinybvh pick time: ${duration2 / 1_000_000.0} ms")
+
+            if (hit1?.triangle != hit2?.triangle) {
+                logg("hit1 triangle: ${hit1?.triangle} hit2 triangle: ${hit2?.triangle}")
+                throw RuntimeException("Discrepancy in pick results! Java triangle: ${hit1?.triangle} C++ triangle: ${hit2?.triangle}")
             }
 
-            logg("Pick result: ${hit?.entity} triangle: ${hit?.triangle} ")
-//            highlight(hit)
+            if (hit1?.entity != hit2?.entity) {
+                logg("hit1 entity: ${hit1?.entity} hit2 entity: ${hit2?.entity}")
+                throw RuntimeException("Discrepancy in pick results! Java entity: ${hit1?.entity} C++ entity: ${hit2?.entity}")
+            }
 
-            hide(hit)
+            val avgTime1 = times1.average() / 1_000_000
+            logg("Custom BVH Pick average time over ${times1.size} picks: $avgTime1 ms")
+
+            val avgTime2 = times2.average() / 1_000_000
+            logg("tinybvh Pick average time over ${times2.size} picks: $avgTime2 ms")
+
+//            hide(hit1)
         }
+    }
+
+    private fun hit(
+        asset: FilamentAsset,
+        x: Int,
+        y: Int
+    ): FilamentAsset.Hit? {
+        val hit = if (lastHiddenStartIdx != -1 && lastHiddenEndIdx != -1) {
+            asset.pickScreenSkippingRange(modelViewer.view, x, y, lastHiddenStartIdx, lastHiddenEndIdx)
+        } else {
+            asset.pickScreen(modelViewer.view, x, y)
+        }
+
+//        logg("Pick result: ${hit?.entity} triangle: ${hit?.triangle} ")
+        return hit
+    }
+
+    private fun hitTinybvh(
+        asset: FilamentAsset,
+        x: Int,
+        y: Int
+    ): FilamentAsset.Hit? {
+        val hit = if (lastHiddenStartIdx != -1 && lastHiddenEndIdx != -1) {
+            asset.pickScreenSkippingRangeTinybvh(modelViewer.view, x, y, lastHiddenStartIdx, lastHiddenEndIdx)
+        } else {
+            asset.pickScreenTinybvh(modelViewer.view, x, y)
+        }
+
+//        logg("Pick result: ${hit?.entity} triangle: ${hit?.triangle} ")
+        return hit
     }
 
     private var lastHiddenStartIdx = -1

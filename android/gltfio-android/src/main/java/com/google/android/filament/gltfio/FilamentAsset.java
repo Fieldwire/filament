@@ -342,6 +342,25 @@ public class FilamentAsset {
     }
 
     /**
+     * Tinybvh-accelerated screen-space pick.
+     */
+    public @Nullable Hit pickScreenTinybvh(@NonNull View view, int sx, int sy) {
+        if (view == null) throw new IllegalArgumentException("view cannot be null");
+        if (mNativeObject == 0) return null;
+        Viewport vp = view.getViewport();
+        if (sx < 0 || sy < 0 || sx >= vp.width || sy >= vp.height) {
+            return null; // Outside viewport
+        }
+        if (sNativeViewField == null) throw new RuntimeException("Unable to access native View handle (field not found)");
+        try {
+            long nativeView = sNativeViewField.getLong(view);
+            return nRayPickScreenTinybvh(mNativeObject, nativeView, sx, sy);
+        } catch (IllegalAccessException e) {
+            throw new RuntimeException("Unable to access native View handle", e);
+        }
+    }
+
+    /**
      * Screen-space pick that ignores triangles whose index positions overlap [startIdx, endIdx].
      */
     public @Nullable Hit pickScreenSkippingRange(@NonNull View view, int sx, int sy,
@@ -356,6 +375,27 @@ public class FilamentAsset {
         try {
             long nativeView = sNativeViewField.getLong(view);
             return nRayPickScreenSkippingRange(mNativeObject, nativeView, sx, sy, startIdx, endIdx);
+        } catch (IllegalAccessException e) {
+            throw new RuntimeException("Unable to access native View handle", e);
+        }
+    }
+
+    /**
+     * Tinybvh-accelerated screen-space pick that ignores triangles whose index positions overlap
+     * [startIdx, endIdx].
+     */
+    public @Nullable Hit pickScreenSkippingRangeTinybvh(@NonNull View view, int sx, int sy,
+                                                        int startIdx, int endIdx) {
+        if (view == null) throw new IllegalArgumentException("view cannot be null");
+        if (mNativeObject == 0) return null;
+        Viewport vp = view.getViewport();
+        if (sx < 0 || sy < 0 || sx >= vp.width || sy >= vp.height) {
+            return null;
+        }
+        if (sNativeViewField == null) throw new RuntimeException("Unable to access native View handle (field not found)");
+        try {
+            long nativeView = sNativeViewField.getLong(view);
+            return nRayPickScreenSkippingRangeTinybvh(mNativeObject, nativeView, sx, sy, startIdx, endIdx);
         } catch (IllegalAccessException e) {
             throw new RuntimeException("Unable to access native View handle", e);
         }
