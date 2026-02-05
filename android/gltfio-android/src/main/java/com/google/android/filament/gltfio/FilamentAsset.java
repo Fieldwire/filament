@@ -16,13 +16,14 @@
 
 package com.google.android.filament.gltfio;
 
-import androidx.annotation.IntRange;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
 import com.google.android.filament.Box;
 import com.google.android.filament.Engine;
 import com.google.android.filament.Entity;
+import com.google.android.filament.View; // Added for screen-space picking wrapper
+import com.google.android.filament.Viewport; // Import for bounds checking
 
 /**
  * Owns a bundle of Filament objects that have been created by <code>AssetLoader</code>.
@@ -47,6 +48,19 @@ public class FilamentAsset {
     private long mNativeObject;
     private FilamentInstance mPrimaryInstance;
     private Engine mEngine;
+
+    // Cached reflective access to View's native pointer.
+    private static final java.lang.reflect.Field sNativeViewField;
+    static {
+        java.lang.reflect.Field f = null;
+        try {
+            f = View.class.getDeclaredField("mNativeObject");
+            f.setAccessible(true);
+        } catch (NoSuchFieldException e) {
+            // If this fails, pickScreen will throw a RuntimeException when used.
+        }
+        sNativeViewField = f;
+    }
 
     FilamentAsset(Engine engine, long nativeObject) {
         mEngine = engine;
@@ -256,6 +270,46 @@ public class FilamentAsset {
         mNativeObject = 0;
     }
 
+    /**
+     * Result of a triangle picking query.
+     *
+     * entity    The picked renderable entity (0 if none)
+     * triangle  Triangle index within the mesh's triangle list (0-based, -1 if none)
+     */
+    public static final class Hit {
+        public final @Entity int entity;
+        public final int triangle;
+        public Hit(int entity, int triangle) {
+            this.entity = entity;
+            this.triangle = triangle;
+        }
+    }
+
+    /**
+     * Performs CPU-side ray / triangle picking given screen coordinates in the supplied View.
+     *
+     * Coordinates are in pixels with origin at the top-left of the View's viewport (matching
+     * typical Android UI conventions). Returns a Hit object or null if no intersection.
+     *
+     * @param view the Filament View containing the scene.
+     * @param sx   horizontal pixel coordinate within the viewport.
+     * @param sy   vertical pixel coordinate within the viewport (top-left origin).
+     */
+    public @Nullable Hit pick(@NonNull View view, int sx, int sy) {
+        if (mNativeObject == 0) return null;
+        Viewport vp = view.getViewport();
+        if (sx < 0 || sy < 0 || sx >= vp.width || sy >= vp.height) {
+            return null; // Outside viewport
+        }
+        if (sNativeViewField == null) throw new RuntimeException("Unable to access native View handle (field not found)");
+        try {
+            long nativeView = sNativeViewField.getLong(view);
+            return nRayPick(mNativeObject, nativeView, sx, sy);
+        } catch (IllegalAccessException e) {
+            throw new RuntimeException("Unable to access native View handle", e);
+        }
+    }
+
     private static native int nGetRoot(long nativeAsset);
     private static native int nPopRenderable(long nativeAsset);
     private static native int nPopRenderables(long nativeAsset, int[] result);
@@ -291,4 +345,7 @@ public class FilamentAsset {
     private static native void nGetResourceUris(long nativeAsset, String[] result);
 
     private static native void nReleaseSourceData(long nativeAsset);
+
+    // New native bridge for ray-based triangle picking.
+    private static native @Nullable Hit nRayPick(long nativeAsset, long nativeView, int sx, int sy); // Added native bridge for screen picking.
 }

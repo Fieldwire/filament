@@ -32,9 +32,9 @@
 
 #include <gltfio/AssetLoader.h>
 #include <gltfio/FilamentAsset.h>
+#include <gltfio/Picking.h>
 #include <gltfio/ResourceLoader.h>
 #include <gltfio/TextureProvider.h>
-
 #include <viewer/AutomationEngine.h>
 #include <viewer/AutomationSpec.h>
 #include <viewer/ViewerGui.h>
@@ -52,6 +52,7 @@
 #include <math/vec4.h>
 #include <math/mat3.h>
 #include <math/norm.h>
+#include <cmath>
 
 #include <imgui.h>
 #include <filagui/ImGuiExtensions.h>
@@ -503,14 +504,90 @@ static void createOverdrawVisualizerEntities(Engine* engine, Scene* scene, App& 
     app.scene.fullScreenTriangleIndexBuffer = indexBuffer;
 }
 
+static std::string pick(const App &app, View *view, const ImVec2 pos) {
+    const auto start = std::chrono::high_resolution_clock::now();
+    const auto asset = app.asset;
+    const auto registry = asset->getPickingRegistry();
+    if (!registry) {
+        return "(Picking Registry not available)\n";
+    }
+
+    // Update transforms for accuracy (could be done once per frame elsewhere).
+    Engine* engine = app.engine; // guaranteed set
+    const float2 xy = {pos.x, pos.y};
+
+    const PickingRegistry::Hit hit = registry->pick(
+        *asset,
+        view,
+        engine,
+        xy
+    );
+
+    const auto end = std::chrono::high_resolution_clock::now();
+    const std::chrono::duration<double, std::milli> time = end - start;
+
+    if (hit.entity.getId() == 0 || hit.triangle < 0) {
+        return std::to_string(hit.entity.getId()) + " (triangle " + std::to_string(hit.triangle) + ")";
+    }
+
+    const char* name = app.asset->getName(hit.entity);
+    const std::string text = name ? name : "Entity " + std::to_string(hit.entity.getId());
+    const std::string output = text + " (triangle " + std::to_string(hit.triangle) + ") (Custom)\n";
+
+    auto finalOutputAndTime = output + "Picked in " + std::to_string(time.count()) + " ms\n";
+    return finalOutputAndTime;
+}
+
+static std::string pick2(const App &app, View *view, const ImVec2 pos) {
+    const auto start = std::chrono::high_resolution_clock::now();
+    const auto asset = app.asset;
+    const auto registry = asset->getPickingRegistry();
+    if (!registry) {
+        return "(Picking Registry not available)\n";
+    }
+
+    // Update transforms for accuracy (could be done once per frame elsewhere).
+    Engine* engine = app.engine; // guaranteed set
+    const float2 xy = {pos.x, pos.y};
+
+    const PickingRegistry::Hit hit = registry->pick_tinybvh(
+        *asset,
+        view,
+        engine,
+        xy
+    );
+
+    const auto end = std::chrono::high_resolution_clock::now();
+    const std::chrono::duration<double, std::milli> time = end - start;
+
+    if (hit.entity.getId() == 0 || hit.triangle < 0) {
+        return std::to_string(hit.entity.getId()) + " (triangle " + std::to_string(hit.triangle) + ")";
+    }
+
+    const char* name = app.asset->getName(hit.entity);
+    const std::string text = name ? name : "Entity " + std::to_string(hit.entity.getId());
+    const std::string output = text + " (triangle " + std::to_string(hit.triangle) + ") (Custom)\n";
+
+    auto finalOutputAndTime = output + "Picked in " + std::to_string(time.count()) + " ms\n";
+    return finalOutputAndTime;
+}
+
 static void onClick(App& app, View* view, ImVec2 pos) {
+    // existing pixel-based GPU picking
     view->pick(pos.x, pos.y, [&app](View::PickingQueryResult const& result){
-        if (const char* name = app.asset->getName(result.renderable); name) {
-            app.notificationText = name;
+        /*if (const char* name = app.asset->getName(result.renderable); name) {
+            app.notificationText = name; // will be augmented by CPU picking below
         } else {
             app.notificationText.clear();
-        }
+        }*/
     });
+
+    std::ostringstream oss;
+    oss << std::endl;
+    oss << pick(app, view, pos) << std::endl;
+    oss << pick2(app, view, pos) << std::endl;
+
+    app.notificationText = oss.str();
 }
 
 static utils::Path getPathForIBLAsset(std::string_view string) {
@@ -779,7 +856,17 @@ int main(int argc, char** argv) {
                 createJitShaderProvider(engine, OPTIMIZE_MATERIALS) :
                 createUbershaderProvider(engine, UBERARCHIVE_DEFAULT_DATA, UBERARCHIVE_DEFAULT_SIZE);
 
-        app.assetLoader = AssetLoader::create({engine, app.materials, app.names });
+        // app.assetLoader = AssetLoader::create({ engine, app.materials, app.names });
+        AssetConfigurationExtended ext = {
+                .gltfPath = filename.c_str(),
+            };
+        AssetConfiguration config = {
+                .engine = engine,
+                .materials = app.materials,
+                .names = app.names,
+                .ext = &ext,
+            };
+        app.assetLoader = AssetLoader::create(config);
         app.mainCamera = &view->getCamera();
         if (filename.isEmpty()) {
             app.asset = app.assetLoader->createAsset(
@@ -813,7 +900,12 @@ int main(int argc, char** argv) {
             const ImVec4 yellow(1.0f,1.0f,0.0f,1.0f);
 
             if (!app.notificationText.empty()) {
-                ImGui::TextColored(yellow, "Picked %s", app.notificationText.c_str());
+                // Word-wrap the picked notification within the available content region.
+                ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x);
+                ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetColorU32(yellow));
+                ImGui::TextWrapped("Picked %s", app.notificationText.c_str());
+                ImGui::PopStyleColor();
+                ImGui::PopTextWrapPos();
                 ImGui::Spacing();
             }
 
@@ -1145,6 +1237,13 @@ int main(int argc, char** argv) {
         } else {
             view->setColorGrading(nullptr);
         }
+
+        // After updating transforms, refresh picking world transforms once per frame for all renderables.
+        if (const auto asset = app.asset) {
+            if (const auto registry = asset->getPickingRegistry()) {
+                registry->updateTransforms(*asset, *engine);
+            }
+        }
     };
 
     auto postRender = [&app](Engine* engine, View* view, Scene*, Renderer* renderer) {
@@ -1199,3 +1298,4 @@ int main(int argc, char** argv) {
 
     return 0;
 }
+
