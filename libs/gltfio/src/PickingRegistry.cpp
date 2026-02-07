@@ -105,10 +105,6 @@ bool PickingRegistry::registerMesh(const Entity entity, const cgltf_mesh* mesh) 
                 );
             }
         } else {
-            // No indices - vertices define triangles directly (v0, v1, v2), (v3, v4, v5), ...
-            slog.w << "PickingRegistry: Mesh primitive has no index buffer, generating sequential indices (entity "
-                   << entity.getId() << ")" << io::endl;
-
             size_t indexOffset = indices.size();
             indices.resize(indexOffset + vertexCount);
             for (size_t i = 0; i < vertexCount; ++i) {
@@ -140,18 +136,7 @@ bool PickingRegistry::registerMesh(const Entity entity, const cgltf_mesh* mesh) 
     // Store in registry
     mMeshes[entity] = std::move(meshData);
 
-    slog.d << "PickingRegistry: Registered mesh for entity " << entity.getId()
-           << " with " << (meshData.indices.size() / 3) << " triangles" << io::endl;
-
     return true;
-}
-
-void PickingRegistry::unregisterMesh(utils::Entity entity) {
-    auto it = mMeshes.find(entity);
-    if (it != mMeshes.end()) {
-        mMeshes.erase(it);
-        slog.d << "PickingRegistry: Unregistered mesh for entity " << entity.getId() << io::endl;
-    }
 }
 
 // ============================================================================
@@ -170,8 +155,9 @@ void PickingRegistry::buildBVH(MeshData& meshData) {
     meshData.bvh = std::make_unique<tinybvh::BVH>();
 
     // Convert triangle data to tinybvh format (vec4 per vertex, 3 vertices per triangle)
-    std::vector<tinybvh::bvhvec4> bvhTriangles;
-    bvhTriangles.reserve(triangleCount * 3);
+    // Store directly in meshData for persistence (TinyBVH stores a pointer to this data)
+    meshData.bvhTriangles.clear();
+    meshData.bvhTriangles.reserve(triangleCount * 3);
 
     for (size_t i = 0; i < triangleCount; ++i) {
         uint32_t idx0 = meshData.indices[i * 3 + 0];
@@ -182,32 +168,13 @@ void PickingRegistry::buildBVH(MeshData& meshData) {
         const float3& v1 = meshData.positions[idx1];
         const float3& v2 = meshData.positions[idx2];
 
-        bvhTriangles.push_back(tinybvh::bvhvec4(v0.x, v0.y, v0.z, 0.0f));
-        bvhTriangles.push_back(tinybvh::bvhvec4(v1.x, v1.y, v1.z, 0.0f));
-        bvhTriangles.push_back(tinybvh::bvhvec4(v2.x, v2.y, v2.z, 0.0f));
+        meshData.bvhTriangles.push_back(tinybvh::bvhvec4(v0.x, v0.y, v0.z, 0.0f));
+        meshData.bvhTriangles.push_back(tinybvh::bvhvec4(v1.x, v1.y, v1.z, 0.0f));
+        meshData.bvhTriangles.push_back(tinybvh::bvhvec4(v2.x, v2.y, v2.z, 0.0f));
     }
 
-    // Build the BVH - TinyBVH handles all AABB computation and tree construction
-    meshData.bvh->Build(bvhTriangles.data(), static_cast<unsigned int>(triangleCount));
-
-    slog.d << "PickingRegistry: Built BVH for " << triangleCount << " triangles" << io::endl;
-}
-
-// ============================================================================
-// Query Methods
-// ============================================================================
-
-const MeshData* PickingRegistry::getMeshData(utils::Entity entity) const {
-    auto it = mMeshes.find(entity);
-    return it != mMeshes.end() ? &it->second : nullptr;
-}
-
-bool PickingRegistry::hasMesh(utils::Entity entity) const {
-    return mMeshes.find(entity) != mMeshes.end();
-}
-
-size_t PickingRegistry::getMeshCount() const {
-    return mMeshes.size();
+    // Build the BVH - TinyBVH stores a pointer to this data, so it must persist!
+    meshData.bvh->Build(meshData.bvhTriangles.data(), static_cast<unsigned int>(triangleCount));
 }
 
 void PickingRegistry::clear() {

@@ -47,6 +47,9 @@ FFilamentAsset::~FFilamentAsset() {
 
     delete mWireframe;
 
+    // Start fresh
+    mPickingRegistry.clear();
+
     // Destroy name components.
     if (mNameManager) {
         for (auto entity : mEntities) {
@@ -437,6 +440,10 @@ const char* FilamentAsset::getSceneName(size_t sceneIndex) const noexcept {
 void FilamentAsset::addEntitiesToScene(Scene& targetScene, const Entity* entities, size_t count,
         SceneMask sceneFilter) const {
     downcast(this)->addEntitiesToScene(targetScene, entities, count, sceneFilter);
+}
+
+PickingRegistry* FilamentAsset::getPickingRegistry() noexcept {
+    return downcast(this)->getPickingRegistry();
 }
 
 } // namespace filament::gltfio

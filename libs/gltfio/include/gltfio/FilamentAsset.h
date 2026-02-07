@@ -21,6 +21,7 @@
 #include <filament/TextureSampler.h>
 
 #include <gltfio/NodeManager.h>
+#include <gltfio/PickingRegistry.h>
 
 #include <utils/compiler.h>
 #include <utils/Entity.h>
@@ -293,6 +294,9 @@ public:
     FilamentInstance* getInstance() noexcept {
         return getAssetInstanceCount() > 0 ? getAssetInstances()[0] : nullptr;
     }
+
+    /** Access the picking registry (may be empty if no meshes registered yet). */
+    PickingRegistry* getPickingRegistry() noexcept;
 
     /*! \cond PRIVATE */
 

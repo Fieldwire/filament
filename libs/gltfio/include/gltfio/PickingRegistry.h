@@ -30,6 +30,7 @@ struct cgltf_mesh;
 // Forward declaration of tinybvh BVH
 namespace tinybvh {
     class BVH;
+    struct bvhvec4;
 }
 
 namespace filament::gltfio {
@@ -41,6 +42,7 @@ struct MeshData {
     std::vector<math::float3> positions;       // Vertex positions in local space
     std::vector<uint32_t> indices;             // Triangle indices (3 per triangle)
     std::unique_ptr<tinybvh::BVH> bvh;         // BVH for accelerated ray tracing
+    std::vector<tinybvh::bvhvec4> bvhTriangles; // Triangle data in TinyBVH format (3 bvhvec4 per triangle)
 
     MeshData() = default;
     MeshData(MeshData&&) noexcept = default;
@@ -78,36 +80,6 @@ public:
      * @return true if registration was successful, false otherwise
      */
     bool registerMesh(utils::Entity entity, const cgltf_mesh* mesh);
-
-    /**
-     * Unregister a mesh associated with an entity.
-     *
-     * @param entity The entity whose mesh data should be removed
-     */
-    void unregisterMesh(utils::Entity entity);
-
-    /**
-     * Get the mesh data for a specific entity.
-     *
-     * @param entity The entity to query
-     * @return Pointer to MeshData or nullptr if entity not registered
-     */
-    const MeshData* getMeshData(utils::Entity entity) const;
-
-    /**
-     * Check if an entity has registered mesh data.
-     *
-     * @param entity The entity to check
-     * @return true if entity has mesh data, false otherwise
-     */
-    bool hasMesh(utils::Entity entity) const;
-
-    /**
-     * Get the number of registered meshes.
-     *
-     * @return Number of registered entities
-     */
-    size_t getMeshCount() const;
 
     /**
      * Clear all registered meshes.

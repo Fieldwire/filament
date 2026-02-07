@@ -457,6 +457,15 @@ bool ResourceLoader::loadResources(FFilamentAsset* asset, bool async) {
         ResourceLoaderExtended::loadResources(slots, pImpl->mEngine, asset->mBufferObjects);
     }
 
+    // Register meshes for picking - this works for both standard and extended paths
+    // For standard path: buffers were just loaded above via loadCgltfBuffers()
+    // For extended path: buffers were loaded earlier in AssetLoaderExtended::createPrimitive()
+    // In both cases, buffer->data is now valid and we can read vertex positions
+    for (const auto& [entity, mesh] : asset->mPendingMeshRegistrations) {
+        asset->mPickingRegistry.registerMesh(entity, mesh);
+    }
+    asset->mPendingMeshRegistrations.clear();
+
     createSkins(gltf, pImpl->mNormalizeSkinningWeights, asset->mSkins);
 
     // If any decoding jobs are still underway from a previous load, wait for them to finish.

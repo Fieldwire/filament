@@ -909,9 +909,12 @@ void FAssetLoader::createRenderable(const cgltf_node* node, Entity entity, const
         mRenderableManager.setMorphWeights(renderable, weights.data(), size);
     }
 
-    // After successfully creating the renderable with RenderableManager::Builder
-    // and the mesh has been assigned, register it for picking
-    fAsset->mPickingRegistry.registerMesh(entity, node->mesh);
+    // Defer mesh registration for picking until ResourceLoader has loaded cgltf buffers
+    // At this point, buffer->data is NULL, so we can't read vertex positions yet
+    // Store the entity-mesh pair to be processed later in ResourceLoader::loadResources()
+    if (node->mesh) {
+        fAsset->mPendingMeshRegistrations.emplace_back(entity, node->mesh);
+    }
 }
 
 void FAssetLoader::createMaterialVariants(const cgltf_mesh* mesh, Entity entity,
