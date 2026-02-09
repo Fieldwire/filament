@@ -18,7 +18,6 @@
 #define TNT_UTILS_MEMALIGN_H
 
 #include <type_traits>
-#include <cstddef> // added for std::ptrdiff_t and std::size_t
 
 #include <assert.h>
 #include <stddef.h>
