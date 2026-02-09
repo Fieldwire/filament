@@ -46,6 +46,7 @@
 #include "DracoCache.h"
 #include "FFilamentInstance.h"
 #include "Utility.h"
+#include "gltfio/PickingRegistry.h"
 
 #include <string>
 #include <unordered_map>
@@ -229,6 +230,10 @@ struct FFilamentAsset : public FilamentAsset {
     void addEntitiesToScene(Scene& targetScene, const Entity* entities, size_t count,
             SceneMask sceneFilter) const;
 
+    PickingRegistry* getPickingRegistry() noexcept {
+        return &mPickingRegistry;
+    }
+
     void detachFilamentComponents() noexcept {
         mDetachedFilamentComponents = true;
     }
@@ -323,6 +328,9 @@ struct FFilamentAsset : public FilamentAsset {
     // The mapping from cgltf_mesh to VertexBuffer* (etc) is required when creating new instances.
     MeshCache mMeshCache;
 
+    // Pending mesh registrations for picking - processed after buffers are loaded
+    std::vector<std::pair<utils::Entity, const cgltf_mesh*>> mPendingMeshRegistrations;
+
     // Asset information that is produced by AssetLoader and consumed by ResourceLoader:
     struct ResourceInfo {
         // Encapsulates VertexBuffer::setBufferAt() or IndexBuffer::setBuffer().
@@ -372,6 +380,12 @@ struct FFilamentAsset : public FilamentAsset {
     };
 
     std::variant<ResourceInfo, ResourceInfoExtended> mResourceInfo;
+
+    /**
+     * Picking registry for triangle-level ray intersection testing.
+     * Automatically populated during asset loading.
+     */
+    PickingRegistry mPickingRegistry;
 };
 
 FILAMENT_DOWNCAST(FilamentAsset)
