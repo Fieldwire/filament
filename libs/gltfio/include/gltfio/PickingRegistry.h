@@ -49,7 +49,7 @@ struct MeshData {
     std::vector<math::float3> positions;        // Vertex positions in local space
     std::vector<uint32_t> indices;              // Triangle indices (3 per triangle)
     std::unique_ptr<tinybvh::BVH> bvh;          // BVH for accelerated ray tracing
-    std::vector<tinybvh::bvhvec4> bvhVertices;  // per-vertex, shou
+    std::vector<tinybvh::bvhvec4> bvhVertices;  // Per-vertex data should be persisted, because tinybvh stores a pointer to this
 
     MeshData() = default;
     MeshData(MeshData&&) noexcept = default;
