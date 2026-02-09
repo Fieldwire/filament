@@ -3270,12 +3270,14 @@ template <bool posX, bool posY, bool posZ> int32_t BVH::Intersect( Ray& ray ) co
 			{
 				const uint32_t pi = primIdx[node->leftFirst + i];
 				const uint32_t i0 = vertIdx[pi * 3], i1 = vertIdx[pi * 3 + 1], i2 = vertIdx[pi * 3 + 2];
+				#ifdef ENABLE_PICK_FILTER
 				if (pickFilterEnabled) {
 					auto* ctx = static_cast<const TriangleFilterContext*>(ray.hit.auxData);
 					if (ctx && ctx->skipRanges && ctx->skipRangeCount) {
 						if (shouldSkipTriangleIdx(ctx, pi)) continue;
 					}
 				}
+				#endif
 				IntersectTri( ray, pi, verts, i0, i1, i2 );
 			}
 			else if (customEnabled && customIntersect != 0) for (uint32_t i = 0; i < node->triCount; i++, cost += c_int)
