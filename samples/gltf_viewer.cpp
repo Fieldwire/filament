@@ -522,7 +522,7 @@ static void onClick(App& app, View* view, ImVec2 pos) {
 
         auto hit = app.asset->getPickingRegistry()->pick(
             *view, app.engine->getTransformManager(), result.renderable, pos.x,
-            pos.y, nullptr, 2);
+            pos.y, skipRanges, 2);
 
         if (const char *name = app.asset->getName(result.renderable); name) {
           app.notificationText = std::string(name) + " Triangle " +
