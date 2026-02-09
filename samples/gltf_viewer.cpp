@@ -513,7 +513,7 @@ static void onClick(App& app, View* view, ImVec2 pos) {
     });
 
     // The code below is an example of how to use the picking registry
-    // to get more detailed information about a pick result, such as the triangle the was hit,
+    // to get more detailed information about a pick result, such as the triangle that was hit,
     // using CPU picking.
     /*view->pick(
       pos.x, pos.y, [&app, view, pos](View::PickingQueryResult const &result) {
