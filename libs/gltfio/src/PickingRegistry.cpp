@@ -16,10 +16,35 @@
 
 #include <gltfio/PickingRegistry.h>
 
+// Provide aligned_alloc for older Android API levels (<28)
+// aligned_alloc was added in API level 28, but tinybvh requires it for SIMD optimizations.
+#if defined(__ANDROID__) && (__ANDROID_API__ < 28)
+extern "C" void* aligned_alloc(size_t alignment, size_t size) {
+    size_t rem = size % alignment;
+    if (rem != 0) size += (alignment - rem);
+    void* ptr = nullptr;
+    if (posix_memalign(&ptr, alignment, size) != 0) return nullptr;
+    return ptr;
+}
+#endif
+
+// Suppress warnings from tinybvh about implicit conversions in ray construction
+// This is a localized suppression around the tinybvh include, popped right after compiling the header,
+// so it won't affect the rest of the codebase
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wimplicit-const-int-float-conversion"
+#endif
+
 // TinyBVH - Fast BVH-based ray tracing
 // Source: https://github.com/jbikker/tinybvh (commit 4b5b649)
 #define TINYBVH_IMPLEMENTATION
 #include "../../third_party/tiny-bvh/tiny_bvh.h"
+
+// Pop the diagnostic state to restore warnings after including tinybvh
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
 
 #include "filament/Camera.h"
 #include "filament/TransformManager.h"
@@ -190,14 +215,11 @@ PickingHit PickingRegistry::pick(View& view,
     hit.distance = std::numeric_limits<float>::max();
 
     // Compute ray from screen coordinates in world space
-    auto rayPair = computeScreenRay(&view, math::int2(screenX, screenY));
-    if (!rayPair) {
+    float3 worldRayOrigin;
+    float3 worldRayDirection;
+    if (!computeScreenRay(&view, math::int2(screenX, screenY), worldRayOrigin, worldRayDirection)) {
         return hit; // Failed to compute ray
     }
-
-    float3 worldRayOrigin = rayPair->first;
-    float3 worldRayDirection = rayPair->second;
-    delete rayPair;
 
     // Find the mesh for this entity
     auto it = mMeshes.find(entity);
@@ -242,25 +264,22 @@ PickingHit PickingRegistry::pick(View& view,
         hit.entity = entity;
         hit.triangleIndex = static_cast<int>(bvhRay.hit.prim);
         hit.distance = bvhRay.hit.t;
-        hit.bary = float3(bvhRay.hit.u, bvhRay.hit.v, 1.0f - bvhRay.hit.u - bvhRay.hit.v);
     }
 
     return hit;
 }
 
-std::pair<float3, float3> *PickingRegistry::computeScreenRay(View* view, int2 position) {
-    if (!view) return nullptr;
+bool PickingRegistry::computeScreenRay(View* view, int2 position,
+                                       float3& outOrigin, float3& outDirection) {
+    if (!view) return false;
 
     Camera* cam = &view->getCamera();
 
     auto sx = position.x;
     auto sy = position.y;
 
-    float3 outOrigin;
-    float3 outDirection;
-
     const Viewport& vp = view->getViewport();
-    if (vp.width <= 0 || vp.height <= 0) return nullptr;
+    if (vp.width <= 0 || vp.height <= 0) return false;
 
     double nx = (double(sx) / double(vp.width)) * 2.0 - 1.0;
     double ny = (double(sy) / double(vp.height)) * 2.0 - 1.0;
@@ -278,7 +297,7 @@ std::pair<float3, float3> *PickingRegistry::computeScreenRay(View* view, int2 po
     if (!std::isfinite(viewSpace.w) || std::abs(viewSpace.w) < 1e-12) {
         // This should never happen for near-plane un-projection.
         // Bail out instead of fabricating data.
-        return nullptr;
+        return false;
     }
 
     viewSpace = viewSpace / viewSpace.w;
@@ -294,7 +313,7 @@ std::pair<float3, float3> *PickingRegistry::computeScreenRay(View* view, int2 po
         outOrigin = worldPoint;
         outDirection = normalize(cam->getForwardVector());
     }
-    return new std::pair(outOrigin, outDirection);
+    return true;
 }
 
 void PickingRegistry::clear() {

@@ -251,6 +251,72 @@ public class FilamentAsset {
 
     public Engine getEngine() { return mEngine; }
 
+    /**
+     * Result from ray-triangle intersection test.
+     */
+    public static class PickingHit {
+        /** The entity that was hit */
+        public final @Entity int entityId;
+        /** Index of the hit triangle (-1 if no hit) */
+        public final int triangleIndex;
+        /** Distance along the ray to the hit point */
+        public final float distance;
+
+        public PickingHit(int entityId, int triangleIndex, float distance) {
+            this.entityId = entityId;
+            this.triangleIndex = triangleIndex;
+            this.distance = distance;
+        }
+
+        /** Returns true if a hit was found (triangleIndex >= 0) */
+        public boolean hasHit() {
+            return triangleIndex >= 0;
+        }
+
+        @NonNull
+        @Override
+        public String toString() {
+            return "PickingHit{" +
+                    "entityId=" + entityId +
+                    ", triangleIndex=" + triangleIndex +
+                    ", distance=" + distance +
+                    '}';
+        }
+    }
+
+    /**
+     * Perform ray-triangle intersection test against a specific entity's mesh.
+     * Computes ray from screen coordinates and optionally skips triangles in specified ranges.
+     *
+     * @param view The View to use for screen-to-ray conversion
+     * @param entityId The entity ID to test against
+     * @param screenX Screen X coordinate
+     * @param screenY Screen Y coordinate
+     * @param skipRanges Optional array of triangle index ranges to skip during intersection.
+     *                   Format: [start0, end0, start1, end1, ...] where each pair defines
+     *                   an inclusive range of triangle indices. Can be null for no skipping.
+     * @return PickingHit with hit information (triangleIndex = -1 if no hit)
+     */
+    @NonNull
+    public PickingHit pick(long view, @Entity int entityId, int screenX, int screenY,
+                          @Nullable int[] skipRanges) {
+        int[] result = nPick(mNativeObject, view, mEngine.getNativeObject(),
+                            entityId, screenX, screenY, skipRanges);
+        return new PickingHit(
+            result[0],                              // entityId
+            result[1],                              // triangleIndex
+            Float.intBitsToFloat(result[2])         // distance
+        );
+    }
+
+    /**
+     * Perform ray-triangle intersection test without skip ranges.
+     */
+    @NonNull
+    public PickingHit pick(long view, @Entity int entityId, int screenX, int screenY) {
+        return pick(view, entityId, screenX, screenY, null);
+    }
+
     void clearNativeObject() {
         mPrimaryInstance = null;
         mNativeObject = 0;
@@ -291,4 +357,7 @@ public class FilamentAsset {
     private static native void nGetResourceUris(long nativeAsset, String[] result);
 
     private static native void nReleaseSourceData(long nativeAsset);
+
+    private static native int[] nPick(long nativeAsset, long nativeView, long nativeEngine,
+                                      int entityId, int screenX, int screenY, int[] skipRanges);
 }

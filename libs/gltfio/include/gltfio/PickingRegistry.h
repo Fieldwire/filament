@@ -67,9 +67,6 @@ struct PickingHit {
     utils::Entity entity;           // Entity that was hit
     int triangleIndex = -1;         // Index of the hit triangle (-1 if no hit)
     float distance = 0.0f;          // Distance along the ray to the hit point
-    math::float3 bary;              // Barycentric coordinates of the hit point
-
-    bool hasHit() const { return triangleIndex >= 0; }
 };
 
 /**
@@ -141,7 +138,9 @@ private:
     static void buildBVH(MeshData& meshData);
 
     // Compute ray origin and direction in world space from screen coordinates
-    static std::pair<math::float3, math::float3> *computeScreenRay(View* view, math::int2 position);
+    // Returns true if successful, false otherwise
+    static bool computeScreenRay(View* view, math::int2 position,
+                                 math::float3& outOrigin, math::float3& outDirection);
 
     // Entity to mesh data mapping
     std::unordered_map<utils::Entity, MeshData, utils::Entity::Hasher> mMeshes;

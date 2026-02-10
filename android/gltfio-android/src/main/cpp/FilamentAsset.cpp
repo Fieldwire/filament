@@ -17,6 +17,10 @@
 #include <jni.h>
 
 #include <gltfio/FilamentAsset.h>
+#include <gltfio/PickingRegistry.h>
+
+#include <filament/Engine.h>
+#include <filament/View.h>
 
 using namespace filament;
 using namespace filament::math;
@@ -264,3 +268,71 @@ Java_com_google_android_filament_gltfio_FilamentAsset_nReleaseSourceData(JNIEnv*
     FilamentAsset* asset = (FilamentAsset*) nativeAsset;
     asset->releaseSourceData();
 }
+
+extern "C" JNIEXPORT jintArray JNICALL
+Java_com_google_android_filament_gltfio_FilamentAsset_nPick(JNIEnv* env, jclass,
+        jlong nativeAsset, jlong nativeView, jlong nativeEngine, jint entityId,
+        jint screenX, jint screenY, jintArray skipRanges) {
+
+    // Create result array: [entityId, triangleIndex, distance]
+    jintArray result = env->NewIntArray(3);
+    if (result == nullptr) {
+        return nullptr;
+    }
+
+    // Initialize with "no hit" values
+    jint noHitData[3] = {0, -1, 0};
+    env->SetIntArrayRegion(result, 0, 3, noHitData);
+
+    // Validate pointers
+    if (nativeAsset == 0 || nativeView == 0 || nativeEngine == 0) {
+        return result;
+    }
+
+    FilamentAsset* asset = (FilamentAsset*) nativeAsset;
+    View* view = (View*) nativeView;
+    Engine* engine = (Engine*) nativeEngine;
+
+    PickingRegistry* pickingRegistry = asset->getPickingRegistry();
+    if (pickingRegistry == nullptr) {
+        return result;
+    }
+
+    Entity entity = Entity::import(entityId);
+    auto& tcm = engine->getTransformManager();
+
+    // Process skip ranges if provided
+    const uint32_t* skipRangesPtr = nullptr;
+    size_t skipRangeCount = 0;
+    jint* skipRangesArray = nullptr;
+
+    if (skipRanges != nullptr) {
+        jsize arrayLength = env->GetArrayLength(skipRanges);
+        if (arrayLength > 0 && (arrayLength % 2) == 0) {
+            skipRangesArray = env->GetIntArrayElements(skipRanges, nullptr);
+            if (skipRangesArray != nullptr) {
+                skipRangesPtr = reinterpret_cast<const uint32_t*>(skipRangesArray);
+                skipRangeCount = arrayLength / 2;
+            }
+        }
+    }
+
+    // Perform picking
+    auto hit = pickingRegistry->pick(*view, tcm, entity, screenX, screenY,
+                                     skipRangesPtr, skipRangeCount);
+
+    // Release skip ranges array
+    if (skipRangesArray != nullptr) {
+        env->ReleaseIntArrayElements(skipRanges, skipRangesArray, JNI_ABORT);
+    }
+
+    // Fill result array
+    jint resultData[3];
+    resultData[0] = hit.entity.getId();
+    resultData[1] = hit.triangleIndex;
+    resultData[2] = *reinterpret_cast<jint*>(&hit.distance);
+    env->SetIntArrayRegion(result, 0, 3, resultData);
+
+    return result;
+}
+

@@ -24,6 +24,7 @@ import android.view.*
 import android.view.GestureDetector
 import android.widget.TextView
 import android.widget.Toast
+import com.google.android.filament.Entity
 import com.google.android.filament.Fence
 import com.google.android.filament.IndirectLight
 import com.google.android.filament.Material
@@ -471,15 +472,30 @@ class MainActivity : Activity() {
     // Just for testing purposes
     inner class SingleTapListener : GestureDetector.SimpleOnGestureListener() {
         override fun onSingleTapUp(event: MotionEvent): Boolean {
+            val x = event.x.toInt()
+            val flippedY = surfaceView.height - 1 - event.y.toInt()
             modelViewer.view.pick(
-                event.x.toInt(),
-                surfaceView.height - event.y.toInt(),
+                x,
+                flippedY,
                 surfaceView.handler, {
                     val name = modelViewer.asset!!.getName(it.renderable)
                     Log.v("Filament", "Picked ${it.renderable}: " + name)
+                    if (name != null) {
+                         pickTriangle(it.renderable, x, flippedY)
+                    }
                 },
             )
             return super.onSingleTapUp(event)
+        }
+
+        private fun pickTriangle(@Entity entityId: Int, x: Int, y: Int) {
+            // Call pick method from FilamentAsset.java
+            val pick = modelViewer.asset!!.pick(
+                modelViewer.view.nativeObject,
+                entityId,
+                x, y
+            )
+            Log.v("Filament", "Picked triangle $pick")
         }
     }
 }
