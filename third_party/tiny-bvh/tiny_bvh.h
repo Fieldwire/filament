@@ -1525,39 +1525,38 @@ static constexpr bool customEnabled = false;
 
 namespace tinybvh {
 // Enable triangle filtering support for ray picking queries.
-// This allows users to specify a list of index ranges to skip during ray traversal,
-// which can be used to implement features like object selection in a 3D viewport.
-// The filter is applied in the Intersect (not in IsOccluded) function,
-// and the skipRanges array should contain pairs of start and end indices, in sorted order,
-// that define the ranges of primitives to ignore.
+// This allows users to specify a list of triangle index ranges to skip during ray traversal.
+//
+// Param skipRanges should contain pairs of start and end triangle indices, incrementing order,
+// which define the range of triangles to be ignored.
+// Example: skipRanges=[0,5, 10,15] skips triangles 0-5 and 10-15 (inclusive).
+//
+// Note: The filter is applied in the Intersect (not in IsOccluded) function.
 #ifdef ENABLE_PICK_FILTER
 static constexpr bool pickFilterEnabled = true;
 struct TriangleFilterContext {
-	const uint32_t* skipRanges;    // [start0,end0,start1,end1,...] sorted index-slot ranges
+	const uint32_t* skipRanges;    // [start0,end0,start1,end1,...] sorted triangle index ranges (inclusive)
 	uint32_t skipRangeCount;       // number of pairs
 };
 
-static inline bool shouldSkipTriangleIdx(const TriangleFilterContext* ctx, uint32_t triIdx) {
+static bool shouldSkipTriangleIdx(const TriangleFilterContext* ctx, uint32_t triIdx) {
 	if (!ctx || !ctx->skipRanges || ctx->skipRangeCount == 0) return false;
 
-	const uint32_t triStart = triIdx * 3;
-	const uint32_t triEnd   = triStart + 2;
-
-	// Find first range with end >= triStart
+	// Binary search to find first range with end >= triIdx
 	uint32_t lo = 0, hi = ctx->skipRangeCount;
 	while (lo < hi) {
 		const uint32_t mid = (lo + hi) >> 1;
-		const uint32_t end = ctx->skipRanges[mid * 2 + 1];
-		if (end < triStart) lo = mid + 1;
+		const uint32_t rangeEnd = ctx->skipRanges[mid * 2 + 1];
+		if (rangeEnd < triIdx) lo = mid + 1;
 		else hi = mid;
 	}
 	if (lo >= ctx->skipRangeCount) return false;
 
-	const uint32_t start = ctx->skipRanges[lo * 2 + 0];
-	const uint32_t end   = ctx->skipRanges[lo * 2 + 1];
+	const uint32_t rangeStart = ctx->skipRanges[lo * 2 + 0];
+	const uint32_t rangeEnd   = ctx->skipRanges[lo * 2 + 1];
 
-	// Overlap test
-	return !(triEnd < start || triStart > end);
+	// Check if triIdx falls within this range (inclusive on both ends)
+	return (triIdx >= rangeStart && triIdx <= rangeEnd);
 }
 #else
 static constexpr bool pickFilterEnabled = false;

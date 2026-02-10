@@ -504,21 +504,22 @@ static void createOverdrawVisualizerEntities(Engine* engine, Scene* scene, App& 
 }
 
 static void onClick(App& app, View* view, ImVec2 pos) {
-    view->pick(pos.x, pos.y, [&app](View::PickingQueryResult const& result){
+    /*view->pick(pos.x, pos.y, [&app](View::PickingQueryResult const& result){
         if (const char* name = app.asset->getName(result.renderable); name) {
             app.notificationText = name;
         } else {
             app.notificationText.clear();
         }
-    });
+    });*/
 
     // The code below is an example of how to use the picking registry
     // to get more detailed information about a pick result, such as the triangle that was hit,
     // using CPU picking.
-    /*view->pick(
+    view->pick(
       pos.x, pos.y, [&app, view, pos](View::PickingQueryResult const &result) {
-         // Triangle **index** range, inclusive, to be skipped
-          const uint32_t skipRanges[] = {0, 107, 432, 1000000}; // 1000000 is a sentinel value
+        // Triangle **index** range, inclusive, to be skipped
+        // Pass null to skip skipping
+        const uint32_t skipRanges[] = {0, 36, 144, 1000000}; // 1000000 is a sentinel value
 
         auto hit = app.asset->getPickingRegistry()->pick(
             *view, app.engine->getTransformManager(), result.renderable, pos.x,
@@ -530,7 +531,7 @@ static void onClick(App& app, View* view, ImVec2 pos) {
         } else {
           app.notificationText.clear();
         }
-    });*/
+    });
 }
 
 static utils::Path getPathForIBLAsset(std::string_view string) {
@@ -799,10 +800,11 @@ int main(int argc, char** argv) {
                 createJitShaderProvider(engine, OPTIMIZE_MATERIALS) :
                 createUbershaderProvider(engine, UBERARCHIVE_DEFAULT_DATA, UBERARCHIVE_DEFAULT_SIZE);
 
-        app.assetLoader = AssetLoader::create({ engine, app.materials, app.names });
+        // This code path is used to load the gltf file with normals
+        // app.assetLoader = AssetLoader::create({ engine, app.materials, app.names });
 
         // Use the below code to load the gltf file without normals
-        /*AssetConfigurationExtended ext = {
+        AssetConfigurationExtended ext = {
             .gltfPath = filename.c_str(),
         };
         AssetConfiguration config = {
@@ -811,7 +813,7 @@ int main(int argc, char** argv) {
             .names = app.names,
             .ext = &ext,
         };
-        app.assetLoader = AssetLoader::create(config);*/
+        app.assetLoader = AssetLoader::create(config);
         app.mainCamera = &view->getCamera();
         if (filename.isEmpty()) {
             app.asset = app.assetLoader->createAsset(

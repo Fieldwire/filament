@@ -182,7 +182,7 @@ PickingHit PickingRegistry::pick(View& view,
                                  Entity entity,
                                  int screenX,
                                  int screenY,
-                                 const uint32_t* sortedSkipRanges,
+                                 const uint32_t* sortedTriangleSkipRanges,
                                  size_t skipRangeCount) const {
     PickingHit hit;
     // Initialize hit distance to max so any valid hit will be closer than this
@@ -222,7 +222,7 @@ PickingHit PickingRegistry::pick(View& view,
 
     // Use custom intersection callback for triangle filtering
     tinybvh::TriangleFilterContext ctx{};
-    ctx.skipRanges = sortedSkipRanges;
+    ctx.skipRanges = sortedTriangleSkipRanges;
     ctx.skipRangeCount = skipRangeCount;
 
     // Setup tinybvh ray - MUST use constructor to properly initialize rD

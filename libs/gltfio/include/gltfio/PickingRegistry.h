@@ -102,24 +102,33 @@ public:
 
     /**
      * Perform ray-triangle intersection test against a specific entity's mesh.
-     * Computes ray from screen coordinates and optionally skips triangles in the specified index ranges.
+     * Computes ray from screen coordinates and optionally skips triangles in specified ranges.
      *
      * @param view The View to use for screen-to-ray conversion
+     * @param tcm TransformManager for entity transforms
      * @param entity The entity to test against
      * @param screenX Screen X coordinate
      * @param screenY Screen Y coordinate
-     * @param sortedSkipRanges Flat array of skip ranges: [start0, end0, start1, end1, ...], can be nullptr.
-     *                 Each range is inclusive and specifies triangle index ranges to skip during intersection.
-     *                 Note: triangle indices refer to the position in the mesh's index buffer (not the primitive index).
-     * @param skipRangeCount Number of range PAIRS in skipRanges array (NOT total array length)
-     * @return Hit information (triangleIndex = -1 if no hit)
+     * @param sortedTriangleSkipRanges Flat array of triangle index ranges to skip during intersection.
+     *                         Format: [start0, end0, start1, end1, ...] where each pair defines
+     *                         an inclusive range of triangle indices.
+     *                         Example: [0, 5, 10, 15] skips triangles 0-5 and 10-15 (inclusive).
+     *                         Must be sorted by start index. Can be nullptr for no skipping.
+     * @param skipRangeCount Number of range PAIRS in sortedSkipRanges (NOT total array length).
+     *                       Example: skipRanges=[0,5,10,15] has skipRangeCount=2
+     * @return Hit information with triangleIndex=-1 if no hit
+     *
+     * Example usage:
+     *   // Skip triangle 5 and triangles 10-20
+     *   uint32_t sortedTriangleSkipRanges[] = {5, 5, 10, 20};
+     *   auto hit = registry.pick(view, tcm, entity, x, y, skipRanges, 2);
      */
     PickingHit pick(View& view,
                     TransformManager& tcm,
                     utils::Entity entity,
                     int screenX,
                     int screenY,
-                    const uint32_t* sortedSkipRanges = nullptr,
+                    const uint32_t* sortedTriangleSkipRanges = nullptr,
                     size_t skipRangeCount = 0) const;
 
     /**
