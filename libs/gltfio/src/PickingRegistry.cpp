@@ -160,16 +160,17 @@ void PickingRegistry::buildBVH(MeshData& meshData) {
     // Create BVH instance
     meshData.bvh = std::make_unique<tinybvh::BVH>();
 
-    // Convert triangle data to tinybvh format (vec4 per vertex, 3 vertices per triangle)
-    // Store directly in meshData for persistence (TinyBVH stores a pointer to this data)
+    // Convert vertex positions to TinyBVH format (bvhvec4 per unique vertex position).
+    // We build indexed geometry: one bvhvec4 per vertex in positions array,
+    // referenced by the index buffer. TinyBVH stores a pointer to this data, so it must persist!
     meshData.bvhVertices.clear();
-    meshData.bvhVertices.reserve(triangleCount * 3);
+    meshData.bvhVertices.reserve(meshData.positions.size());
 
     for (const auto& p : meshData.positions) {
         meshData.bvhVertices.emplace_back(p.x, p.y, p.z, 0.0f);
     }
 
-    // Build the BVH - TinyBVH stores a pointer to this data, so it must persist!
+    // Build the BVH using indexed geometry (vertex buffer + index buffer)
     meshData.bvh->Build(meshData.bvhVertices.data(), meshData.indices.data(), triangleCount);
 }
 
