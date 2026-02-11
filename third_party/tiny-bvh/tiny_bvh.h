@@ -1536,16 +1536,16 @@ namespace tinybvh {
 static constexpr bool pickFilterEnabled = true;
 struct TriangleFilterContext {
 	const uint32_t* skipRanges;    // [start0,end0,start1,end1,...] sorted triangle index ranges (inclusive)
-	uint32_t skipRangeCount;       // number of pairs
+	size_t skipRangeCount;         // number of pairs
 };
 
 static bool shouldSkipTriangleIdx(const TriangleFilterContext* ctx, uint32_t triIdx) {
 	if (!ctx || !ctx->skipRanges || ctx->skipRangeCount == 0) return false;
 
 	// Binary search to find first range with end >= triIdx
-	uint32_t lo = 0, hi = ctx->skipRangeCount;
+	size_t lo = 0, hi = ctx->skipRangeCount;
 	while (lo < hi) {
-		const uint32_t mid = (lo + hi) >> 1;
+		const size_t mid = (lo + hi) >> 1;
 		const uint32_t rangeEnd = ctx->skipRanges[mid * 2 + 1];
 		if (rangeEnd < triIdx) lo = mid + 1;
 		else hi = mid;
