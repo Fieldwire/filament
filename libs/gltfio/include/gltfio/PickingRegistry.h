@@ -129,6 +129,14 @@ public:
                     size_t skipRangeCount = 0) const;
 
     /**
+     * Get read-only access to the mesh data map.
+     * Used by TriangleHighlighter to access geometry data.
+     */
+    const std::unordered_map<utils::Entity, MeshData, utils::Entity::Hasher>& getMeshes() const {
+        return mMeshes;
+    }
+
+    /**
      * Clear all registered meshes.
      */
     void clear();

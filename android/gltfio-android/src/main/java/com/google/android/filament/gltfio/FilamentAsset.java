@@ -317,6 +317,115 @@ public class FilamentAsset {
         return pick(view, entityId, screenX, screenY, null);
     }
 
+    /**
+     * Mesh data for an entity containing positions and indices.
+     * The ByteBuffers directly reference native C++ memory - no copy is made.
+     *
+     * <p><b>MEMORY OWNERSHIP:</b> The ByteBuffers are <b>weak references</b> to C++ memory.
+     * The JVM does NOT own this memory and cannot prevent it from being freed.
+     * You do NOT need to manually free/close the ByteBuffers - they will be garbage collected.
+     * However, GC'ing the ByteBuffer does NOT free the C++ memory (it's owned by PickingRegistry).</p>
+     *
+     * <p><b>LIFETIME WARNING:</b> The buffers are only valid while the FilamentAsset exists
+     * and releaseSourceData() has not been called. Accessing the buffers after the asset
+     * is destroyed will cause undefined behavior (crash or garbage data).</p>
+     *
+     * <p><b>SAFE USAGE PATTERN:</b></p>
+     * <pre>
+     * // GOOD: Use immediately and don't store
+     * val mesh = asset.getMeshData(entityId)
+     * mesh?.let { processImmediately(it) }
+     *
+     * // BAD: Don't cache the ByteBuffer beyond current scope
+     * val cachedBuffer = asset.getMeshData(entityId)?.positions  // DANGEROUS!
+     * // ... later, asset might be destroyed ...
+     * cachedBuffer?.get(0)  // CRASH!
+     * </pre>
+     */
+    public static class MeshData {
+        /** Number of vertex positions (each position is 3 floats: x, y, z) */
+        public final int positionCount;
+
+        /** Number of indices (every 3 indices form a triangle) */
+        public final int indexCount;
+
+        /**
+         * Direct ByteBuffer containing positions as floats (x, y, z per vertex).
+         * Read as FloatBuffer: positions.order(ByteOrder.nativeOrder()).asFloatBuffer()
+         * Total bytes = positionCount * 12 (3 floats * 4 bytes)
+         */
+        @Nullable
+        public final java.nio.ByteBuffer positions;
+
+        /**
+         * Direct ByteBuffer containing indices as uint32.
+         * Read as IntBuffer: indices.order(ByteOrder.nativeOrder()).asIntBuffer()
+         * Total bytes = indexCount * 4
+         */
+        @Nullable
+        public final java.nio.ByteBuffer indices;
+
+        MeshData(int positionCount, int indexCount,
+                 java.nio.ByteBuffer positions, java.nio.ByteBuffer indices) {
+            this.positionCount = positionCount;
+            this.indexCount = indexCount;
+            this.positions = positions;
+            this.indices = indices;
+        }
+    }
+
+    /**
+     * Gets mesh data (positions and indices) for an entity.
+     *
+     * <p>The returned ByteBuffers directly reference native C++ memory, avoiding any copying.
+     * This is the most memory-efficient way to access mesh geometry data.</p>
+     *
+     * <p><b>IMPORTANT:</b> The buffers are only valid while the FilamentAsset exists.
+     * Do not cache or use them after the asset is destroyed.</p>
+     *
+     * <p>Example usage:</p>
+     * <pre>
+     * MeshData mesh = asset.getMeshData(entityId);
+     * if (mesh != null && mesh.positions != null) {
+     *     FloatBuffer positions = mesh.positions
+     *         .order(ByteOrder.nativeOrder())
+     *         .asFloatBuffer();
+     *     for (int i = 0; i < mesh.positionCount; i++) {
+     *         float x = positions.get(i * 3);
+     *         float y = positions.get(i * 3 + 1);
+     *         float z = positions.get(i * 3 + 2);
+     *     }
+     *
+     *     IntBuffer indices = mesh.indices
+     *         .order(ByteOrder.nativeOrder())
+     *         .asIntBuffer();
+     *     for (int i = 0; i < mesh.indexCount / 3; i++) {
+     *         int i0 = indices.get(i * 3);
+     *         int i1 = indices.get(i * 3 + 1);
+     *         int i2 = indices.get(i * 3 + 2);
+     *     }
+     * }
+     * </pre>
+     *
+     * @param entityId The entity to get mesh data for
+     * @return MeshData containing positions and indices, or null if not found
+     */
+    @Nullable
+    public MeshData getMeshData(@Entity int entityId) {
+        long[] info = nGetMeshDataInfo(mNativeObject, entityId);
+        if (info == null) {
+            return null;
+        }
+
+        int positionCount = (int) info[0];
+        int indexCount = (int) info[1];
+
+        java.nio.ByteBuffer positions = nGetMeshPositionsBuffer(mNativeObject, entityId);
+        java.nio.ByteBuffer indices = nGetMeshIndicesBuffer(mNativeObject, entityId);
+
+        return new MeshData(positionCount, indexCount, positions, indices);
+    }
+
     void clearNativeObject() {
         mPrimaryInstance = null;
         mNativeObject = 0;
@@ -360,4 +469,10 @@ public class FilamentAsset {
 
     private static native int[] nPick(long nativeAsset, long nativeView, long nativeEngine,
                                       int entityId, int screenX, int screenY, int[] skipRanges);
+
+    private static native long nGetPickingRegistry(long nativeAsset);
+
+    private static native long[] nGetMeshDataInfo(long nativeAsset, int entityId);
+    private static native java.nio.ByteBuffer nGetMeshPositionsBuffer(long nativeAsset, int entityId);
+    private static native java.nio.ByteBuffer nGetMeshIndicesBuffer(long nativeAsset, int entityId);
 }
