@@ -16,10 +16,41 @@
 
 #include <gltfio/PickingRegistry.h>
 
+// Provide aligned_alloc for older Android API levels (<28)
+// aligned_alloc was added in API level 28, but tinybvh requires it for SIMD optimizations.
+#if defined(__ANDROID__) && (__ANDROID_API__ < 28)
+extern "C" void* aligned_alloc(size_t alignment, size_t size) {
+    size_t rem = size % alignment;
+    if (rem != 0) size += (alignment - rem);
+    void* ptr = nullptr;
+    if (posix_memalign(&ptr, alignment, size) != 0) return nullptr;
+    return ptr;
+}
+#endif
+
+// Suppress warnings from tinybvh about implicit conversions in ray construction
+// This is a localized suppression around the tinybvh include, popped right after compiling the header,
+// so it won't affect the rest of the codebase
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wimplicit-const-int-float-conversion"
+#endif
+
 // TinyBVH - Fast BVH-based ray tracing
 // Source: https://github.com/jbikker/tinybvh (commit 4b5b649)
 #define TINYBVH_IMPLEMENTATION
 #include "../../third_party/tiny-bvh/tiny_bvh.h"
+
+// Pop the diagnostic state to restore warnings after including tinybvh
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
+
+#include "filament/Camera.h"
+#include "filament/TransformManager.h"
+#include "filament/View.h"
+#include "filament/Viewport.h"
+#include "gltfio/Animator.h"
 
 #include <cgltf.h>
 #include <utils/Log.h>
@@ -154,31 +185,138 @@ void PickingRegistry::buildBVH(MeshData& meshData) {
     // Create BVH instance
     meshData.bvh = std::make_unique<tinybvh::BVH>();
 
-    // Convert triangle data to tinybvh format (vec4 per vertex, 3 vertices per triangle)
-    // Store directly in meshData for persistence (TinyBVH stores a pointer to this data)
-    meshData.bvhTriangles.clear();
-    meshData.bvhTriangles.reserve(triangleCount * 3);
+    // Convert vertex positions to TinyBVH format (bvhvec4 per unique vertex position).
+    // We build indexed geometry: one bvhvec4 per vertex in positions array,
+    // referenced by the index buffer. TinyBVH stores a pointer to this data, so it must persist!
+    meshData.bvhVertices.clear();
+    meshData.bvhVertices.reserve(meshData.positions.size());
 
-    for (size_t i = 0; i < triangleCount; ++i) {
-        uint32_t idx0 = meshData.indices[i * 3 + 0];
-        uint32_t idx1 = meshData.indices[i * 3 + 1];
-        uint32_t idx2 = meshData.indices[i * 3 + 2];
-
-        const float3& v0 = meshData.positions[idx0];
-        const float3& v1 = meshData.positions[idx1];
-        const float3& v2 = meshData.positions[idx2];
-
-        meshData.bvhTriangles.push_back(tinybvh::bvhvec4(v0.x, v0.y, v0.z, 0.0f));
-        meshData.bvhTriangles.push_back(tinybvh::bvhvec4(v1.x, v1.y, v1.z, 0.0f));
-        meshData.bvhTriangles.push_back(tinybvh::bvhvec4(v2.x, v2.y, v2.z, 0.0f));
+    for (const auto& p : meshData.positions) {
+        meshData.bvhVertices.emplace_back(p.x, p.y, p.z, 0.0f);
     }
 
-    // Build the BVH - TinyBVH stores a pointer to this data, so it must persist!
-    meshData.bvh->Build(meshData.bvhTriangles.data(), static_cast<unsigned int>(triangleCount));
+    // Build the BVH using indexed geometry (vertex buffer + index buffer)
+    meshData.bvh->Build(meshData.bvhVertices.data(), meshData.indices.data(), triangleCount);
+}
+
+// ============================================================================
+// Ray-Triangle Intersection with Triangle Filtering
+// ============================================================================
+
+PickingHit PickingRegistry::pick(View& view,
+                                 TransformManager& tcm,
+                                 Entity entity,
+                                 int screenX,
+                                 int screenY,
+                                 const uint32_t* sortedTriangleSkipRanges,
+                                 size_t skipRangeCount) const {
+    PickingHit hit;
+    // Initialize hit distance to max so any valid hit will be closer than this
+    hit.distance = std::numeric_limits<float>::max();
+
+    // Compute ray from screen coordinates in world space
+    float3 worldRayOrigin;
+    float3 worldRayDirection;
+    if (!computeScreenRay(&view, math::int2(screenX, screenY), worldRayOrigin, worldRayDirection)) {
+        return hit; // Failed to compute ray
+    }
+
+    // Find the mesh for this entity
+    auto it = mMeshes.find(entity);
+    if (it == mMeshes.end() || !it->second.bvh) {
+        return hit; // No mesh or BVH for this entity
+    }
+
+    const MeshData& meshData = it->second;
+
+    // Get entity's transform and convert to local space
+    auto instance = tcm.getInstance(entity);
+    if (!instance) {
+        return hit; // Entity has no transform
+    }
+
+    // Get inverse of world transform to convert ray to local space
+    mat4f worldTransform = tcm.getWorldTransform(instance);
+    mat4f localTransform = inverse(worldTransform);
+
+    // Transform ray to local (model) space
+    float3 rayOrigin = (localTransform * float4(worldRayOrigin, 1.0f)).xyz;
+    float3 rayDir = normalize((localTransform * float4(worldRayDirection, 0.0f)).xyz);
+
+    // Use custom intersection callback for triangle filtering
+    tinybvh::TriangleFilterContext ctx{};
+    ctx.skipRanges = sortedTriangleSkipRanges;
+    ctx.skipRangeCount = skipRangeCount;
+
+    // Setup tinybvh ray - MUST use constructor to properly initialize rD
+    // (reciprocal direction)! The constructor normalizes D and computes rD =
+    // 1/D which is required for BVH traversal
+    tinybvh::bvhvec3 origin(rayOrigin.x, rayOrigin.y, rayOrigin.z);
+    tinybvh::bvhvec3 direction(rayDir.x, rayDir.y, rayDir.z);
+    tinybvh::Ray bvhRay(origin, direction, hit.distance);
+    bvhRay.hit.auxData = &ctx; // Pass context to callback
+
+    // Intersect with BVH - callback will skip hidden triangles during traversal
+    meshData.bvh->Intersect(bvhRay);
+
+    // Check if we found a hit (TinyBVH updates ray.hit.t to actual distance)
+    if (bvhRay.hit.t < hit.distance && bvhRay.hit.t > 0) {
+        hit.entity = entity;
+        hit.triangleIndex = static_cast<int>(bvhRay.hit.prim);
+        hit.distance = bvhRay.hit.t;
+    }
+
+    return hit;
+}
+
+bool PickingRegistry::computeScreenRay(View* view, int2 position,
+                                       float3& outOrigin, float3& outDirection) {
+    if (!view) return false;
+
+    Camera* cam = &view->getCamera();
+
+    auto sx = position.x;
+    auto sy = position.y;
+
+    const Viewport& vp = view->getViewport();
+    if (vp.width <= 0 || vp.height <= 0) return false;
+
+    double nx = (double(sx) / double(vp.width)) * 2.0 - 1.0;
+    double ny = (double(sy) / double(vp.height)) * 2.0 - 1.0;
+
+    mat4 proj = cam->getProjectionMatrix();
+    bool isPerspective = std::abs(proj[3][3]) < 1e-6;
+
+    mat4 invProj = Camera::inverseProjection(proj);
+    mat4 viewM = cam->getViewMatrix();
+    mat4 invView = inverse(viewM);
+
+    double4 clip{ nx, ny, 0.0, 1.0 }; // near plane
+    double4 viewSpace = invProj * clip;
+
+    if (!std::isfinite(viewSpace.w) || std::abs(viewSpace.w) < 1e-12) {
+        // This should never happen for near-plane un-projection.
+        // Bail out instead of fabricating data.
+        return false;
+    }
+
+    viewSpace = viewSpace / viewSpace.w;
+    auto viewPoint = float3( (float)viewSpace.x, (float)viewSpace.y, (float)viewSpace.z );
+
+    if (isPerspective) {
+        float3 dirView = normalize(viewPoint);
+        float3 dirWorld = normalize( (invView * float4(dirView, 0)).xyz );
+        outOrigin = cam->getPosition();
+        outDirection = dirWorld;
+    } else {
+        float3 worldPoint = (invView * float4(viewPoint, 1)).xyz;
+        outOrigin = worldPoint;
+        outDirection = normalize(cam->getForwardVector());
+    }
+    return true;
 }
 
 void PickingRegistry::clear() {
     mMeshes.clear();
-    slog.d << "PickingRegistry: Cleared all meshes" << io::endl;
 }
 } // namespace filament::gltfio

@@ -504,11 +504,32 @@ static void createOverdrawVisualizerEntities(Engine* engine, Scene* scene, App& 
 }
 
 static void onClick(App& app, View* view, ImVec2 pos) {
-    view->pick(pos.x, pos.y, [&app](View::PickingQueryResult const& result){
+    /*view->pick(pos.x, pos.y, [&app](View::PickingQueryResult const& result){
         if (const char* name = app.asset->getName(result.renderable); name) {
             app.notificationText = name;
         } else {
             app.notificationText.clear();
+        }
+    });*/
+
+    // The code below is an example of how to use the picking registry
+    // to get more detailed information about a pick result, such as the triangle that was hit,
+    // using CPU picking.
+    view->pick(
+      pos.x, pos.y, [&app, view, pos](View::PickingQueryResult const &result) {
+        // Triangle **index** range, inclusive, to be skipped
+        // Pass null to skip skipping
+        const uint32_t skipRanges[] = {0, 36, 144, 200}; // 1000000 is a sentinel value
+
+        auto hit = app.asset->getPickingRegistry()->pick(
+            *view, app.engine->getTransformManager(), result.renderable, pos.x,
+            pos.y, nullptr, 2);
+
+        if (const char *name = app.asset->getName(result.renderable); name) {
+          app.notificationText = std::string(name) + " Triangle " +
+                                 std::to_string(hit.triangleIndex);
+        } else {
+          app.notificationText.clear();
         }
     });
 }
@@ -779,7 +800,20 @@ int main(int argc, char** argv) {
                 createJitShaderProvider(engine, OPTIMIZE_MATERIALS) :
                 createUbershaderProvider(engine, UBERARCHIVE_DEFAULT_DATA, UBERARCHIVE_DEFAULT_SIZE);
 
-        app.assetLoader = AssetLoader::create({engine, app.materials, app.names });
+        // This code path is used to load the gltf file with normals
+        // app.assetLoader = AssetLoader::create({ engine, app.materials, app.names });
+
+        // Use the below code to load the gltf file without normals
+        AssetConfigurationExtended ext = {
+            .gltfPath = filename.c_str(),
+        };
+        AssetConfiguration config = {
+            .engine = engine,
+            .materials = app.materials,
+            .names = app.names,
+            .ext = &ext,
+        };
+        app.assetLoader = AssetLoader::create(config);
         app.mainCamera = &view->getCamera();
         if (filename.isEmpty()) {
             app.asset = app.assetLoader->createAsset(

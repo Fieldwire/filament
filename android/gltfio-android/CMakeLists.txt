@@ -53,6 +53,7 @@ set(GLTFIO_SRCS
         ${GLTFIO_DIR}/include/gltfio/FilamentInstance.h
         ${GLTFIO_DIR}/include/gltfio/MaterialProvider.h
         ${GLTFIO_DIR}/include/gltfio/NodeManager.h
+        ${GLTFIO_DIR}/include/gltfio/PickingRegistry.h
         ${GLTFIO_DIR}/include/gltfio/TrsTransformManager.h
         ${GLTFIO_DIR}/include/gltfio/ResourceLoader.h
         ${GLTFIO_DIR}/include/gltfio/TextureProvider.h
@@ -76,6 +77,7 @@ set(GLTFIO_SRCS
         ${GLTFIO_DIR}/src/Ktx2Provider.cpp
         ${GLTFIO_DIR}/src/MaterialProvider.cpp
         ${GLTFIO_DIR}/src/NodeManager.cpp
+        ${GLTFIO_DIR}/src/PickingRegistry.cpp
         ${GLTFIO_DIR}/src/TrsTransformManager.cpp
         ${GLTFIO_DIR}/src/ResourceLoader.cpp
         ${GLTFIO_DIR}/src/StbProvider.cpp
@@ -121,6 +123,7 @@ set(GLTFIO_INCLUDE_DIRS
         ../../third_party/meshoptimizer/src
         ../../third_party/robin-map
         ../../third_party/stb
+        ../../third_party/tiny-bvh
         ../../libs/utils/include
         ../../libs/ktxreader/include
 )

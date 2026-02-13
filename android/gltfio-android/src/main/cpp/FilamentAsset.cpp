@@ -17,6 +17,10 @@
 #include <jni.h>
 
 #include <gltfio/FilamentAsset.h>
+#include <gltfio/PickingRegistry.h>
+
+#include <filament/Engine.h>
+#include <filament/View.h>
 
 using namespace filament;
 using namespace filament::math;
@@ -264,3 +268,195 @@ Java_com_google_android_filament_gltfio_FilamentAsset_nReleaseSourceData(JNIEnv*
     FilamentAsset* asset = (FilamentAsset*) nativeAsset;
     asset->releaseSourceData();
 }
+
+extern "C" JNIEXPORT jintArray JNICALL
+Java_com_google_android_filament_gltfio_FilamentAsset_nPick(JNIEnv* env, jclass,
+        jlong nativeAsset, jlong nativeView, jlong nativeEngine, jint entityId,
+        jint screenX, jint screenY, jintArray skipRanges) {
+
+    // Create result array: [entityId, triangleIndex, distance]
+    jintArray result = env->NewIntArray(3);
+    if (result == nullptr) {
+        return nullptr;
+    }
+
+    // Initialize with "no hit" values
+    jint noHitData[3] = {0, -1, 0};
+    env->SetIntArrayRegion(result, 0, 3, noHitData);
+
+    // Validate pointers
+    if (nativeAsset == 0 || nativeView == 0 || nativeEngine == 0) {
+        return result;
+    }
+
+    FilamentAsset* asset = (FilamentAsset*) nativeAsset;
+    View* view = (View*) nativeView;
+    Engine* engine = (Engine*) nativeEngine;
+
+    PickingRegistry* pickingRegistry = asset->getPickingRegistry();
+    if (pickingRegistry == nullptr) {
+        return result;
+    }
+
+    Entity entity = Entity::import(entityId);
+    auto& tcm = engine->getTransformManager();
+
+    // Process skip ranges if provided
+    const uint32_t* skipRangesPtr = nullptr;
+    size_t skipRangeCount = 0;
+    jint* skipRangesArray = nullptr;
+
+    if (skipRanges != nullptr) {
+        jsize arrayLength = env->GetArrayLength(skipRanges);
+        if (arrayLength > 0 && (arrayLength % 2) == 0) {
+            skipRangesArray = env->GetIntArrayElements(skipRanges, nullptr);
+            if (skipRangesArray != nullptr) {
+                skipRangesPtr = reinterpret_cast<const uint32_t*>(skipRangesArray);
+                skipRangeCount = arrayLength / 2;
+            }
+        }
+    }
+
+    // Perform picking
+    auto hit = pickingRegistry->pick(*view, tcm, entity, screenX, screenY,
+                                     skipRangesPtr, skipRangeCount);
+
+    // Release skip ranges array
+    if (skipRangesArray != nullptr) {
+        env->ReleaseIntArrayElements(skipRanges, skipRangesArray, JNI_ABORT);
+    }
+
+    // Fill result array
+    jint resultData[3];
+    resultData[0] = hit.entity.getId();
+    resultData[1] = hit.triangleIndex;
+    resultData[2] = *reinterpret_cast<jint*>(&hit.distance);
+    env->SetIntArrayRegion(result, 0, 3, resultData);
+
+    return result;
+}
+
+/**
+ * Returns mesh data info for an entity: [positionCount, indexCount, positionsPtr, indicesPtr]
+ * The pointers can be used to create direct ByteBuffers on the Java side.
+ * This avoids copying data - the ByteBuffers will directly reference C++ memory.
+ *
+ * IMPORTANT: The returned pointers are only valid while the PickingRegistry exists.
+ * Do not cache the ByteBuffers beyond the lifetime of the FilamentAsset.
+ */
+extern "C" JNIEXPORT jlongArray JNICALL
+Java_com_google_android_filament_gltfio_FilamentAsset_nGetMeshDataInfo(JNIEnv* env, jclass,
+        jlong nativeAsset, jint entityId) {
+    FilamentAsset* asset = (FilamentAsset*) nativeAsset;
+    PickingRegistry* registry = asset->getPickingRegistry();
+
+    if (!registry) {
+        return nullptr;
+    }
+
+    Entity entity = Entity::import(entityId);
+    const auto& meshes = registry->getMeshes();
+    auto it = meshes.find(entity);
+
+    if (it == meshes.end()) {
+        return nullptr;
+    }
+
+    const MeshData& meshData = it->second;
+
+    // Return: [positionCount, indexCount, positionsPtr, indicesPtr]
+    jlongArray result = env->NewLongArray(4);
+    if (result == nullptr) {
+        return nullptr;
+    }
+
+    jlong data[4];
+    data[0] = static_cast<jlong>(meshData.positions.size());
+    data[1] = static_cast<jlong>(meshData.indices.size());
+    data[2] = reinterpret_cast<jlong>(meshData.positions.data());
+    data[3] = reinterpret_cast<jlong>(meshData.indices.data());
+
+    env->SetLongArrayRegion(result, 0, 4, data);
+    return result;
+}
+
+/**
+ * Creates a direct ByteBuffer wrapping the positions array for an entity.
+ * The buffer directly references C++ memory - no copy is made.
+ *
+ * Each position is 3 floats (12 bytes). Total size = positionCount * 12 bytes.
+ *
+ * IMPORTANT: The buffer is only valid while the PickingRegistry/FilamentAsset exists.
+ */
+extern "C" JNIEXPORT jobject JNICALL
+Java_com_google_android_filament_gltfio_FilamentAsset_nGetMeshPositionsBuffer(JNIEnv* env, jclass,
+        jlong nativeAsset, jint entityId) {
+    FilamentAsset* asset = (FilamentAsset*) nativeAsset;
+    PickingRegistry* registry = asset->getPickingRegistry();
+
+    if (!registry) {
+        return nullptr;
+    }
+
+    Entity entity = Entity::import(entityId);
+    const auto& meshes = registry->getMeshes();
+    auto it = meshes.find(entity);
+
+    if (it == meshes.end()) {
+        return nullptr;
+    }
+
+    const MeshData& meshData = it->second;
+
+    if (meshData.positions.empty()) {
+        return nullptr;
+    }
+
+    // Create a direct ByteBuffer that wraps the C++ memory
+    // Each float3 is 12 bytes (3 * sizeof(float))
+    jlong capacity = meshData.positions.size() * sizeof(float3);
+    void* address = const_cast<void*>(static_cast<const void*>(meshData.positions.data()));
+
+    return env->NewDirectByteBuffer(address, capacity);
+}
+
+/**
+ * Creates a direct ByteBuffer wrapping the indices array for an entity.
+ * The buffer directly references C++ memory - no copy is made.
+ *
+ * Each index is 4 bytes (uint32_t). Total size = indexCount * 4 bytes.
+ *
+ * IMPORTANT: The buffer is only valid while the PickingRegistry/FilamentAsset exists.
+ */
+extern "C" JNIEXPORT jobject JNICALL
+Java_com_google_android_filament_gltfio_FilamentAsset_nGetMeshIndicesBuffer(JNIEnv* env, jclass,
+        jlong nativeAsset, jint entityId) {
+    FilamentAsset* asset = (FilamentAsset*) nativeAsset;
+    PickingRegistry* registry = asset->getPickingRegistry();
+
+    if (!registry) {
+        return nullptr;
+    }
+
+    Entity entity = Entity::import(entityId);
+    const auto& meshes = registry->getMeshes();
+    auto it = meshes.find(entity);
+
+    if (it == meshes.end()) {
+        return nullptr;
+    }
+
+    const MeshData& meshData = it->second;
+
+    if (meshData.indices.empty()) {
+        return nullptr;
+    }
+
+    // Create a direct ByteBuffer that wraps the C++ memory
+    // Each uint32_t is 4 bytes
+    jlong capacity = meshData.indices.size() * sizeof(uint32_t);
+    void* address = const_cast<void*>(static_cast<const void*>(meshData.indices.data()));
+
+    return env->NewDirectByteBuffer(address, capacity);
+}
+
