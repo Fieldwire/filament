@@ -29,11 +29,15 @@ extern "C" void* aligned_alloc(size_t alignment, size_t size) {
 #endif
 
 // Suppress warnings from tinybvh about implicit conversions in ray construction
+// and unguarded availability for aligned_alloc on older Android
 // This is a localized suppression around the tinybvh include, popped right after compiling the header,
 // so it won't affect the rest of the codebase
 #ifdef __clang__
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wimplicit-const-int-float-conversion"
+#if defined(__ANDROID__)
+#pragma clang diagnostic ignored "-Wunguarded-availability"
+#endif
 #endif
 
 // TinyBVH - Fast BVH-based ray tracing
