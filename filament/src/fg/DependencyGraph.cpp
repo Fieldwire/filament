@@ -16,9 +16,15 @@
 
 #include "fg/details/DependencyGraph.h"
 
-#include <utils/Systrace.h>
+#include <private/utils/Tracing.h>
+
+#include <utils/compiler.h>
+#include <utils/debug.h>
+#include <utils/CString.h>
+#include <utils/ostream.h>
 
 #include <iterator>
+#include <cstdint>
 
 namespace filament {
 
@@ -34,7 +40,7 @@ uint32_t DependencyGraph::generateNodeId() noexcept {
     return mNodes.size();
 }
 
-void DependencyGraph::registerNode(Node* node, NodeID id) noexcept {
+void DependencyGraph::registerNode(Node* node, NodeID const id) noexcept {
     // Node* is not fully constructed here
     assert_invariant(id == mNodes.size());
 
@@ -46,14 +52,14 @@ void DependencyGraph::registerNode(Node* node, NodeID id) noexcept {
     nodes.push_back(node);
 }
 
-bool DependencyGraph::isEdgeValid(DependencyGraph::Edge const* edge) const noexcept {
+bool DependencyGraph::isEdgeValid(Edge const* edge) const noexcept {
     auto& nodes = mNodes;
     Node const* from = nodes[edge->from];
     Node const* to = nodes[edge->to];
     return !from->isCulled() && !to->isCulled();
 }
 
-void DependencyGraph::link(DependencyGraph::Edge* edge) noexcept {
+void DependencyGraph::link(Edge* edge) noexcept {
     // here we manually grow the fixed-size vector
     EdgeContainer& edges = mEdges;
     if (UTILS_UNLIKELY(edges.capacity() == edges.size())) {
@@ -72,7 +78,7 @@ DependencyGraph::NodeContainer const& DependencyGraph::getNodes() const noexcept
 }
 
 DependencyGraph::EdgeContainer DependencyGraph::getIncomingEdges(
-        DependencyGraph::Node const* node) const noexcept {
+        Node const* node) const noexcept {
     // TODO: we might need something more efficient
     auto result = EdgeContainer::with_capacity(mEdges.size());
     NodeID const nodeId = node->getId();
@@ -83,7 +89,7 @@ DependencyGraph::EdgeContainer DependencyGraph::getIncomingEdges(
 }
 
 DependencyGraph::EdgeContainer DependencyGraph::getOutgoingEdges(
-        DependencyGraph::Node const* node) const noexcept {
+        Node const* node) const noexcept {
     // TODO: we might need something more efficient
     auto result = EdgeContainer::with_capacity(mEdges.size());
     NodeID const nodeId = node->getId();
@@ -93,17 +99,17 @@ DependencyGraph::EdgeContainer DependencyGraph::getOutgoingEdges(
     return result;
 }
 
-DependencyGraph::Node const* DependencyGraph::getNode(DependencyGraph::NodeID id) const noexcept {
+DependencyGraph::Node const* DependencyGraph::getNode(NodeID const id) const noexcept {
     return mNodes[id];
 }
 
-DependencyGraph::Node* DependencyGraph::getNode(DependencyGraph::NodeID id) noexcept {
+DependencyGraph::Node* DependencyGraph::getNode(NodeID const id) noexcept {
     return mNodes[id];
 }
 
 void DependencyGraph::cull() noexcept {
 
-    SYSTRACE_CALL();
+    FILAMENT_TRACING_CALL(FILAMENT_TRACING_CATEGORY_FILAMENT);
 
     auto& nodes = mNodes;
     auto& edges = mEdges;
@@ -139,7 +145,7 @@ void DependencyGraph::clear() noexcept {
     mNodes.clear();
 }
 
-void DependencyGraph::export_graphviz(utils::io::ostream& out, char const* name) {
+void DependencyGraph::export_graphviz(utils::io::ostream& out, char const* name) const noexcept {
 #ifndef NDEBUG
     const char* graphName = name ? name : "graph";
     out << "digraph \"" << graphName << "\" {\n";
@@ -197,7 +203,7 @@ bool DependencyGraph::isAcyclic() const noexcept {
     DependencyGraph graph;
     graph.mEdges = mEdges;
     graph.mNodes = mNodes;
-    return DependencyGraph::isAcyclicInternal(graph);
+    return isAcyclicInternal(graph);
 #else
     return true;
 #endif
@@ -254,25 +260,23 @@ char const* DependencyGraph::Node::getName() const noexcept {
 
 utils::CString DependencyGraph::Node::graphvizify() const noexcept {
 #ifndef NDEBUG
-    std::string s;
-    s.reserve(128);
+    utils::CString s;
 
-    uint32_t id = getId();
+    uint32_t const id = getId();
     const char* const nodeName = getName();
     uint32_t const refCount = getRefCount();
 
     s.append("[label=\"");
     s.append(nodeName);
     s.append("\\nrefs: ");
-    s.append(std::to_string(refCount));
+    s.append(utils::to_string(refCount));
     s.append(", id: ");
-    s.append(std::to_string(id));
+    s.append(utils::to_string(id));
     s.append("\", style=filled, fillcolor=");
     s.append(refCount ? "skyblue" : "skyblue4");
     s.append("]");
-    s.shrink_to_fit();
 
-    return utils::CString{ s.c_str() };
+    return s;
 #else
     return {};
 #endif

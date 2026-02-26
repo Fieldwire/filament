@@ -16,9 +16,9 @@
 
 #include "RenderPass.h"
 
+#include "compact.h"
 #include "RenderPrimitive.h"
 #include "ShadowMap.h"
-#include "SharedHandle.h"
 
 #include "details/Material.h"
 #include "details/MaterialInstance.h"
@@ -32,6 +32,7 @@
 
 #include <filament/MaterialEnums.h>
 
+#include <backend/BufferDescriptor.h>
 #include <backend/DriverApiForward.h>
 #include <backend/DriverEnums.h>
 #include <backend/Handle.h>
@@ -40,18 +41,22 @@
 #include "private/backend/CircularBuffer.h"
 #include "private/backend/CommandStream.h"
 
+#include <private/utils/Tracing.h>
+
+#include <utils/JobSystem.h>
+#include <utils/Logger.h>
+#include <utils/Panic.h>
+#include <utils/Range.h>
+#include <utils/Slice.h>
 #include <utils/compiler.h>
 #include <utils/debug.h>
-#include <utils/JobSystem.h>
-#include <utils/Panic.h>
-#include <utils/Slice.h>
-#include <utils/Systrace.h>
-#include <utils/Range.h>
 
 #include <algorithm>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <utility>
+#include <vector>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -66,7 +71,6 @@ namespace filament {
 using namespace backend;
 
 RenderPassBuilder& RenderPassBuilder::customCommand(
-        FEngine& engine,
         uint8_t channel,
         RenderPass::Pass pass,
         RenderPass::CustomCommand custom,
@@ -74,35 +78,37 @@ RenderPassBuilder& RenderPassBuilder::customCommand(
         RenderPass::Executor::CustomCommandFn const& command) {
     if (!mCustomCommands.has_value()) {
         // construct the vector the first time
-        mCustomCommands.emplace(engine.getPerRenderPassArena());
+        mCustomCommands.emplace();
     }
     mCustomCommands->emplace_back(channel, pass, custom, order, command);
     return *this;
 }
 
-RenderPass RenderPassBuilder::build(FEngine& engine) {
-    FILAMENT_CHECK_POSTCONDITION(mRenderableSoa)
-            << "RenderPassBuilder::geometry() hasn't been called";
-    assert_invariant(mScissorViewport.width  <= std::numeric_limits<int32_t>::max());
-    assert_invariant(mScissorViewport.height <= std::numeric_limits<int32_t>::max());
-    return RenderPass{ engine, *this };
+RenderPass RenderPassBuilder::build(FEngine const& engine, backend::DriverApi& driver) const {
+    assert_invariant(mRenderableSoa);
+    return RenderPass{ engine, driver, *this };
 }
 
 // ------------------------------------------------------------------------------------------------
 
-void RenderPass::BufferObjectHandleDeleter::operator()(
-        backend::BufferObjectHandle handle) noexcept {
-    if (handle) {
+void RenderPass::BufferObjectHandleDeleter::operator()(BufferObjectHandle handle) const noexcept {
+    if (handle) { // this is common case
         driver.get().destroyBufferObject(handle);
+    }
+}
+
+void RenderPass::DescriptorSetHandleDeleter::operator()(DescriptorSetHandle handle) const noexcept {
+    if (handle) { // this is common case
+        driver.get().destroyDescriptorSet(handle);
     }
 }
 
 // ------------------------------------------------------------------------------------------------
 
-RenderPass::RenderPass(FEngine& engine, RenderPassBuilder const& builder) noexcept
+RenderPass::RenderPass(FEngine const& engine, backend::DriverApi& driver,
+        RenderPassBuilder const& builder) noexcept
         : mRenderableSoa(*builder.mRenderableSoa),
-          mScissorViewport(builder.mScissorViewport),
-          mCustomCommands(engine.getPerRenderPassArena()) {
+          mColorPassDescriptorSet(builder.mColorPassDescriptorSet) {
 
     // compute the number of commands we need
     updateSummedPrimitiveCounts(
@@ -118,10 +124,12 @@ RenderPass::RenderPass(FEngine& engine, RenderPassBuilder const& builder) noexce
     uint32_t const customCommandCount =
             builder.mCustomCommands.has_value() ? builder.mCustomCommands->size() : 0;
 
+    // FIXME: builder.mArena must be thread safe eventually
     Command* const commandBegin = builder.mArena.alloc<Command>(commandCount + customCommandCount);
     Command* commandEnd = commandBegin + (commandCount + customCommandCount);
     assert_invariant(commandBegin);
 
+    // FIXME: builder.mArena must be thread safe eventually
     if (UTILS_UNLIKELY(builder.mArena.getAllocator().isHeapAllocation(commandBegin))) {
         static bool sLogOnce = true;
         if (UTILS_UNLIKELY(sLogOnce)) {
@@ -131,8 +139,7 @@ RenderPass::RenderPass(FEngine& engine, RenderPassBuilder const& builder) noexce
         }
     }
 
-    appendCommands(engine, { commandBegin, commandCount },
-            builder.mUboHandle,
+    appendCommands(engine, driver, { commandBegin, commandCount },
             builder.mVisibleRenderables,
             builder.mCommandTypeFlags,
             builder.mFlags,
@@ -142,15 +149,16 @@ RenderPass::RenderPass(FEngine& engine, RenderPassBuilder const& builder) noexce
             builder.mCameraForwardVector);
 
     if (builder.mCustomCommands.has_value()) {
+        mCustomCommands.reserve(customCommandCount);
         Command* p = commandBegin + commandCount;
-        for (auto [channel, passId, command, order, fn]: builder.mCustomCommands.value()) {
+        for (auto const& [channel, passId, command, order, fn]: builder.mCustomCommands.value()) {
             appendCustomCommand(p++, channel, passId, command, order, fn);
         }
     }
 
     // sort commands once we're done adding commands
     commandEnd = resize(builder.mArena,
-            RenderPass::sortCommands(commandBegin, commandEnd));
+            sortCommands(commandBegin, commandEnd));
 
     if (engine.isAutomaticInstancingEnabled()) {
         int32_t stereoscopicEyeCount = 1;
@@ -158,7 +166,7 @@ RenderPass::RenderPass(FEngine& engine, RenderPassBuilder const& builder) noexce
             stereoscopicEyeCount *= engine.getConfig().stereoscopicEyeCount;
         }
         commandEnd = resize(builder.mArena,
-                instanceify(engine, commandBegin, commandEnd, stereoscopicEyeCount));
+                instanceify(commandBegin, commandEnd, stereoscopicEyeCount));
     }
 
     // these are `const` from this point on...
@@ -174,22 +182,21 @@ RenderPass::Command* RenderPass::resize(Arena& arena, Command* const last) noexc
     return last;
 }
 
-void RenderPass::appendCommands(FEngine& engine,
+void RenderPass::appendCommands(FEngine const& engine, backend::DriverApi& driver,
         Slice<Command> commands,
-        backend::BufferObjectHandle const uboHandle,
-        utils::Range<uint32_t> const vr,
+        Range<uint32_t> const visibleRenderables,
         CommandTypeFlags const commandTypeFlags,
         RenderFlags const renderFlags,
         FScene::VisibleMaskType const visibilityMask,
         Variant const variant,
         float3 const cameraPosition,
-        float3 const cameraForwardVector) noexcept {
-    SYSTRACE_CALL();
-    SYSTRACE_CONTEXT();
+        float3 const cameraForwardVector) const noexcept {
+    FILAMENT_TRACING_CALL(FILAMENT_TRACING_CATEGORY_FILAMENT);
+    FILAMENT_TRACING_CONTEXT(FILAMENT_TRACING_CATEGORY_FILAMENT);
 
     // trace the number of visible renderables
-    SYSTRACE_VALUE32("visibleRenderables", vr.size());
-    if (UTILS_UNLIKELY(vr.empty())) {
+    FILAMENT_TRACING_VALUE(FILAMENT_TRACING_CATEGORY_FILAMENT, "visibleRenderables", visibleRenderables.size());
+    if (UTILS_UNLIKELY(visibleRenderables.empty())) {
         // no renderables, we still need the sentinel and the command buffer size should be
         // exactly 1.
         assert_invariant(commands.size() == 1);
@@ -209,20 +216,20 @@ void RenderPass::appendCommands(FEngine& engine,
     auto stereoscopicEyeCount = engine.getConfig().stereoscopicEyeCount;
 
     auto work = [commandTypeFlags, curr, &soa,
-                 boh = uboHandle,
                  variant, renderFlags, visibilityMask,
                  cameraPosition, cameraForwardVector, stereoscopicEyeCount]
-            (uint32_t startIndex, uint32_t indexCount) {
-        RenderPass::generateCommands(commandTypeFlags, curr,
-                soa, { startIndex, startIndex + indexCount }, boh,
+            (uint32_t const startIndex, uint32_t const indexCount) {
+        generateCommands(commandTypeFlags, curr,
+                soa, { startIndex, startIndex + indexCount },
                 variant, renderFlags, visibilityMask,
                 cameraPosition, cameraForwardVector, stereoscopicEyeCount);
     };
 
-    if (vr.size() <= JOBS_PARALLEL_FOR_COMMANDS_COUNT) {
-        work(vr.first, vr.size());
+    if (visibleRenderables.size() <= JOBS_PARALLEL_FOR_COMMANDS_COUNT) {
+        work(visibleRenderables.first, visibleRenderables.size());
     } else {
-        auto* jobCommandsParallel = jobs::parallel_for(js, nullptr, vr.first, (uint32_t)vr.size(),
+        auto* jobCommandsParallel = parallel_for(js, nullptr,
+                visibleRenderables.first, uint32_t(visibleRenderables.size()),
                 std::cref(work), jobs::CountSplitter<JOBS_PARALLEL_FOR_COMMANDS_COUNT>());
         js.runAndWait(jobCommandsParallel);
     }
@@ -237,18 +244,18 @@ void RenderPass::appendCommands(FEngine& engine,
     for (Command const* first = curr, *last = curr + commandCount ; first != last ; ++first) {
         if (UTILS_LIKELY((first->key & CUSTOM_MASK) == uint64_t(CustomCommand::PASS))) {
             auto ma = first->info.mi->getMaterial();
-            ma->prepareProgram(first->info.materialVariant);
+            ma->prepareProgram(driver, first->info.materialVariant, CompilerPriorityQueue::CRITICAL);
         }
     }
 }
 
 void RenderPass::appendCustomCommand(Command* commands,
-        uint8_t channel, Pass pass, CustomCommand custom, uint32_t order,
-        Executor::CustomCommandFn command) {
+        uint8_t channel, Pass pass, CustomCommand custom, uint32_t const order,
+        Executor::CustomCommandFn command) const {
 
     assert_invariant((uint64_t(order) << CUSTOM_ORDER_SHIFT) <=  CUSTOM_ORDER_MASK);
 
-    channel = std::min(channel, uint8_t(0x3));
+    channel = std::min(channel, uint8_t(CHANNEL_COUNT - 1));
 
     uint32_t const index = mCustomCommands.size();
     mCustomCommands.push_back(std::move(command));
@@ -264,7 +271,7 @@ void RenderPass::appendCustomCommand(Command* commands,
 
 RenderPass::Command* RenderPass::sortCommands(
         Command* const begin, Command* const end) noexcept {
-    SYSTRACE_NAME("sort commands");
+    FILAMENT_TRACING_NAME(FILAMENT_TRACING_CATEGORY_FILAMENT, "sort commands");
 
     std::sort(begin, end);
 
@@ -277,20 +284,10 @@ RenderPass::Command* RenderPass::sortCommands(
     return last;
 }
 
-void RenderPass::execute(RenderPass const& pass,
-        FEngine& engine, const char* name,
-        backend::Handle<backend::HwRenderTarget> renderTarget,
-        backend::RenderPassParams params) noexcept {
-    DriverApi& driver = engine.getDriverApi();
-    driver.beginRenderPass(renderTarget, params);
-    pass.getExecutor().execute(engine, name);
-    driver.endRenderPass();
-}
-
-RenderPass::Command* RenderPass::instanceify(FEngine& engine,
+RenderPass::Command* RenderPass::instanceify(
         Command* curr, Command* const last,
-        int32_t eyeCount) const noexcept {
-    SYSTRACE_NAME("instanceify");
+        int32_t const eyeCount) const noexcept {
+    FILAMENT_TRACING_NAME(FILAMENT_TRACING_CATEGORY_FILAMENT, "instanceify");
 
     // instanceify works by scanning the **sorted** command stream, looking for repeat draw
     // commands. When one is found, it is replaced by an instanced command.
@@ -301,126 +298,118 @@ RenderPass::Command* RenderPass::instanceify(FEngine& engine,
     // hash of those parameters.
 
     UTILS_UNUSED uint32_t drawCallsSavedCount = 0;
-
-    Command* firstSentinel = nullptr;
     PerRenderableData const* uboData = nullptr;
-    PerRenderableData* stagingBuffer = nullptr;
-    uint32_t stagingBufferSize = 0;
     uint32_t instancedPrimitiveOffset = 0;
-    size_t const count = last - curr;
+    size_t const count = std::distance(curr, last);
 
-    // TODO: for the case of instancing we could actually use 128 instead of 64 instances
-    constexpr size_t maxInstanceCount = CONFIG_MAX_INSTANCES;
+    auto equivalent = [](Command const& lhs, Command const& rhs) {
+        // This predicate must also filter out commands that are not eligible for auto-instancing.
+        if (UTILS_UNLIKELY(lhs.info.hasSkinning || lhs.info.hasMorphing || lhs.info.instanceCount > 1)) {
+            return false;
+        }
+        if (UTILS_UNLIKELY(rhs.info.hasSkinning || rhs.info.hasMorphing || rhs.info.instanceCount > 1)) {
+            return false;
+        }
+        // Now check for equality
+        return lhs.info.mi == rhs.info.mi &&
+               lhs.info.rph == rhs.info.rph &&
+               lhs.info.vbih == rhs.info.vbih &&
+               lhs.info.indexOffset == rhs.info.indexOffset &&
+               lhs.info.indexCount == rhs.info.indexCount &&
+               lhs.info.rasterState == rhs.info.rasterState;
+    };
 
-    while (curr != last) {
+    auto processor = [this, eyeCount, count,
+            &uboData, &instancedPrimitiveOffset, &drawCallsSavedCount,
+            &stagingBuffer = mInstancingStagingBuffer,
+            &descriptorSetPatch = mInstancingDescriptorSetPatch]
+            (Command* const dst, Command* const begin, Command* const end) mutable {
 
-        // Currently, if we have skinnning or morphing, we can't use auto instancing. This is
-        // because the morphing/skinning data for comparison is not easily accessible.
-        // Additionally, we can't have a different skinning/morphing per instance anyway.
-        // And thirdly, the info.index meaning changes with instancing, it is the index into
-        // the instancing buffer no longer the index into the soa.
-        Command const* e = curr + 1;
-        if (UTILS_LIKELY(!curr->info.hasSkinning && !curr->info.hasMorphing)) {
-            // we can't have nice things! No more than maxInstanceCount due to UBO size limits
-            e = std::find_if_not(curr, std::min(last, curr + maxInstanceCount),
-                    [lhs = *curr](Command const& rhs) {
-                        // primitives must be identical to be instanced.
-                        // Currently, instancing doesn't support skinning/morphing.
-                        return lhs.info.mi == rhs.info.mi &&
-                               lhs.info.rph == rhs.info.rph &&
-                               lhs.info.vbih == rhs.info.vbih &&
-                               lhs.info.indexOffset == rhs.info.indexOffset &&
-                               lhs.info.indexCount == rhs.info.indexCount &&
-                               lhs.info.rasterState == rhs.info.rasterState;
-                    });
+        uint32_t const instanceCount = std::distance(begin, end);
+        drawCallsSavedCount += instanceCount - 1;
+
+        if (UTILS_UNLIKELY(stagingBuffer.empty())) {
+            stagingBuffer.resize(count);
+            descriptorSetPatch.reserve(count);
+            uboData = mRenderableSoa.data<FScene::UBO>();
+            assert_invariant(uboData);
         }
 
-        uint32_t const instanceCount = e - curr;
-        assert_invariant(instanceCount > 0);
-        assert_invariant(instanceCount <= CONFIG_MAX_INSTANCES);
-
-        if (UTILS_UNLIKELY(instanceCount > 1)) {
-            drawCallsSavedCount += instanceCount - 1;
-
-            // allocate our staging buffer only if needed
-            if (UTILS_UNLIKELY(!stagingBuffer)) {
-
-                // create a temporary UBO for instancing
-                mInstancedUboHandle = BufferObjectSharedHandle{
-                        engine.getDriverApi().createBufferObject(
-                                count * sizeof(PerRenderableData) + sizeof(PerRenderableUib),
-                                BufferObjectBinding::UNIFORM, BufferUsage::STATIC),
-                        engine.getDriverApi() };
-
-                // TODO: use stream inline buffer for small sizes
-                // TODO: use a pool for larger heap buffers
-                // buffer large enough for all instances data
-                stagingBufferSize = sizeof(PerRenderableData) * (last - curr);
-                stagingBuffer = (PerRenderableData*)::malloc(stagingBufferSize);
-                uboData = mRenderableSoa.data<FScene::UBO>();
-                assert_invariant(uboData);
-            }
-
-            // copy the ubo data to a staging buffer
-            assert_invariant(instancedPrimitiveOffset + instanceCount
-                             <= stagingBufferSize / sizeof(PerRenderableData));
-            for (uint32_t i = 0; i < instanceCount; i++) {
-                stagingBuffer[instancedPrimitiveOffset + i] = uboData[curr[i].info.index];
-            }
-
-            // make the first command instanced
-            curr[0].info.instanceCount = instanceCount * eyeCount;
-            curr[0].info.index = instancedPrimitiveOffset;
-            curr[0].info.boh = mInstancedUboHandle;
-
-            instancedPrimitiveOffset += instanceCount;
-
-            // cancel commands that are now instances
-            firstSentinel = !firstSentinel ? curr : firstSentinel;
-            for (uint32_t i = 1; i < instanceCount; i++) {
-                curr[i].key = uint64_t(Pass::SENTINEL);
-            }
+        assert_invariant(instancedPrimitiveOffset + instanceCount <= stagingBuffer.size());
+        for (uint32_t i = 0; i < instanceCount; i++) {
+            stagingBuffer[instancedPrimitiveOffset + i] = uboData[begin[i].info.index];
         }
 
-        curr = const_cast<Command*>(e);
-    }
+        // Modify the command at its final destination
+        dst->info.instanceCount = instanceCount * eyeCount;
+        dst->info.index = instancedPrimitiveOffset;
+        dst->info.dsh = {}; // this will be filled up in finalize
+        descriptorSetPatch.push_back(dst); // Store the stable iterator
 
-    if (UTILS_UNLIKELY(firstSentinel)) {
-        //slog.d << "auto-instancing, saving " << drawCallsSavedCount << " draw calls, out of "
-        //       << count << io::endl;
+        instancedPrimitiveOffset += instanceCount;
+    };
 
-        // we have instanced primitives
-        DriverApi& driver = engine.getDriverApi();
-
-        // copy our instanced ubo data
-        driver.updateBufferObjectUnsynchronized(mInstancedUboHandle, {
-                stagingBuffer, sizeof(PerRenderableData) * instancedPrimitiveOffset,
-                +[](void* buffer, size_t, void*) {
-                    ::free(buffer);
-                }
-        }, 0);
-
-        stagingBuffer = nullptr;
-
-        // remove all the canceled commands
-        auto lastCommand = std::remove_if(firstSentinel, last, [](auto const& command) {
-            return command.key == uint64_t(Pass::SENTINEL);
-        });
-
-        return lastCommand;
-    }
-
-    assert_invariant(stagingBuffer == nullptr);
-    return last;
+    auto const end = compact<CONFIG_MAX_INSTANCES>(curr, last, equivalent, processor);
+    // if (!mInstancingStagingBuffer.empty()) {
+    //     slog.d << "auto-instancing, saving " << drawCallsSavedCount << " draw calls, out of "
+    //             << count << io::endl;
+    // }
+    return end;
 }
 
+
+void RenderPass::finalize(FEngine const& engine, DriverApi& driver) {
+    mFinalized = true;
+    if (UTILS_UNLIKELY(!mInstancingStagingBuffer.empty())) {
+        auto const* p = mInstancingStagingBuffer.data();
+        size_t const size = sizeof(PerRenderableData) * mInstancingStagingBuffer.size();
+
+        // Create a temporary UBO for holding the per-renderable data of each primitive,
+        // The `curr->info.index` is updated so that this (now instanced) command can
+        // bind the UBO in the right place (where the per-instance data is).
+        // The lifetime of this object is the longest of this RenderPass and all its
+        // executors.
+
+        // create a temporary UBO for instancing
+        mInstancedUboHandle = BufferObjectSharedHandle{
+            driver.createBufferObject(size + sizeof(PerRenderableUib),
+                    BufferObjectBinding::UNIFORM, BufferUsage::STATIC), driver };
+
+        // We also need a descriptor-set to hold the custom UBO. This works because
+        // we currently assume the descriptor-set only needs to hold this UBO in the
+        // instancing case (it wouldn't be true if we supported skinning/morphing, and
+        // in this case we would need to preserve the default descriptor-set content).
+        // This has the same lifetime as the UBO (see above).
+
+        mInstancedDescriptorSetHandle = DescriptorSetSharedHandle{
+            driver.createDescriptorSet(engine.getPerRenderableDescriptorSetLayout().getHandle()),
+            driver };
+
+        driver.updateDescriptorSetBuffer(mInstancedDescriptorSetHandle,
+                +PerRenderableBindingPoints::OBJECT_UNIFORMS,
+                mInstancedUboHandle, 0, sizeof(PerRenderableUib));
+
+        driver.updateBufferObjectUnsynchronized(mInstancedUboHandle,
+            BufferDescriptor::make(p, size,
+                [data = std::move(mInstancingStagingBuffer)](void*, size_t) {}), 0);
+
+        // patch the commands with the descriptor set
+        for (Command* const curr : mInstancingDescriptorSetPatch) {
+            assert_invariant(curr[0].info.instanceCount > 1);
+            assert_invariant(!curr[0].info.dsh);
+            curr[0].info.dsh = mInstancedDescriptorSetHandle;
+        }
+        mInstancingDescriptorSetPatch.clear();
+        assert_invariant(mInstancingStagingBuffer.empty());
+    }
+}
 
 /* static */
 UTILS_ALWAYS_INLINE // This function exists only to make the code more readable. we want it inlined.
 inline              // and we don't need it in the compilation unit
 void RenderPass::setupColorCommand(Command& cmdDraw, Variant variant,
         FMaterialInstance const* const UTILS_RESTRICT mi,
-        bool inverseFrontFaces, bool hasDepthClamp) noexcept {
+        bool const inverseFrontFaces, bool const hasDepthClamp) noexcept {
 
     FMaterial const * const UTILS_RESTRICT ma = mi->getMaterial();
     variant = Variant::filterVariant(variant, ma->isVariantLit());
@@ -469,13 +458,13 @@ void RenderPass::setupColorCommand(Command& cmdDraw, Variant variant,
 /* static */
 UTILS_NOINLINE
 void RenderPass::generateCommands(CommandTypeFlags commandTypeFlags, Command* const commands,
-        FScene::RenderableSoa const& soa, Range<uint32_t> range,
-        backend::BufferObjectHandle renderablesUbo,
-        Variant variant, RenderFlags renderFlags,
-        FScene::VisibleMaskType visibilityMask, float3 cameraPosition, float3 cameraForward,
-        uint8_t stereoEyeCount) noexcept {
+        FScene::RenderableSoa const& soa, Range<uint32_t> const range,
+        Variant const variant, RenderFlags const renderFlags,
+        FScene::VisibleMaskType const visibilityMask,
+        float3 const cameraPosition, float3 const cameraForward,
+        uint8_t instancedStereoEyeCount) noexcept {
 
-    SYSTRACE_CALL();
+    FILAMENT_TRACING_CALL(FILAMENT_TRACING_CATEGORY_FILAMENT);
 
     // generateCommands() writes both the draw and depth commands simultaneously such that
     // we go throw the list of renderables just once.
@@ -490,7 +479,7 @@ void RenderPass::generateCommands(CommandTypeFlags commandTypeFlags, Command* co
     const size_t offsetBegin = FScene::getPrimitiveCount(soa, range.first) * commandsPerPrimitive;
     const size_t offsetEnd   = FScene::getPrimitiveCount(soa, range.last) * commandsPerPrimitive;
     Command* curr = commands + offsetBegin;
-    Command* const last = commands + offsetEnd;
+    Command const* const last = commands + offsetEnd;
 
     /*
      * The switch {} below is to coerce the compiler into generating different versions of
@@ -504,15 +493,15 @@ void RenderPass::generateCommands(CommandTypeFlags commandTypeFlags, Command* co
     switch (commandTypeFlags & (CommandTypeFlags::COLOR | CommandTypeFlags::DEPTH)) {
         case CommandTypeFlags::COLOR:
             curr = generateCommandsImpl<CommandTypeFlags::COLOR>(commandTypeFlags, curr,
-                    soa, range, renderablesUbo,
+                    soa, range,
                     variant, renderFlags, visibilityMask, cameraPosition, cameraForward,
-                    stereoEyeCount);
+                    instancedStereoEyeCount);
             break;
         case CommandTypeFlags::DEPTH:
             curr = generateCommandsImpl<CommandTypeFlags::DEPTH>(commandTypeFlags, curr,
-                    soa, range, renderablesUbo,
+                    soa, range,
                     variant, renderFlags, visibilityMask, cameraPosition, cameraForward,
-                    stereoEyeCount);
+                    instancedStereoEyeCount);
             break;
         default:
             // we should never end-up here
@@ -531,12 +520,11 @@ void RenderPass::generateCommands(CommandTypeFlags commandTypeFlags, Command* co
 /* static */
 template<RenderPass::CommandTypeFlags commandTypeFlags>
 UTILS_NOINLINE
-RenderPass::Command* RenderPass::generateCommandsImpl(RenderPass::CommandTypeFlags extraFlags,
+RenderPass::Command* RenderPass::generateCommandsImpl(CommandTypeFlags extraFlags,
         Command* UTILS_RESTRICT curr,
         FScene::RenderableSoa const& UTILS_RESTRICT soa, Range<uint32_t> range,
-        backend::BufferObjectHandle renderablesUbo,
         Variant const variant, RenderFlags renderFlags, FScene::VisibleMaskType visibilityMask,
-        float3 cameraPosition, float3 cameraForward, uint8_t stereoEyeCount) noexcept {
+        float3 cameraPosition, float3 cameraForward, uint8_t instancedStereoEyeCount) noexcept {
 
     constexpr bool isColorPass  = bool(commandTypeFlags & CommandTypeFlags::COLOR);
     constexpr bool isDepthPass  = bool(commandTypeFlags & CommandTypeFlags::DEPTH);
@@ -567,11 +555,13 @@ RenderPass::Command* RenderPass::generateCommandsImpl(RenderPass::CommandTypeFla
 
     auto const* const UTILS_RESTRICT soaWorldAABBCenter = soa.data<FScene::WORLD_AABB_CENTER>();
     auto const* const UTILS_RESTRICT soaVisibility      = soa.data<FScene::VISIBILITY_STATE>();
+    auto const* const UTILS_RESTRICT soaSkinningData    = soa.data<FScene::SKINNING_STATE>();
     auto const* const UTILS_RESTRICT soaPrimitives      = soa.data<FScene::PRIMITIVES>();
     auto const* const UTILS_RESTRICT soaSkinning        = soa.data<FScene::SKINNING_BUFFER>();
     auto const* const UTILS_RESTRICT soaMorphing        = soa.data<FScene::MORPHING_BUFFER>();
     auto const* const UTILS_RESTRICT soaVisibilityMask  = soa.data<FScene::VISIBLE_MASK>();
     auto const* const UTILS_RESTRICT soaInstanceInfo    = soa.data<FScene::INSTANCES>();
+    auto const* const UTILS_RESTRICT soaDescriptorSet   = soa.data<FScene::DESCRIPTOR_SET_HANDLE>();
 
     Command cmd;
 
@@ -621,16 +611,22 @@ RenderPass::Command* RenderPass::generateCommandsImpl(RenderPass::CommandTypeFla
 
         // calculate the per-primitive face winding order inversion
         bool const inverseFrontFaces = viewInverseFrontFaces ^ soaVisibility[i].reversedWindingOrder;
-        bool const hasMorphing = soaVisibility[i].morphing;
-        bool const hasSkinning = soaVisibility[i].skinning;
+        bool const hasMorphing = soaSkinningData[i].morphType != RenderableManager::Builder::MorphType::NONE;
+        bool const hasSkinning = soaSkinningData[i].skinning;
         bool const hasSkinningOrMorphing = hasSkinning || hasMorphing;
 
-        // if we are already an SSR variant, the SRE bit is already set,
-        // there is no harm setting it again
+        // if we are already an SSR variant, the SRE bit is already set
         static_assert(Variant::SPECIAL_SSR & Variant::SRE);
-        Variant renderableVariant = variant;
-        renderableVariant.setShadowReceiver(
-                Variant::isSSRVariant(variant) || (soaVisibility[i].receiveShadows & hasShadowing));
+        Variant renderableVariant{ variant };
+
+        // we can't have SSR and shadowing together by construction
+        bool const isSsrVariant = Variant::isSSRVariant(variant);
+        assert_invariant((isSsrVariant && !hasShadowing) || !isSsrVariant);
+        if (!isSsrVariant) {
+            // set the SRE variant, unless we're in SSR mode
+            renderableVariant.setShadowReceiver(soaVisibility[i].receiveShadows && hasShadowing);
+        }
+
         renderableVariant.setSkinning(hasSkinningOrMorphing);
 
         FRenderableManager::SkinningBindingInfo const& skinning = soaSkinning[i];
@@ -649,55 +645,65 @@ RenderPass::Command* RenderPass::generateCommandsImpl(RenderPass::CommandTypeFla
 
         cmd.key |= makeField(soaVisibility[i].priority, PRIORITY_MASK, PRIORITY_SHIFT);
         cmd.key |= makeField(soaVisibility[i].channel, CHANNEL_MASK, CHANNEL_SHIFT);
-        cmd.info.index = i;
-        cmd.info.hasHybridInstancing = (bool)soaInstanceInfo[i].handle;
+        cmd.info.index = soaInstanceInfo[i].buffer ? soaInstanceInfo[i].buffer->getIndex() : i;
+        cmd.info.hasHybridInstancing = bool(soaInstanceInfo[i].buffer);
         cmd.info.instanceCount = soaInstanceInfo[i].count;
-        cmd.info.hasMorphing = (bool)morphing.handle;
-        cmd.info.hasSkinning = (bool)skinning.handle;
+        cmd.info.hasMorphing = bool(morphing.handle);
+        cmd.info.hasSkinning = bool(skinning.handle);
 
         // soaInstanceInfo[i].count is the number of instances the user has requested, either for
         // manual or hybrid instancing. Instanced stereo multiplies the number of instances by the
         // eye count.
         if (hasInstancedStereo) {
-            cmd.info.instanceCount *= stereoEyeCount;
+            cmd.info.instanceCount *= instancedStereoEyeCount;
         }
 
-        if (cmd.info.hasHybridInstancing) {
-            // with hybrid instancing, we already know which UBO to use
-            cmd.info.boh = soaInstanceInfo[i].handle;
-        } else {
-            // with no- or user- instancing, we can only know after instanceify()
-            cmd.info.boh = renderablesUbo;
-        }
+        // soaDescriptorSet[i] is either populated with a common descriptor-set or truly with
+        // a per-renderable one, depending on for e.g. skinning/morphing/instancing.
+        cmd.info.dsh = soaDescriptorSet[i];
+
+        // always set the skinningOffset, even when skinning is off, this doesn't cost anything.
+        cmd.info.skinningOffset = soaSkinning[i].offset * sizeof(PerRenderableBoneUib::BoneData);
 
         const bool shadowCaster = soaVisibility[i].castShadows & hasShadowing;
         const bool writeDepthForShadowCasters = depthContainsShadowCasters & shadowCaster;
 
-        const Slice<FRenderPrimitive>& primitives = soaPrimitives[i];
+        Slice<const FRenderPrimitive> const primitives = soaPrimitives[i];
         /*
          * This is our hot loop. It's written to avoid branches.
          * When modifying this code, always ensure it stays efficient.
          */
-        for (size_t pi = 0, c = primitives.size(); pi < c; ++pi) {
-            auto const& primitive = primitives[pi];
+        for (auto const& primitive: primitives) {
             FMaterialInstance const* const mi = primitive.getMaterialInstance();
-            FMaterial const* const ma = mi->getMaterial();
+            if (UTILS_UNLIKELY(!mi)) {
+                // This can happen because RenderPrimitives can be initialized with
+                // a null MaterialInstance. In this case, skip the primitive.
+                if constexpr (isColorPass) {
+                    curr->key = uint64_t(Pass::SENTINEL);
+                    ++curr;
+                }
+                curr->key = uint64_t(Pass::SENTINEL);
+                ++curr;
+                continue;
+            }
 
             // TODO: we should disable the SKN variant if this primitive doesn't have either
             //       skinning or morphing.
 
+            FMaterial const* const ma = mi->getMaterial();
             cmd.info.mi = mi;
             cmd.info.rph = primitive.getHwHandle();
             cmd.info.vbih = primitive.getVertexBufferInfoHandle();
             cmd.info.indexOffset = primitive.getIndexOffset();
             cmd.info.indexCount = primitive.getIndexCount();
             cmd.info.type = primitive.getPrimitiveType();
-            cmd.info.morphTargetBuffer = morphing.morphTargetBuffer ?
-                    morphing.morphTargetBuffer->getHwHandle() : SamplerGroupHandle{};
             cmd.info.morphingOffset = primitive.getMorphingBufferOffset();
+// FIXME: morphtarget buffer
+//            cmd.info.morphTargetBuffer = morphing.morphTargetBuffer ?
+//                    morphing.morphTargetBuffer->getHwHandle() : SamplerGroupHandle{};
 
             if constexpr (isColorPass) {
-                RenderPass::setupColorCommand(cmd, renderableVariant, mi,
+                setupColorCommand(cmd, renderableVariant, mi,
                         inverseFrontFaces, hasDepthClamp);
                 const bool blendPass = Pass(cmd.key & PASS_MASK) == Pass::BLENDED;
                 if (blendPass) {
@@ -774,27 +780,39 @@ RenderPass::Command* RenderPass::generateCommandsImpl(RenderPass::CommandTypeFla
                     cmd.key &= ~Z_BUCKET_MASK;
                     cmd.key |= makeField(distanceBits >> 22u, Z_BUCKET_MASK, Z_BUCKET_SHIFT);
                 }
+
+                *curr = cmd;
+                // cancel command if both front and back faces are culled
+                curr->key |= select(mi->getCullingMode() == CullingMode::FRONT_AND_BACK);
+
             } else if constexpr (isDepthPass) {
+                const CullingMode cullingMode = hasShadowing ? mi->getShadowCullingMode() : mi->getCullingMode();
                 const RasterState rs = ma->getRasterState();
                 const TransparencyMode mode = mi->getTransparencyMode();
                 const BlendingMode blendingMode = ma->getBlendingMode();
                 const bool translucent = (blendingMode != BlendingMode::OPAQUE
                         && blendingMode != BlendingMode::MASKED);
+                const bool isPickingVariant = Variant::isPickingVariant(variant);
 
                 cmd.key |= mi->getSortingKey(); // already all set-up for direct or'ing
-                cmd.info.rasterState.culling = mi->getCullingMode();
+                cmd.info.rasterState.culling = cullingMode;
 
                 // FIXME: should writeDepthForShadowCasters take precedence over mi->getDepthWrite()?
-                cmd.info.rasterState.depthWrite = (1 // only keep bit 0
-                        & (mi->isDepthWriteEnabled() | (mode == TransparencyMode::TWO_PASSES_ONE_SIDE))
-                                                   & !(filterTranslucentObjects & translucent)
-                                                   & !(depthFilterAlphaMaskedObjects & rs.alphaToCoverage))
-                                                  | writeDepthForShadowCasters;
+                cmd.info.rasterState.depthWrite =
+                        (1 // only keep bit 0
+                                & (mi->isDepthWriteEnabled() |
+                                          (mode == TransparencyMode::TWO_PASSES_ONE_SIDE) |
+                                          isPickingVariant) &
+                                !(depthFilterAlphaMaskedObjects & rs.alphaToCoverage)) |
+                        writeDepthForShadowCasters;
+
+                *curr = cmd;
+                // cancel command if both front and back faces are culled
+                curr->key |= select(cullingMode == CullingMode::FRONT_AND_BACK);
+                // cancel command if asked to filter translucent objects
+                curr->key |= select(filterTranslucentObjects & translucent);
             }
 
-            *curr = cmd;
-            // cancel command if both front and back faces are culled
-            curr->key |= select(mi->getCullingMode() == CullingMode::FRONT_AND_BACK);
             ++curr;
         }
     }
@@ -816,15 +834,9 @@ void RenderPass::updateSummedPrimitiveCounts(
 
 // ------------------------------------------------------------------------------------------------
 
-void RenderPass::Executor::overridePolygonOffset(backend::PolygonOffset const* polygonOffset) noexcept {
+void RenderPass::Executor::overridePolygonOffset(PolygonOffset const* polygonOffset) noexcept {
     if ((mPolygonOffsetOverride = (polygonOffset != nullptr))) { // NOLINT(*-assignment-in-if-condition)
         mPolygonOffset = *polygonOffset;
-    }
-}
-
-void RenderPass::Executor::overrideScissor(backend::Viewport const* scissor) noexcept {
-    if ((mScissorOverride = (scissor != nullptr))) { // NOLINT(*-assignment-in-if-condition)
-        mScissor = *scissor;
     }
 }
 
@@ -833,8 +845,8 @@ void RenderPass::Executor::overrideScissor(backend::Viewport const& scissor) noe
     mScissor = scissor;
 }
 
-void RenderPass::Executor::execute(FEngine& engine, const char*) const noexcept {
-    execute(engine, mCommands.begin(), mCommands.end());
+void RenderPass::Executor::execute(FEngine const& engine, DriverApi& driver) const noexcept {
+    execute(engine, driver, mCommands.begin(), mCommands.end());
 }
 
 UTILS_NOINLINE // no need to be inlined
@@ -842,42 +854,82 @@ backend::Viewport RenderPass::Executor::applyScissorViewport(
         backend::Viewport const& scissorViewport, backend::Viewport const& scissor) noexcept {
     // scissor is set, we need to apply the offset/clip
     // clang vectorizes this!
-    constexpr int32_t maxvali = std::numeric_limits<int32_t>::max();
-    // compute new left/bottom, assume no overflow
-    int32_t l = scissor.left + scissorViewport.left;
-    int32_t b = scissor.bottom + scissorViewport.bottom;
-    // compute right/top without overflowing, scissor.width/height guaranteed
-    // to convert to int32
-    int32_t r = (l > maxvali - int32_t(scissor.width)) ? maxvali : l + int32_t(scissor.width);
-    int32_t t = (b > maxvali - int32_t(scissor.height)) ? maxvali : b + int32_t(scissor.height);
-    // clip to the viewport
-    l = std::max(l, scissorViewport.left);
-    b = std::max(b, scissorViewport.bottom);
-    r = std::min(r, scissorViewport.left + int32_t(scissorViewport.width));
-    t = std::min(t, scissorViewport.bottom + int32_t(scissorViewport.height));
-    assert_invariant(r >= l && t >= b);
-    return { l, b, uint32_t(r - l), uint32_t(t - b) };
+    constexpr int64_t maxvali = std::numeric_limits<int32_t>::max();
+
+    // we do all the offsetting/clipping math in 64 bits below to avoid overflows
+    struct {
+        int64_t l;
+        int64_t b;
+        int64_t r;
+        int64_t t;
+    } svp, s;
+
+    // convert scissorViewport to {left,bottom,right,top} format
+    svp.l = scissorViewport.left;
+    svp.b = scissorViewport.bottom;
+    svp.r = svp.l + scissorViewport.width;
+    svp.t = svp.b + scissorViewport.height;
+
+    // convert scissor to {left,bottom,right,top} format and offset by scissorViewport's left,bottom
+    s.l = svp.l + scissor.left;
+    s.b = svp.b + scissor.bottom;
+    s.r = s.l + scissor.width;
+    s.t = s.b + scissor.height;
+
+    // clip to the scissorViewport
+    s.l = std::max(s.l, svp.l);
+    s.b = std::max(s.b, svp.b);
+    s.r = std::min(s.r, svp.r);
+    s.t = std::min(s.t, svp.t);
+
+    // clip to positive int32_t
+    s.l = std::max(s.l, int64_t(0));
+    s.b = std::max(s.b, int64_t(0));
+    s.r = std::min(s.r, maxvali);
+    s.t = std::min(s.t, maxvali);
+
+    assert_invariant(s.r >= s.l && s.t >= s.b);
+
+    // convert back to Viewport format
+    return { int32_t(s.l), int32_t(s.b), uint32_t(s.r - s.l), uint32_t(s.t - s.b) };
 }
 
 UTILS_NOINLINE // no need to be inlined
-void RenderPass::Executor::execute(FEngine& engine,
-        const Command* first, const Command* last) const noexcept {
+void RenderPass::Executor::execute(FEngine const& engine, DriverApi& driver,
+        Command const* first, Command const* last) const noexcept {
 
-    SYSTRACE_CALL();
-    SYSTRACE_CONTEXT();
+    FILAMENT_TRACING_CALL(FILAMENT_TRACING_CATEGORY_FILAMENT);
+    FILAMENT_TRACING_CONTEXT(FILAMENT_TRACING_CATEGORY_FILAMENT);
 
-    DriverApi& driver = engine.getDriverApi();
     size_t const capacity = engine.getMinCommandBufferSize();
     CircularBuffer const& circularBuffer = driver.getCircularBuffer();
 
-    if (first != last) {
-        SYSTRACE_VALUE32("commandCount", last - first);
+    // b/479079631: Log the number of commands in this render pass.
+    size_t const commandCount = last - first;
+    if (Platform* platform = engine.getPlatform(); platform->hasDebugUpdateStatFunc()) {
+        platform->debugUpdateStat("filament.renderer.render_pass.command_count", commandCount);
+    }
 
-        bool const scissorOverride = mScissorOverride;
-        if (UTILS_UNLIKELY(scissorOverride)) {
-            // initialize with scissor overide
+    if (first != last) {
+        FILAMENT_TRACING_VALUE(FILAMENT_TRACING_CATEGORY_FILAMENT, "commandCount", last - first);
+
+        // The scissor rectangle is associated to a render pass, so the tracking can be local.
+        backend::Viewport currentScissor{ 0, 0, INT32_MAX, INT32_MAX };
+        bool const hasScissorOverride = mScissorOverride;
+        bool const hasScissorViewport = mHasScissorViewport;
+        if (UTILS_UNLIKELY(hasScissorViewport || hasScissorOverride)) {
+            // we should never have both an override and scissor-viewport
+            assert_invariant(!hasScissorViewport || !hasScissorOverride);
+            currentScissor = mScissor;
             driver.scissor(mScissor);
         }
+
+        // If we have a mColorPassDescriptorSet, we need to use its idea of "VSM" to select
+        // the descriptor set layout. Materials always offer both.
+        // If we don't have a mColorPassDescriptorSet, it doesn't matter because the layout
+        // are chosen via the variant only.
+        bool const useVsmDescriptorSetLayout =
+                mColorPassDescriptorSet ? mColorPassDescriptorSet->isVSM() : false;
 
         bool const polygonOffsetOverride = mPolygonOffsetOverride;
         PipelineState pipeline{
@@ -885,9 +937,11 @@ void RenderPass::Executor::execute(FEngine& engine,
                 .polygonOffset = mPolygonOffset,
         };
 
+        pipeline.pipelineLayout.setLayout[+DescriptorSetBindingPoints::PER_RENDERABLE] =
+                engine.getPerRenderableDescriptorSetLayout().getHandle();
+
         PipelineState currentPipeline{};
         Handle<HwRenderPrimitive> currentPrimitiveHandle{};
-        bool rebindPipeline = true;
 
         FMaterialInstance const* UTILS_RESTRICT mi = nullptr;
         FMaterial const* UTILS_RESTRICT ma = nullptr;
@@ -895,43 +949,39 @@ void RenderPass::Executor::execute(FEngine& engine,
 
         // Maximum space occupied in the CircularBuffer by a single `Command`. This must be
         // reevaluated when the inner loop below adds DriverApi commands or when we change the
-        // CommandStream protocol. Currently, the maximum is 320 bytes.
+        // CommandStream protocol. Currently, the maximum is 272 bytes.
         // The batch size is calculated by adding the size of all commands that can possibly be
         // emitted per draw call:
-        constexpr size_t const maxCommandSizeInBytes =
-                sizeof(CustomCommand) +
+        constexpr size_t maxCommandSizeInBytes =
                 sizeof(COMMAND_TYPE(scissor)) +
-                sizeof(COMMAND_TYPE(bindUniformBuffer)) +
-                sizeof(COMMAND_TYPE(bindSamplers)) +
-                sizeof(COMMAND_TYPE(bindBufferRange)) +
-                sizeof(COMMAND_TYPE(bindBufferRange)) +
-                sizeof(COMMAND_TYPE(bindSamplers)) +
-                sizeof(COMMAND_TYPE(bindSamplers)) +
-                sizeof(COMMAND_TYPE(bindUniformBuffer)) +
-                sizeof(COMMAND_TYPE(bindSamplers)) +
-                sizeof(COMMAND_TYPE(bindSamplers)) +
+                sizeof(COMMAND_TYPE(bindDescriptorSet)) +
+                sizeof(COMMAND_TYPE(bindDescriptorSet)) + backend::CustomCommand::align(sizeof(NoopCommand) + 4) +
                 sizeof(COMMAND_TYPE(bindPipeline)) +
-                sizeof(COMMAND_TYPE(setPushConstant)) +
                 sizeof(COMMAND_TYPE(bindRenderPrimitive)) +
+                sizeof(COMMAND_TYPE(bindDescriptorSet)) + backend::CustomCommand::align(sizeof(NoopCommand) + 8) +
+                sizeof(COMMAND_TYPE(setPushConstant)) +
                 sizeof(COMMAND_TYPE(draw2));
 
+        // Add 20% margin for safety
+        constexpr size_t safeCommandSizeInBytes = maxCommandSizeInBytes + (maxCommandSizeInBytes / 5);
 
         // Number of Commands that can be issued and guaranteed to fit in the current
-        // CircularBuffer allocation. In practice, we'll have tons of headroom especially if
-        // skinning and morphing aren't used. With a 2 MiB buffer (the default) a batch is
-        // 6553 commands (i.e. draw calls).
-        size_t const batchCommandCount = capacity / maxCommandSizeInBytes;
+        // CircularBuffer allocation. With a 2 MiB buffer (the default) a batch is
+        // 6432 commands (i.e. draw calls).
+        size_t const batchCommandCount = capacity / safeCommandSizeInBytes;
         while(first != last) {
             Command const* const batchLast = std::min(first + batchCommandCount, last);
 
             // actual number of commands we need to write (can be smaller than batchCommandCount)
             size_t const commandCount = batchLast - first;
-            size_t const commandSizeInBytes = commandCount * maxCommandSizeInBytes;
+            size_t const commandSizeInBytes = commandCount * safeCommandSizeInBytes;
 
             // check we have enough capacity to write these commandCount commands, if not,
             // request a new CircularBuffer allocation of `capacity` bytes.
-            if (UTILS_UNLIKELY(circularBuffer.getUsed() > capacity - commandSizeInBytes)) {
-                engine.flush(); // TODO: we should use a "fast" flush if possible
+            if (UTILS_UNLIKELY(circularBuffer.getUsed() + commandSizeInBytes > capacity)) {
+                // FIXME: eventually we can't flush here because this will be a secondary
+                //        command buffer. We will need another solution for overflows.
+                const_cast<FEngine&>(engine).flush();
             }
 
             first--;
@@ -947,6 +997,8 @@ void RenderPass::Executor::execute(FEngine& engine,
                     uint32_t const index = (first->key & CUSTOM_INDEX_MASK) >> CUSTOM_INDEX_SHIFT;
                     assert_invariant(index < mCustomCommands.size());
                     pCustomCommands[index]();
+                    currentPipeline = {};
+                    currentPrimitiveHandle ={};
                     continue;
                 }
 
@@ -964,108 +1016,105 @@ void RenderPass::Executor::execute(FEngine& engine,
 
                 if (UTILS_UNLIKELY(mi != info.mi)) {
                     // this is always taken the first time
-                    mi = info.mi;
-                    assert_invariant(mi);
+                    assert_invariant(info.mi);
 
+                    mi = info.mi;
                     ma = mi->getMaterial();
 
-                   if (UTILS_LIKELY(!scissorOverride)) {
-                       backend::Viewport scissor = mi->getScissor();
-                       if (UTILS_UNLIKELY(mi->hasScissor())) {
-                           scissor = applyScissorViewport(mScissorViewport, scissor);
-                       }
-                       driver.scissor(scissor);
-                   }
+                    // if we have the scissor override, the material instance and scissor-viewport
+                    // are ignored (typically used for shadow maps).
+                    if (!hasScissorOverride) {
+                        // apply the MaterialInstance scissor
+                        backend::Viewport scissor = mi->getScissor();
+                        if (hasScissorViewport) {
+                            // apply the scissor viewport if any
+                            scissor = applyScissorViewport(mScissor, scissor);
+                        }
+                        if (scissor != currentScissor) {
+                            currentScissor = scissor;
+                            driver.scissor(scissor);
+                        }
+                    }
 
-                   if (UTILS_LIKELY(!polygonOffsetOverride)) {
-                       pipeline.polygonOffset = mi->getPolygonOffset();
-                   }
+                    if (UTILS_LIKELY(!polygonOffsetOverride)) {
+                        pipeline.polygonOffset = mi->getPolygonOffset();
+                    }
                     pipeline.stencilState = mi->getStencilState();
-                    mi->use(driver);
 
-                    // FIXME: MaterialInstance changed (not necessarily the program though),
-                    //  however, texture bindings may have changed and currently we need to
-                    //  rebind the pipeline when that happens.
-                    rebindPipeline = true;
+                    // Each material has its own version of the per-view descriptor-set layout,
+                    // because it depends on the material features (e.g. lit/unlit)
+                    // TODO: QUESTION: are
+                    //      Variant::isValidDepthVariant(info.materialVariant) and
+                    //      Variant::isSSRVariant(info.materialVariant)
+                    //      constant? If so we could precompute ma->getPerViewDescriptorSetLayout()
+                    pipeline.pipelineLayout.setLayout[+DescriptorSetBindingPoints::PER_VIEW] =
+                            ma->getPerViewDescriptorSetLayout(info.materialVariant,
+                                    useVsmDescriptorSetLayout).getHandle();
+
+                    // Each material has a per-material descriptor-set layout which encodes the
+                    // material's parameters (ubo and samplers)
+                    pipeline.pipelineLayout.setLayout[+DescriptorSetBindingPoints::PER_MATERIAL] =
+                            ma->getDescriptorSetLayout(info.materialVariant).getHandle();
+
+                    // If we have a ColorPassDescriptorSet we use it to bind the per-view
+                    // descriptor-set (ideally only if it changed).
+                    // If we don't, it means the descriptor-set is already bound and the layout we
+                    // got from the material above should match. This is the case for situations
+                    // where we have a known per-view descriptor-set layout,
+                    // e.g.: postfx, shadow-maps, ssr and structure passes.
+                    if (mColorPassDescriptorSet) {
+                        if (UTILS_UNLIKELY(ma->getMaterialDomain() == MaterialDomain::POST_PROCESS)) {
+                            // It is possible to get a post-process material here (even though it's
+                            // not technically a public API yet, it is used by the IBLPrefilterLibrary.
+                            // Ideally we would have a more formal compute API). In this case, we need
+                            // to set the post-process descriptor-set.
+                            engine.getPostProcessManager().bindPostProcessDescriptorSet(driver);
+                        } else {
+                            // We have a ColorPassDescriptorSet, we need to go through it for binding
+                            // the per-view descriptor-set because its layout can change based on the
+                            // material.
+                            mColorPassDescriptorSet->bind(driver, ma->getPerViewLayoutIndex());
+                        }
+                    } else {
+                        // if we're here it means the per-view descriptor set is constant and
+                        // already set. This will be the case for postfx, ssr, structure and
+                        // shadow passes. All these passes use a static descriptor set layout
+                        // (albeit potentially different for each pass). In particular the
+                        // per-view UBO must be compatible for all material domains.
+                        // This is the case by construction for postfx, ssr. However, shadows
+                        // and structure have their own UBO, but it's content is (must be)
+                        // compatible with POST_PROCESS and COMPUTE materials.
+                    }
+
+                    // Each MaterialInstance has its own descriptor set. This binds it.
+                    mi->use(driver, info.materialVariant);
                 }
 
                 assert_invariant(ma);
                 pipeline.program = ma->getProgram(info.materialVariant);
 
-                // Bind per-renderable uniform block. There is no need to attempt to skip this command
-                // because the backends already do this.
-                size_t const offset = info.hasHybridInstancing ?
-                                      0 : info.index * sizeof(PerRenderableData);
-
-                assert_invariant(info.boh);
-
-                driver.bindBufferRange(BufferObjectBinding::UNIFORM,
-                        +UniformBindingPoints::PER_RENDERABLE,
-                        info.boh, offset, sizeof(PerRenderableUib));
-
-                if (UTILS_UNLIKELY(info.hasSkinning)) {
-
-                    FScene::RenderableSoa const& soa = *mRenderableSoa;
-
-                    const FRenderableManager::SkinningBindingInfo& skinning =
-                            soa.elementAt<FScene::SKINNING_BUFFER>(info.index);
-
-                    // note: we can't bind less than sizeof(PerRenderableBoneUib) due to glsl limitations
-                    driver.bindBufferRange(BufferObjectBinding::UNIFORM,
-                            +UniformBindingPoints::PER_RENDERABLE_BONES,
-                            skinning.handle,
-                            skinning.offset * sizeof(PerRenderableBoneUib::BoneData),
-                            sizeof(PerRenderableBoneUib));
-                    // note: always bind the skinningTexture because the shader needs it.
-                    driver.bindSamplers(+SamplerBindingPoints::PER_RENDERABLE_SKINNING,
-                            skinning.handleSampler);
-                    // note: even if only skinning is enabled, binding morphTargetBuffer is needed.
-                    driver.bindSamplers(+SamplerBindingPoints::PER_RENDERABLE_MORPHING,
-                            info.morphTargetBuffer);
-
-                    // FIXME: Currently we need to rebind the PipelineState when texture or
-                    //  UBO binding change.
-                    rebindPipeline = true;
-                }
-
-                if (UTILS_UNLIKELY(info.hasMorphing)) {
-
-                    FScene::RenderableSoa const& soa = *mRenderableSoa;
-
-                    const FRenderableManager::SkinningBindingInfo& skinning =
-                            soa.elementAt<FScene::SKINNING_BUFFER>(info.index);
-
-                    const FRenderableManager::MorphingBindingInfo& morphing =
-                            soa.elementAt<FScene::MORPHING_BUFFER>(info.index);
-
-                    // Instead of using a UBO per primitive, we could also have a single UBO for all
-                    // primitives and use bindUniformBufferRange which might be more efficient.
-                    driver.bindUniformBuffer(+UniformBindingPoints::PER_RENDERABLE_MORPHING,
-                            morphing.handle);
-                    driver.bindSamplers(+SamplerBindingPoints::PER_RENDERABLE_MORPHING,
-                            info.morphTargetBuffer);
-                    // note: even if only morphing is enabled, binding skinningTexture is needed.
-                    driver.bindSamplers(+SamplerBindingPoints::PER_RENDERABLE_SKINNING,
-                            skinning.handleSampler);
-
-                    // FIXME: Currently we need to rebind the PipelineState when texture or
-                    //  UBO binding change.
-                    rebindPipeline = true;
-                }
-
-                if (rebindPipeline ||
-                        (memcmp(&pipeline,  &currentPipeline, sizeof(PipelineState)) != 0)) {
-                    rebindPipeline = false;
+                if (UTILS_UNLIKELY(memcmp(&pipeline, &currentPipeline, sizeof(PipelineState)) != 0)) {
                     currentPipeline = pipeline;
                     driver.bindPipeline(pipeline);
-
-                    driver.setPushConstant(ShaderStage::VERTEX,
-                            +PushConstantIds::MORPHING_BUFFER_OFFSET, int32_t(info.morphingOffset));
                 }
 
-                if (info.rph != currentPrimitiveHandle) {
+                if (UTILS_UNLIKELY(info.rph != currentPrimitiveHandle)) {
                     currentPrimitiveHandle = info.rph;
                     driver.bindRenderPrimitive(info.rph);
+                }
+
+                // Bind per-renderable uniform block. There is no need to attempt to skip this command
+                // because the backends already do this.
+                uint32_t const offset = info.index * sizeof(PerRenderableData);
+
+                assert_invariant(info.dsh);
+                driver.bindDescriptorSet(info.dsh,
+                        +DescriptorSetBindingPoints::PER_RENDERABLE,
+                        {{ offset, info.skinningOffset }, driver});
+
+                if (UTILS_UNLIKELY(info.hasMorphing)) {
+                    driver.setPushConstant(ShaderStage::VERTEX,
+                            +PushConstantIds::MORPHING_BUFFER_OFFSET, int32_t(info.morphingOffset));
                 }
 
                 driver.draw2(info.indexOffset, info.indexCount, info.instanceCount);
@@ -1075,29 +1124,34 @@ void RenderPass::Executor::execute(FEngine& engine,
         // If the remaining space is less than half the capacity, we flush right away to
         // allow some headroom for commands that might come later.
         if (UTILS_UNLIKELY(circularBuffer.getUsed() > capacity / 2)) {
-            engine.flush();
+            // FIXME: eventually we can't flush here because this will be a secondary
+            //        command buffer.
+            const_cast<FEngine&>(engine).flush();
         }
     }
 }
 
 // ------------------------------------------------------------------------------------------------
 
-RenderPass::Executor::Executor(RenderPass const* pass, Command const* b, Command const* e,
-        BufferObjectSharedHandle instancedUbo) noexcept
-        : mRenderableSoa(&pass->mRenderableSoa),
-          mCommands(b, e),
-          mCustomCommands(pass->mCustomCommands.data(), pass->mCustomCommands.size()),
-          mInstancedUboHandle(std::move(instancedUbo)),
-          mScissorViewport(pass->mScissorViewport),
+RenderPass::Executor::Executor(RenderPass const& pass, Command const* b, Command const* e) noexcept
+        : mCommands(b, e),
+          mCustomCommands(pass.mCustomCommands.data(), pass.mCustomCommands.size()),
+          mInstancedUboHandle(pass.mInstancedUboHandle),
+          mInstancedDescriptorSetHandle(pass.mInstancedDescriptorSetHandle),
+          mColorPassDescriptorSet(pass.mColorPassDescriptorSet),
+          mScissor(pass.mScissorViewport),
           mPolygonOffsetOverride(false),
           mScissorOverride(false) {
-    assert_invariant(b >= pass->begin());
-    assert_invariant(e <= pass->end());
+    mHasScissorViewport = mScissor != backend::Viewport{ 0, 0, INT32_MAX, INT32_MAX };
+    assert_invariant(b >= pass.begin());
+    assert_invariant(e <= pass.end());
+    assert_invariant(pass.isFinalized());
 }
 
 RenderPass::Executor::Executor() noexcept
         : mPolygonOffsetOverride(false),
-          mScissorOverride(false) {
+          mScissorOverride(false),
+          mHasScissorViewport(false) {
 }
 
 RenderPass::Executor::Executor(Executor&& rhs) noexcept = default;

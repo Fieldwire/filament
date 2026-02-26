@@ -22,7 +22,9 @@
 
 #include <backend/CallbackHandler.h>
 
+#include <utils/CString.h>
 #include <utils/Invocable.h>
+#include <utils/Logger.h>
 
 #include <new>
 #include <utility>
@@ -31,14 +33,33 @@
 
 namespace filament {
 
-FSwapChain::FSwapChain(FEngine& engine, void* nativeWindow, uint64_t flags)
-        : mEngine(engine), mNativeWindow(nativeWindow), mConfigFlags(initFlags(engine, flags)) {
-    mHwSwapChain = engine.getDriverApi().createSwapChain(nativeWindow, flags);
+namespace {
+
+utils::CString getRemovedFlags(uint64_t originalFlags, uint64_t modifiedFlags) {
+    const uint64_t diffFlags = originalFlags ^ modifiedFlags;
+    utils::CString removed;
+    if (diffFlags & backend::SWAP_CHAIN_CONFIG_SRGB_COLORSPACE) {
+        removed += "SRGB_COLORSPACE ";
+    }
+    if (diffFlags & backend::SWAP_CHAIN_CONFIG_MSAA_4_SAMPLES) {
+        removed += "MSAA_4_SAMPLES ";
+    }
+    if (diffFlags & backend::SWAP_CHAIN_CONFIG_PROTECTED_CONTENT) {
+        removed += "PROTECTED_CONTENT ";
+    }
+    return removed;
 }
 
-FSwapChain::FSwapChain(FEngine& engine, uint32_t width, uint32_t height, uint64_t flags)
+} // anonymous namespace
+
+FSwapChain::FSwapChain(FEngine& engine, void* nativeWindow, uint64_t const flags)
+        : mEngine(engine), mNativeWindow(nativeWindow), mConfigFlags(initFlags(engine, flags)) {
+    mHwSwapChain = engine.getDriverApi().createSwapChain(nativeWindow, mConfigFlags);
+}
+
+FSwapChain::FSwapChain(FEngine& engine, uint32_t const width, uint32_t const height, uint64_t const flags)
         : mEngine(engine), mWidth(width), mHeight(height), mConfigFlags(initFlags(engine, flags)) {
-    mHwSwapChain = engine.getDriverApi().createSwapChainHeadless(width, height, flags);
+    mHwSwapChain = engine.getDriverApi().createSwapChainHeadless(width, height, mConfigFlags);
 }
 
 void FSwapChain::recreateWithNewFlags(FEngine& engine, uint64_t flags) noexcept {
@@ -56,11 +77,19 @@ void FSwapChain::recreateWithNewFlags(FEngine& engine, uint64_t flags) noexcept 
 }
 
 uint64_t FSwapChain::initFlags(FEngine& engine, uint64_t flags) noexcept {
+    const uint64_t originalFlags = flags;
     if (!isSRGBSwapChainSupported(engine)) {
         flags &= ~CONFIG_SRGB_COLORSPACE;
     }
+    if (!isMSAASwapChainSupported(engine, 4)) {
+        flags &= ~CONFIG_MSAA_4_SAMPLES;
+    }
     if (!isProtectedContentSupported(engine)) {
         flags &= ~CONFIG_PROTECTED_CONTENT;
+    }
+    if (originalFlags != flags) {
+        LOG(WARNING) << "SwapChain flags were modified to remove features that are not supported. "
+                     << "Removed: " << getRemovedFlags(originalFlags, flags).c_str_safe();
     }
     return flags;
 }
@@ -70,9 +99,10 @@ void FSwapChain::terminate(FEngine& engine) noexcept {
 }
 
 void FSwapChain::setFrameScheduledCallback(
-        backend::CallbackHandler* handler, FrameScheduledCallback&& callback) {
+        backend::CallbackHandler* handler, FrameScheduledCallback&& callback, uint64_t const flags) {
     mFrameScheduledCallbackIsSet = bool(callback);
-    mEngine.getDriverApi().setFrameScheduledCallback(mHwSwapChain, handler, std::move(callback));
+    mEngine.getDriverApi().setFrameScheduledCallback(
+            mHwSwapChain, handler, std::move(callback), flags);
 }
 
 bool FSwapChain::isFrameScheduledCallbackSet() const noexcept {
@@ -88,6 +118,10 @@ void FSwapChain::setFrameCompletedCallback(
 
 bool FSwapChain::isSRGBSwapChainSupported(FEngine& engine) noexcept {
     return engine.getDriverApi().isSRGBSwapChainSupported();
+}
+
+bool FSwapChain::isMSAASwapChainSupported(FEngine& engine, uint32_t samples) noexcept {
+    return engine.getDriverApi().isMSAASwapChainSupported(samples);
 }
 
 bool FSwapChain::isProtectedContentSupported(FEngine& engine) noexcept {

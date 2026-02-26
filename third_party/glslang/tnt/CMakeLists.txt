@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.19)
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
+include(${EXTERNAL}/clang/usage_ios_13.cmake)
+
 # Adhere to GNU filesystem layout conventions
 include(GNUInstallDirs)
 
@@ -89,5 +91,4 @@ endfunction()
 
 
 add_subdirectory(../glslang/tnt "${CMAKE_CURRENT_BINARY_DIR}/glslang")
-add_subdirectory(../OGLCompilersDLL/tnt "${CMAKE_CURRENT_BINARY_DIR}/OGLCompilersDLL")
 add_subdirectory(../SPIRV/tnt "${CMAKE_CURRENT_BINARY_DIR}/SPIRV")

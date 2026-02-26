@@ -16,21 +16,39 @@
 
 #include <private/backend/PlatformFactory.h>
 
-#include <utils/Systrace.h>
+#include <private/utils/Tracing.h>
+
 #include <utils/debug.h>
+
+// We need to keep this up top for the linux (X11) name collisions.
+#if defined(FILAMENT_SUPPORTS_WEBGPU)
+    #if defined(__ANDROID__)
+        #include "backend/platforms/WebGPUPlatformAndroid.h"
+    #elif defined(__APPLE__)
+        #include "backend/platforms/WebGPUPlatformApple.h"
+    #elif defined(__linux__)
+        #include "backend/platforms/WebGPUPlatformLinux.h"
+    #elif defined(WIN32)
+        #include "backend/platforms/WebGPUPlatformWindows.h"
+    #endif
+#endif
 
 #if defined(__ANDROID__)
     #include <sys/system_properties.h>
     #if defined(FILAMENT_SUPPORTS_OPENGL) && !defined(FILAMENT_USE_EXTERNAL_GLES3)
         #include "backend/platforms/PlatformEGLAndroid.h"
     #endif
-#elif defined(IOS)
+#elif defined(FILAMENT_IOS)
     #if defined(FILAMENT_SUPPORTS_OPENGL) && !defined(FILAMENT_USE_EXTERNAL_GLES3)
         #include "backend/platforms/PlatformCocoaTouchGL.h"
     #endif
 #elif defined(__APPLE__)
     #if defined(FILAMENT_SUPPORTS_OPENGL) && !defined(FILAMENT_USE_EXTERNAL_GLES3)
-        #include <backend/platforms/PlatformCocoaGL.h>
+        #if defined(FILAMENT_SUPPORTS_OSMESA)
+            #include <backend/platforms/PlatformOSMesa.h>
+        #else
+            #include <backend/platforms/PlatformCocoaGL.h>
+        #endif
     #endif
 #elif defined(__linux__)
     #if defined(FILAMENT_SUPPORTS_X11)
@@ -40,6 +58,10 @@
     #elif defined(FILAMENT_SUPPORTS_EGL_ON_LINUX)
         #if defined(FILAMENT_SUPPORTS_OPENGL) && !defined(FILAMENT_USE_EXTERNAL_GLES3)
             #include "backend/platforms/PlatformEGLHeadless.h"
+        #endif
+    #elif defined(FILAMENT_SUPPORTS_OSMESA)
+        #if defined(FILAMENT_SUPPORTS_OPENGL) && !defined(FILAMENT_USE_EXTERNAL_GLES3)
+            #include "backend/platforms/PlatformOSMesa.h"
         #endif
     #endif
 #elif defined(WIN32)
@@ -51,7 +73,15 @@
 #endif
 
 #if defined(FILAMENT_DRIVER_SUPPORTS_VULKAN)
-    #include "backend/platforms/VulkanPlatform.h"
+    #if defined(__ANDROID__)
+        #include "backend/platforms/VulkanPlatformAndroid.h"
+    #elif defined(__APPLE__)
+        #include "backend/platforms/VulkanPlatformApple.h"
+    #elif defined(__linux__)
+        #include "backend/platforms/VulkanPlatformLinux.h"
+    #elif defined(WIN32)
+        #include "backend/platforms/VulkanPlatformWindows.h"
+    #endif
 #endif
 
 #if defined (FILAMENT_SUPPORTS_METAL)
@@ -68,7 +98,7 @@ namespace filament::backend {
 // responsible for destroying it. Initialization of the backend API is deferred until
 // createDriver(). The passed-in backend hint is replaced with the resolved backend.
 Platform* PlatformFactory::create(Backend* backend) noexcept {
-    SYSTRACE_CALL();
+    FILAMENT_TRACING_CALL(FILAMENT_TRACING_CATEGORY_FILAMENT);
     assert_invariant(backend);
 
 #if defined(__ANDROID__)
@@ -84,7 +114,7 @@ Platform* PlatformFactory::create(Backend* backend) noexcept {
         *backend = Backend::OPENGL;
 #elif defined(__ANDROID__)
         *backend = Backend::OPENGL;
-#elif defined(IOS) || defined(__APPLE__)
+#elif defined(FILAMENT_IOS) || defined(__APPLE__)
         *backend = Backend::METAL;
 #elif defined(FILAMENT_DRIVER_SUPPORTS_VULKAN)
         *backend = Backend::VULKAN;
@@ -97,7 +127,34 @@ Platform* PlatformFactory::create(Backend* backend) noexcept {
     }
     if (*backend == Backend::VULKAN) {
         #if defined(FILAMENT_DRIVER_SUPPORTS_VULKAN)
-            return new VulkanPlatform();
+            #if defined(__ANDROID__)
+                return new VulkanPlatformAndroid();
+            #elif defined(__APPLE__)
+                return new VulkanPlatformApple();
+            #elif defined(__linux__)
+                return new VulkanPlatformLinux();
+            #elif defined(WIN32)
+                return new VulkanPlatformWindows();
+            #else
+                return nullptr;
+            #endif
+        #else
+            return nullptr;
+        #endif
+    }
+    if (*backend == Backend::WEBGPU) {
+        #if defined(FILAMENT_SUPPORTS_WEBGPU)
+            #if defined(__ANDROID__)
+                return new WebGPUPlatformAndroid();
+            #elif defined(__APPLE__)
+                return new WebGPUPlatformApple();
+            #elif defined(__linux__)
+                return new WebGPUPlatformLinux();
+            #elif defined(WIN32)
+                return new WebGPUPlatformWindows();
+            #else
+                 return nullptr;
+            #endif
         #else
             return nullptr;
         #endif
@@ -115,15 +172,21 @@ Platform* PlatformFactory::create(Backend* backend) noexcept {
             return nullptr;
         #elif defined(__ANDROID__)
             return new PlatformEGLAndroid();
-        #elif defined(IOS)
+        #elif defined(FILAMENT_IOS)
             return new PlatformCocoaTouchGL();
         #elif defined(__APPLE__)
-            return new PlatformCocoaGL();
+            #if defined(FILAMENT_SUPPORTS_OSMESA)
+                return new PlatformOSMesa();
+            #else
+                return new PlatformCocoaGL();
+            #endif
         #elif defined(__linux__)
             #if defined(FILAMENT_SUPPORTS_X11)
                 return new PlatformGLX();
             #elif defined(FILAMENT_SUPPORTS_EGL_ON_LINUX)
                 return new PlatformEGLHeadless();
+            #elif defined(FILAMENT_SUPPORTS_OSMESA)
+                return new PlatformOSMesa();
             #else
                 return nullptr;
             #endif

@@ -106,7 +106,7 @@ public:
     /**
      * Adds an Entity to the Scene.
      *
-     * @param entity The entity is ignored if it doesn't have a Renderable or Light component.
+     * @param entity The entity is ignored for rendering purposes if it doesn't have a Renderable or Light component.
      *
      * \attention
      *  A given Entity object can only be added once to a Scene.
@@ -140,6 +140,11 @@ public:
      * @param count Size of the entity array.
      */
     void removeEntities(const utils::Entity* UTILS_NONNULL entities, size_t count);
+
+    /**
+     * Remove all entities to the Scene.
+     */
+    void removeAllEntities() noexcept;
 
     /**
      * Returns the total number of Entities in the Scene, whether alive or not.

@@ -18,6 +18,7 @@ package com.google.android.filament.gltf
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.Intent
 import android.os.Bundle
 import android.util.Log
 import android.view.*
@@ -50,6 +51,7 @@ class MainActivity : Activity() {
         // Load the library for the utility layer, which in turn loads gltfio and the Filament core.
         init { Utils.init() }
         private const val TAG = "gltf-viewer"
+        private const val STATIC_MODEL_TAG = "use-static-model"
     }
 
     private lateinit var surfaceView: SurfaceView
@@ -69,6 +71,7 @@ class MainActivity : Activity() {
     private var loadStartTime = 0L
     private var loadStartFence: Fence? = null
     private val viewerContent = AutomationEngine.ViewerContent()
+    private var useStaticModel = false
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -82,6 +85,12 @@ class MainActivity : Activity() {
 
         doubleTapDetector = GestureDetector(applicationContext, doubleTapListener)
         singleTapDetector = GestureDetector(applicationContext, singleTapListener)
+
+        val intent: Intent = intent
+        val bundle: Bundle? = intent.extras
+        bundle?.let {
+            useStaticModel = it.getBoolean(STATIC_MODEL_TAG, false)
+        }
 
         modelViewer = ModelViewer(surfaceView)
         viewerContent.view = modelViewer.view
@@ -141,7 +150,16 @@ class MainActivity : Activity() {
     }
 
     private fun createDefaultRenderables() {
-        val buffer = assets.open("models/scene.gltf").use { input ->
+        // Sometimes it's useful to set to the default model to something static. You can enable
+        // the static model by launching the app from adb, as in
+        // `adb shell am start -n com.google.android.filament.gltf/.MainActivity --ez "use-static-model" true`
+        val modelPath = if (useStaticModel) {
+            "models/helmet.glb"
+        } else {
+            "models/scene.gltf"
+        }
+
+        val buffer = assets.open(modelPath).use { input ->
             val bytes = ByteArray(input.available())
             input.read(bytes)
             ByteBuffer.wrap(bytes)
@@ -156,12 +174,16 @@ class MainActivity : Activity() {
         val scene = modelViewer.scene
         val ibl = "default_env"
         readCompressedAsset("envs/$ibl/${ibl}_ibl.ktx").let {
-            scene.indirectLight = KTX1Loader.createIndirectLight(engine, it)
+            val bundle = KTX1Loader.createIndirectLight(engine, it)
+            scene.indirectLight = bundle.indirectLight
+            modelViewer.indirectLightCubemap = bundle.cubemap
             scene.indirectLight!!.intensity = 30_000.0f
             viewerContent.indirectLight = modelViewer.scene.indirectLight
         }
         readCompressedAsset("envs/$ibl/${ibl}_skybox.ktx").let {
-            scene.skybox = KTX1Loader.createSkybox(engine, it)
+            val bundle = KTX1Loader.createSkybox(engine, it)
+            scene.skybox = bundle.skybox
+            modelViewer.skyboxCubemap = bundle.cubemap
         }
     }
 
@@ -367,9 +389,9 @@ class MainActivity : Activity() {
         viewerContent.assetLights = modelViewer.asset?.lightEntities
         automation.applySettings(modelViewer.engine, json, viewerContent)
         modelViewer.view.colorGrading = automation.getColorGrading(modelViewer.engine)
-        modelViewer.cameraFocalLength = automation.viewerOptions.cameraFocalLength
-        modelViewer.cameraNear = automation.viewerOptions.cameraNear
-        modelViewer.cameraFar = automation.viewerOptions.cameraFar
+        modelViewer.cameraFocalLength = automation.cameraSettings.focalLength
+        modelViewer.cameraNear = automation.cameraSettings.near
+        modelViewer.cameraFar = automation.cameraSettings.far
         updateRootTransform()
     }
 

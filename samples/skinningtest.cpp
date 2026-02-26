@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#include "common/arguments.h"
+
 #include <filament/Camera.h>
 #include <filament/Engine.h>
 #include <filament/IndexBuffer.h>
@@ -143,12 +145,15 @@ static void printUsage(char* name) {
             "Options:\n"
             "   --help, -h\n"
             "       Prints this message\n\n"
-            "   --api, -a\n"
-            "       Specify the backend API: opengl (default), vulkan, or metal\n\n"
+            "API_USAGE"
     );
     const std::string from("SAMPLE");
     for (size_t pos = usage.find(from); pos != std::string::npos; pos = usage.find(from, pos)) {
         usage.replace(pos, from.length(), exec_name);
+    }
+    const std::string apiUsage("API_USAGE");
+    for (size_t pos = usage.find(apiUsage); pos != std::string::npos; pos = usage.find(apiUsage, pos)) {
+        usage.replace(pos, apiUsage.length(), samples::getBackendAPIArgumentsUsage());
     }
     std::cout << usage;
 }
@@ -170,16 +175,7 @@ static int handleCommandLineArgments(int argc, char* argv[], Config* config) {
                 printUsage(argv[0]);
                 exit(0);
             case 'a':
-                if (arg == "opengl") {
-                    config->backend = Engine::Backend::OPENGL;
-                } else if (arg == "vulkan") {
-                    config->backend = Engine::Backend::VULKAN;
-                } else if (arg == "metal") {
-                    config->backend = Engine::Backend::METAL;
-                } else {
-                    std::cerr << "Unrecognized backend. Must be 'opengl'|'vulkan'|'metal'."
-                              << std::endl;
-                }
+                config->backend = samples::parseArgumentsForBackend(arg);
                 break;
         }
     }
@@ -246,6 +242,7 @@ int main(int argc, char** argv) {
             .attribute(VertexAttribute::COLOR, 0,
                        VertexBuffer::AttributeType::UBYTE4, 8, 12)
             .normalized(VertexAttribute::COLOR)
+            .advancedSkinning(true)
             .build(*engine);
         app.vbs[app.vbCount]->setBufferAt(*engine, 0,
             VertexBuffer::BufferDescriptor(TRIANGLE_VERTICES_1, 36,
@@ -262,6 +259,7 @@ int main(int argc, char** argv) {
                        VertexBuffer::AttributeType::UBYTE4, 8, 12)
             .normalized(VertexAttribute::COLOR)
             .enableBufferObjects()
+            .advancedSkinning(true)
             .build(*engine);
         app.bos[app.boCount] = BufferObject::Builder()
             .size(3 * sizeof(Vertex))
@@ -639,6 +637,15 @@ int main(int argc, char** argv) {
     };
 
     auto cleanup = [&app](Engine* engine, View*, Scene*) {
+        for (auto i = 0; i < 4; i++) {
+            engine->destroy(app.renderables[i]);
+        }
+        for (auto i = 0; i < app.boCount; i++) {
+            engine->destroy(app.bos[i]);
+        }
+        for (auto i = 0; i < app.vbCount; i++) {
+            engine->destroy(app.vbs[i]);
+        }
         engine->destroy(app.skybox);
         engine->destroy(app.mat);
         engine->destroy(app.ib);
@@ -648,15 +655,6 @@ int main(int argc, char** argv) {
         engine->destroy(app.mt);
         engine->destroyCameraComponent(app.camera);
         EntityManager::get().destroy(app.camera);
-        for (auto i = 0; i < app.vbCount; i++) {
-            engine->destroy(app.vbs[i]);
-        }
-        for ( auto i = 0; i < app.boCount; i++) {
-            engine->destroy(app.bos[i]);
-        }
-        for ( auto i = 0; i < 4; i++) {
-            engine->destroy(app.renderables[i]);
-        }
     };
 
     FilamentApp::get().animate([&app](Engine* engine, View* view, double now) {

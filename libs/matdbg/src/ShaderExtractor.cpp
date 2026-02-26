@@ -40,6 +40,7 @@ namespace matdbg {
 
 ShaderExtractor::ShaderExtractor(backend::ShaderLanguage target, const void* data, size_t size)
         : mChunkContainer(data, size), mMaterialChunk(mChunkContainer) {
+    assert_invariant(target != ShaderLanguage::UNSPECIFIED);
     switch (target) {
         case backend::ShaderLanguage::ESSL1:
             mMaterialTag = ChunkType::MaterialEssl1;
@@ -57,9 +58,16 @@ ShaderExtractor::ShaderExtractor(backend::ShaderLanguage target, const void* dat
             mMaterialTag = ChunkType::MaterialMetalLibrary;
             mDictionaryTag = ChunkType::DictionaryMetalLibrary;
             break;
+        case backend::ShaderLanguage::WGSL:
+            mMaterialTag = ChunkType::MaterialWgsl;
+            mDictionaryTag = ChunkType::DictionaryText;
+            break;
         case backend::ShaderLanguage::SPIRV:
             mMaterialTag = ChunkType::MaterialSpirv;
             mDictionaryTag = ChunkType::DictionarySpirv;
+            break;
+        case backend::ShaderLanguage::UNSPECIFIED:
+            // that cannot happen
             break;
     }
 }
