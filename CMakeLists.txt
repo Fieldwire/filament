@@ -1,11 +1,16 @@
 # ==================================================================================================
 # CMake
 # ==================================================================================================
-cmake_minimum_required(VERSION 3.19)
+cmake_minimum_required(VERSION 3.22.1)
+
+# Note: we set the main CMakeLists.txt's minimum cmake version to the maximum of all the
+# cmake_minimum_required versions for the full build (building for all backends, and for
+# both release and debug).
 
 # ==================================================================================================
 # Toolchain configuration
 # ==================================================================================================
+# On iOS, the deployment target is set inside third_party/clang/ios.cmake
 if (APPLE AND NOT IOS)
     # This must be set before project() is called
     set(CMAKE_OSX_DEPLOYMENT_TARGET 10.15 CACHE STRING "")
@@ -22,7 +27,6 @@ project(TNT)
 option(FILAMENT_USE_EXTERNAL_GLES3 "Experimental: Compile Filament against OpenGL ES 3" OFF)
 
 option(FILAMENT_ENABLE_LTO "Enable link-time optimizations if supported by the compiler" OFF)
-
 option(FILAMENT_SKIP_SAMPLES "Don't build samples" OFF)
 
 option(FILAMENT_SUPPORTS_XCB "Include XCB support in Linux builds" ON)
@@ -41,9 +45,27 @@ option(FILAMENT_ENABLE_ASAN_UBSAN "Enable Address and Undefined Behavior Sanitiz
 
 option(FILAMENT_ENABLE_TSAN "Enable Thread Sanitizer" OFF)
 
+option(FILAMENT_ENABLE_COVERAGE "Enable LLVM code coverage" OFF)
+
 option(FILAMENT_ENABLE_FEATURE_LEVEL_0 "Enable Feature Level 0" ON)
 
 option(FILAMENT_ENABLE_MULTIVIEW "Enable multiview for Filament" OFF)
+
+option(FILAMENT_SUPPORTS_OSMESA "Enable OSMesa (headless GL context) for Filament" OFF)
+
+option(FILAMENT_ENABLE_FGVIEWER "Enable the frame graph viewer" OFF)
+
+option(FILAMENT_USE_ABSEIL_LOGGING "Use Abseil to log, may increase binary size" OFF)
+
+option(FILAMENT_ENABLE_EXPERIMENTAL_GCC_SUPPORT "Enable GCC support (unsupported)" OFF)
+
+option(FILAMENT_SUPPORTS_WEBP_TEXTURES "Enable webp texture support for Filament (builds libwebp when ON)" OFF)
+
+# This is to disable GTAO for the short-term while we investigate a way to better manage size increases.
+# On the regular filament build (where size is of less concern), we enable GTAO by default.
+option(FILAMENT_DISABLE_GTAO "Disable GTAO" OFF)
+
+option(FILAMENT_BUILD_TESTING "Build tests" ON)
 
 set(FILAMENT_NDK_VERSION "" CACHE STRING
     "Android NDK version or version prefix to be used when building for Android."
@@ -71,6 +93,10 @@ set(FILAMENT_METAL_HANDLE_ARENA_SIZE_IN_MB "8" CACHE STRING
 
 set(FILAMENT_BACKEND_DEBUG_FLAG "" CACHE STRING
     "A debug flag meant for enabling/disabling backend debugging paths"
+)
+
+set(FILAMENT_OSMESA_PATH "" CACHE STRING
+    "Path to the OSMesa header and lib"
 )
 
 # Enable exceptions by default in spirv-cross.
@@ -131,6 +157,13 @@ else()
     set(LINUX FALSE)
 endif()
 
+if (NOT FILAMENT_OSMESA_PATH STREQUAL "")
+    if (NOT EXISTS ${FILAMENT_OSMESA_PATH}/)
+        message(FATAL_ERROR "Cannot find specified OSMesa build directory: ${FILAMENT_OSMESA_PATH}")
+    endif()
+    set(FILAMENT_SUPPORTS_OSMESA TRUE)
+endif()
+
 if (LINUX)
     if (FILAMENT_SUPPORTS_WAYLAND)
         add_definitions(-DFILAMENT_SUPPORTS_WAYLAND)
@@ -138,6 +171,9 @@ if (LINUX)
     elseif (FILAMENT_SUPPORTS_EGL_ON_LINUX)
         add_definitions(-DFILAMENT_SUPPORTS_EGL_ON_LINUX)
         set(FILAMENT_SUPPORTS_X11 FALSE)
+    elseif (FILAMENT_SUPPORTS_OSMESA)
+        set(FILAMENT_SUPPORTS_X11 FALSE)
+        add_definitions(-DFILAMENT_SUPPORTS_OSMESA)
     else ()
         if (FILAMENT_SUPPORTS_XCB)
             add_definitions(-DFILAMENT_SUPPORTS_XCB)
@@ -164,6 +200,12 @@ endif()
 
 if (NOT ANDROID AND NOT WEBGL AND NOT IOS AND NOT FILAMENT_LINUX_IS_MOBILE)
     set(IS_HOST_PLATFORM TRUE)
+endif()
+
+if (APPLE)
+    if (FILAMENT_SUPPORTS_OSMESA)
+        add_definitions(-DFILAMENT_SUPPORTS_OSMESA)
+    endif()
 endif()
 
 if (WIN32)
@@ -260,15 +302,10 @@ set(TOOLS ${CMAKE_CURRENT_SOURCE_DIR}/tools)
 # ==================================================================================================
 set(MIN_CLANG_VERSION "6.0")
 
-if (CMAKE_C_COMPILER_ID MATCHES "Clang")
-    if (CMAKE_C_COMPILER_VERSION VERSION_LESS MIN_CLANG_VERSION)
-        message(FATAL_ERROR "Detected C compiler Clang ${CMAKE_C_COMPILER_VERSION} < ${MIN_CLANG_VERSION}")
-    endif()
-elseif (NOT MSVC)
-    message(FATAL_ERROR "Detected C compiler ${CMAKE_C_COMPILER_ID} is unsupported")
-endif()
-
-if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+set(FILAMENT_USING_GCC OFF)
+if (CMAKE_C_COMPILER_ID MATCHES "GNU" AND FILAMENT_ENABLE_EXPERIMENTAL_GCC_SUPPORT)
+    set(FILAMENT_USING_GCC ON)
+elseif (CMAKE_C_COMPILER_ID MATCHES "Clang")
     if (CMAKE_CXX_COMPILER_VERSION VERSION_LESS MIN_CLANG_VERSION)
         message(FATAL_ERROR "Detected CXX compiler Clang ${CMAKE_CXX_COMPILER_VERSION} < ${MIN_CLANG_VERSION}")
     endif()
@@ -300,20 +337,27 @@ endif()
 # ==================================================================================================
 # General compiler flags
 # ==================================================================================================
-set(CXX_STANDARD "-std=c++17")
+set(CXX_STANDARD "-std=c++20")
 if (WIN32)
-    set(CXX_STANDARD "/std:c++17")
+    set(CXX_STANDARD "/std:c++20")
 endif()
 
 if (MSVC)
     set(CXX_STANDARD "/std:c++latest")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CXX_STANDARD} /W0 /Zc:__cplusplus")
 else()
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CXX_STANDARD} -fstrict-aliasing -Wno-unknown-pragmas -Wno-unused-function -Wno-deprecated-declarations")
+    if(FILAMENT_USING_GCC)
+      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CXX_STANDARD} -Wno-changes-meaning -Wno-return-type -Wno-attributes -Wno-unknown-pragmas -Wno-class-memaccess -Wno-multichar -Wno-deprecated-declarations -Wno-subobject-linkage -Wno-invalid-constexpr")
+    else()
+      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CXX_STANDARD} -fstrict-aliasing -Wno-unknown-pragmas -Wno-unused-function -Wno-deprecated-declarations")
+    endif()
+    if (APPLE)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-nullability-extension")
+    endif()
 endif()
 
 if (FILAMENT_USE_EXTERNAL_GLES3)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DUSE_EXTERNAL_GLES3")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DFILAMENT_USE_EXTERNAL_GLES3")
 endif()
 
 if (FILAMENT_SUPPORTS_EGL_ON_LINUX)
@@ -326,11 +370,23 @@ endif()
 
 if (LINUX)
     option(USE_STATIC_LIBCXX "Link against the static runtime libraries." ON)
+
+    # Add this step to support both glibc-based Linux distributions (e.g., Ubuntu, Debian)
+    # and musl-based distributions (e.g., Alpine).
+    include(CheckSymbolExists)
+    check_symbol_exists(__GLIBC__ "features.h" CLANG_WITH_GLIBC)
+
     if (${USE_STATIC_LIBCXX})
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++")
-        link_libraries("-static-libgcc -static-libstdc++")
-        link_libraries(libc++.a)
-        link_libraries(libc++abi.a)
+        if (FILAMENT_USING_GCC)
+            link_libraries("-static-libgcc -static-libstdc++")
+        elseif (CLANG_WITH_GLIBC)
+            set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++")
+            link_libraries("-static-libgcc -static-libstdc++")
+            link_libraries(libc++.a)
+            link_libraries(libc++abi.a)
+        else()
+            set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -static")
+        endif()
     endif()
 
     # Only linux, clang doesn't want to use a shared library that is not PIC.
@@ -355,8 +411,8 @@ if (MSVC)
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -D_CRT_SECURE_NO_WARNINGS -D_CRT_NONSTDC_NO_DEPRECATE")
 endif()
 
-# Add colors to ninja builds
-if (UNIX AND CMAKE_GENERATOR STREQUAL "Ninja")
+# Add colors to ninja builds (when not using gcc)
+if (UNIX AND CMAKE_GENERATOR STREQUAL "Ninja" AND NOT FILAMENT_USING_GCC)
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fcolor-diagnostics")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fcolor-diagnostics")
 endif()
@@ -427,6 +483,10 @@ if (NOT MSVC AND NOT WEBGL)
 endif()
 set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} ${EXTRA_SANITIZE_OPTIONS}")
 
+if (FILAMENT_ENABLE_COVERAGE)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fprofile-instr-generate -fcoverage-mapping -Wno-pass-failed")
+endif()
+
 # Disable the stack check for macOS to workaround a known issue in clang 11.0.0.
 # See: https://forums.developer.apple.com/thread/121887
 if (APPLE)
@@ -441,10 +501,19 @@ if (NOT WEBGL)
     set(GC_SECTIONS "-Wl,--gc-sections")
 endif()
 
+# Prevents stacks from being made for executable by explicitly adding this linker flag. Otherwise,
+# it generates warnings newly introduced as of GNU LD 2.39. Modern security practices strongly
+# recommend marking the stack as non-executable using the -z noexecstack linker flag to prevent
+# stack-based buffer overflow exploits.
+# See: https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=ffcf9c5700e49c0aee42dcba9a12ba21338e8136
+if (LINUX)
+    set(NO_EXEC_STACK "-Wl,-z,noexecstack")
+endif()
+
 set(B_SYMBOLIC_FUNCTIONS "-Wl,-Bsymbolic-functions")
 
 if (ANDROID)
-set(BINARY_ALIGNMENT "-Wl,-z,max-page-size=16384")
+    set(BINARY_ALIGNMENT "-Wl,-z,max-page-size=16384")
 endif()
 
 if (APPLE)
@@ -459,7 +528,7 @@ if (APPLE)
     set(CMAKE_CXX_ARCHIVE_CREATE "<CMAKE_AR> qc -S <TARGET> <LINK_FLAGS> <OBJECTS>")
 endif()
 
-set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${GC_SECTIONS}")
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${GC_SECTIONS} ${NO_EXEC_STACK}")
 set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} ${GC_SECTIONS} ${B_SYMBOLIC_FUNCTIONS} ${BINARY_ALIGNMENT}")
 
 if (WEBGL_PTHREADS)
@@ -481,6 +550,15 @@ if (FILAMENT_SUPPORTS_OPENGL)
     add_definitions(-DFILAMENT_SUPPORTS_OPENGL)
 endif()
 
+if (CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "MinSizeRel")
+    option(FILAMENT_ENABLE_PERFETTO "Enable perfetto SDK on Android" OFF)
+else()
+    option(FILAMENT_ENABLE_PERFETTO "Enable perfetto SDK on Android" ON)
+endif()
+if (FILAMENT_ENABLE_PERFETTO)
+    add_definitions(-DFILAMENT_ENABLE_PERFETTO)
+endif()
+
 # By default, build with Vulkan support on desktop platforms, although clients must request to use
 # it at run time.
 if (WIN32 OR WEBGL OR IOS)
@@ -490,6 +568,14 @@ else()
 endif()
 if (FILAMENT_SUPPORTS_VULKAN)
     add_definitions(-DFILAMENT_DRIVER_SUPPORTS_VULKAN)
+endif()
+
+if (FILAMENT_SUPPORTS_WEBGPU)
+    add_definitions(-DFILAMENT_SUPPORTS_WEBGPU)
+endif()
+
+if (FILAMENT_SUPPORTS_WEBP_TEXTURES)
+    add_definitions(-DFILAMENT_SUPPORTS_WEBP_TEXTURES)
 endif()
 
 # Build with Metal support on non-WebGL Apple platforms.
@@ -546,6 +632,10 @@ if (CMAKE_BUILD_TYPE STREQUAL "Debug" AND NOT FILAMENT_BACKEND_DEBUG_FLAG STREQU
     unset(FILAMENT_BACKEND_DEBUG_FLAG)
 endif()
 
+if (FILAMENT_USE_ABSEIL_LOGGING)
+    add_definitions(-DFILAMENT_USE_ABSEIL_LOGGING)
+endif()
+
 # ==================================================================================================
 # Material compilation flags
 # ==================================================================================================
@@ -567,6 +657,14 @@ if (FILAMENT_SUPPORTS_VULKAN)
 endif()
 if (FILAMENT_SUPPORTS_METAL)
     set(MATC_API_FLAGS ${MATC_API_FLAGS} -a metal)
+endif()
+
+# With WebGPU, push constants are not supported. Skinning uses them.
+# WebGPU has a proposal to add push constants at https://github.com/gpuweb/gpuweb/blob/main/proposals/push-constants.md
+# With WebGPU, Tint does not support ClipDistance which is used in Stereo.  Mentioned in comment
+# https://github.com/google/dawn/blob/855d17b08abdf02f9142bf5a8f14d0ea088810a4/src/tint/lang/spirv/reader/ast_parser/function.cc#L4434
+if (FILAMENT_SUPPORTS_WEBGPU)
+    set(MATC_API_FLAGS ${MATC_API_FLAGS} -a webgpu --variant-filter=stereo)
 endif()
 
 # Disable ESSL 1.0 code generation.
@@ -639,10 +737,6 @@ function(list_licenses OUTPUT MODULES)
 endfunction()
 
 set(COMBINE_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/build/linux/combine-static-libs.sh")
-if (WIN32)
-    set(COMBINE_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/build/windows/combine-static-libs.bat")
-    set(CMAKE_AR "lib.exe")
-endif()
 
 # Add a custom command to TARGET that combines the static libraries in DEPS into a single archive.
 function(combine_static_libs TARGET OUTPUT DEPS)
@@ -657,21 +751,80 @@ function(combine_static_libs TARGET OUTPUT DEPS)
         endif()
     endforeach()
 
-    add_custom_command(
-        TARGET ${TARGET} POST_BUILD
-        COMMAND "${COMBINE_SCRIPT}" "${CMAKE_AR}" "${OUTPUT}" ${DEPS_FILES}
-        COMMENT "Combining ${target} dependencies into single shared library"
-        VERBATIM
-    )
+    if (WIN32)
+        add_custom_command(
+            TARGET ${TARGET} POST_BUILD
+            COMMAND lib.exe /nologo /out:temp.lib ${DEPS_FILES}
+            COMMAND "${CMAKE_COMMAND}" -E rename temp.lib ${OUTPUT}
+            COMMENT "Combining ${target} dependencies into single shared library"
+            VERBATIM
+        )
+    else()
+        add_custom_command(
+            TARGET ${TARGET} POST_BUILD
+            COMMAND "${COMBINE_SCRIPT}" "${CMAKE_AR}" "${OUTPUT}" ${DEPS_FILES}
+            COMMENT "Combining ${target} dependencies into single shared library"
+            VERBATIM
+        )
+    endif()
 endfunction()
 
 # ==================================================================================================
-# Configuration for CMAKE_CROSSCOMPILING.
+# Configuration importing/exporting prebuilt "/tools" executables
 # ==================================================================================================
+
+# In certain cases, we want the ability to separate the build type/flags (release, debug) of tools
+# (matc, resgen, etc...) from filament.  Cross compilation is one such case (e.g. building material
+# with matc running on host while building filament for Android) [1]. Another example is when client
+# wants to enable ASAN for filament but not the tool [2].
+#
+# Here are the varibles that are used to determine behavior is such flows:
+#   - CMAKE_CROSSCOMPILING : Set by cmake to indicate the build's target platform is different
+#     from the host platform.
+#   - IMPORT_EXECUTABLES_DIR : This is the directory containing the /ImportExecutables-type.cmake
+#     which are then included in other CMakeLists.txt to enable finding targets that have been
+#     prebuilt. This is set by the client in their `cmake` invocation.
+#   - IMPORT_EXECUTABLES : Path to a file to for 1) exporting the prebuilt targets or 2)
+#     importing a previously exported targets. (Used internally and should not be set by client).
+#   - FILAMENT_EXPORT_PREBUILT_EXECUTABLES_DIR : A path set by the client to indicate that
+#     they wish to export the tools as prebuilts, and the corresponding targets will be recorded
+#     in a cmake file (i.e IMPORT_EXECUTABLES). IMPORT_EXECUTABLES will be set relative to the the
+#     given path. This will set FILAMENT_EXPORT_PREBUILT_EXECUTABLES=ON.
+#   - FILAMENT_IMPORT_PREBUILT_EXECUTABLES_DIR : A path set by the client to indicate that they wish
+#     to import the tools as prebuilts from a .cmake file. The location (IMPORT_EXECUTABLES) of the
+#     file is relative to the path given. This will set FILAMENT_IMPORT_PREBUILT_EXECUTABLES=ON.
+#   - IMPORT_PREBUILT_EXECUTABLES and EXPORT_PREBUILT_EXECUTABLES are internal booleans set to
+#     ON based on the prescence of FILAMENT_IMPORT_PREBUILT_EXECUTABLES_DIR and
+#     FILAMENT_EXPORT_PREBUILT_EXECUTABLES_DIR.
+#
+# In conclusion, for cases
+#   - [1] (crosscompiling), the client must set IMPORT_EXECUTABLES_DIR for both when they are building
+#     the tools and when they are building the target-platform filament.
+#   - [2] (all other instances), the client must set FILAMENT_EXPORT_PREBUILT_EXECUTABLES_DIR in
+#     the prebuilt exporting step, and set FILAMENT_IMPORT_PREBUILT_EXECUTABLES_DIR in the importing
+#     step.
+
+# TODO: Fold the cross compilation case into the more general FILAMENT_IMPORT/EXPORT variables.
+
+if (FILAMENT_EXPORT_PREBUILT_EXECUTABLES_DIR)
+   set(FILAMENT_EXPORT_PREBUILT_EXECUTABLES ON)
+   set(IMPORT_EXECUTABLES_DIR ${FILAMENT_EXPORT_PREBUILT_EXECUTABLES_DIR})
+endif()
+
+if (FILAMENT_IMPORT_PREBUILT_EXECUTABLES_DIR)
+   set(FILAMENT_IMPORT_PREBUILT_EXECUTABLES ON)
+   set(IMPORT_EXECUTABLES_DIR ${FILAMENT_IMPORT_PREBUILT_EXECUTABLES_DIR})
+endif()
+
 if (WEBGL)
     set(IMPORT_EXECUTABLES ${FILAMENT}/${IMPORT_EXECUTABLES_DIR}/ImportExecutables-Release.cmake)
 else()
-    set(IMPORT_EXECUTABLES ${FILAMENT}/${IMPORT_EXECUTABLES_DIR}/ImportExecutables-${CMAKE_BUILD_TYPE}.cmake)
+    if (FILAMENT_EXPORT_PREBUILT_EXECUTABLES OR FILAMENT_IMPORT_PREBUILT_EXECUTABLES)
+        set(IMPORT_EXECUTABLES_BUILD_TYPE Prebuilt)
+    else()
+        set(IMPORT_EXECUTABLES_BUILD_TYPE ${CMAKE_BUILD_TYPE})
+    endif()
+    set(IMPORT_EXECUTABLES ${FILAMENT}/${IMPORT_EXECUTABLES_DIR}/ImportExecutables-${IMPORT_EXECUTABLES_BUILD_TYPE}.cmake)
 endif()
 
 # ==================================================================================================
@@ -721,19 +874,23 @@ add_subdirectory(${LIBRARIES}/filabridge)
 add_subdirectory(${LIBRARIES}/filaflat)
 add_subdirectory(${LIBRARIES}/filagui)
 add_subdirectory(${LIBRARIES}/filameshio)
+add_subdirectory(${LIBRARIES}/generatePrefilterMipmap)
 add_subdirectory(${LIBRARIES}/gltfio)
 add_subdirectory(${LIBRARIES}/ibl)
 add_subdirectory(${LIBRARIES}/iblprefilter)
 add_subdirectory(${LIBRARIES}/image)
+add_subdirectory(${LIBRARIES}/imagediff)
 add_subdirectory(${LIBRARIES}/ktxreader)
 add_subdirectory(${LIBRARIES}/math)
 add_subdirectory(${LIBRARIES}/mathio)
 add_subdirectory(${LIBRARIES}/uberz)
 add_subdirectory(${LIBRARIES}/utils)
 add_subdirectory(${LIBRARIES}/viewer)
-add_subdirectory(${FILAMENT}/filament)
 add_subdirectory(${FILAMENT}/shaders)
-add_subdirectory(${EXTERNAL}/basisu/tnt)
+add_subdirectory(${EXTERNAL}/abseil/tnt)
+# Add zstd before basisu to force it to use the external zstd target,
+# preventing a duplicate symbol conflict with its bundled version.
+add_subdirectory(${EXTERNAL}/zstd/tnt)
 add_subdirectory(${EXTERNAL}/civetweb/tnt)
 add_subdirectory(${EXTERNAL}/imgui/tnt)
 add_subdirectory(${EXTERNAL}/robin-map/tnt)
@@ -746,6 +903,11 @@ add_subdirectory(${EXTERNAL}/draco/tnt)
 add_subdirectory(${EXTERNAL}/jsmn/tnt)
 add_subdirectory(${EXTERNAL}/stb/tnt)
 add_subdirectory(${EXTERNAL}/getopt)
+add_subdirectory(${EXTERNAL}/perfetto/tnt)
+add_subdirectory(${EXTERNAL}/basisu/tnt)
+
+# imageio-lite is needed for viewer
+add_subdirectory(${LIBRARIES}/imageio-lite)
 
 # Note that this has to be placed after mikktspace in order for combine_static_libs to work.
 add_subdirectory(${LIBRARIES}/geometry)
@@ -753,6 +915,7 @@ add_subdirectory(${LIBRARIES}/geometry)
 if (FILAMENT_BUILD_FILAMAT OR IS_HOST_PLATFORM)
     # spirv-tools must come before filamat, as filamat relies on the presence of the
     # spirv-tools_SOURCE_DIR variable.
+    set(SPIRV-Headers_SOURCE_DIR ${EXTERNAL}/spirv-headers)
     add_subdirectory(${EXTERNAL}/spirv-tools)
     add_subdirectory(${EXTERNAL}/glslang/tnt)
     add_subdirectory(${EXTERNAL}/spirv-cross/tnt)
@@ -764,12 +927,27 @@ if (FILAMENT_BUILD_FILAMAT OR IS_HOST_PLATFORM)
     endif()
 endif()
 
+if (FILAMENT_ENABLE_FGVIEWER)
+    add_subdirectory(${LIBRARIES}/fgviewer)
+endif()
+
+if (FILAMENT_SUPPORTS_WEBP_TEXTURES)
+    add_subdirectory(${EXTERNAL}/libwebp/tnt)
+endif()
+
 if (FILAMENT_SUPPORTS_VULKAN)
     add_subdirectory(${LIBRARIES}/bluevk)
     add_subdirectory(${EXTERNAL}/vkmemalloc/tnt)
     set(SPIRV_HEADERS_SKIP_EXAMPLES ON)
     add_subdirectory(${EXTERNAL}/spirv-headers)
 endif()
+
+if (FILAMENT_SUPPORTS_WEBGPU)
+    add_subdirectory(${EXTERNAL}/dawn/tnt/)
+endif()
+
+# Add filament after dawn, since filament/backend depends on dawn targets.
+add_subdirectory(${FILAMENT}/filament)
 
 set(FILAMENT_SAMPLES_BINARY_DIR ${PROJECT_BINARY_DIR}/samples)
 
@@ -786,6 +964,7 @@ if (IS_HOST_PLATFORM)
       add_subdirectory(${LIBRARIES}/filamentapp)
     endif()
     add_subdirectory(${LIBRARIES}/imageio)
+    add_subdirectory(${LIBRARIES}/filament-matp)
 
     add_subdirectory(${FILAMENT}/samples)
 
@@ -797,6 +976,7 @@ if (IS_HOST_PLATFORM)
 
     add_subdirectory(${TOOLS}/cmgen)
     add_subdirectory(${TOOLS}/cso-lut)
+    add_subdirectory(${TOOLS}/diffimg)
     add_subdirectory(${TOOLS}/filamesh)
     add_subdirectory(${TOOLS}/glslminifier)
     add_subdirectory(${TOOLS}/matc)
@@ -811,9 +991,10 @@ if (IS_HOST_PLATFORM)
     add_subdirectory(${TOOLS}/roughness-prefilter)
     add_subdirectory(${TOOLS}/specular-color)
     add_subdirectory(${TOOLS}/uberz)
+    add_subdirectory(${TOOLS}/specgen)
 endif()
 
 # Generate exported executables for cross-compiled builds (Android, WebGL, and iOS)
-if (NOT CMAKE_CROSSCOMPILING)
+if ((NOT CMAKE_CROSSCOMPILING AND NOT FILAMENT_IMPORT_PREBUILT_EXECUTABLES) OR FILAMENT_EXPORT_PREBUILT_EXECUTABLES)
     export(TARGETS matc cmgen filamesh mipgen resgen uberz glslminifier FILE ${IMPORT_EXECUTABLES})
 endif()

@@ -14,6 +14,9 @@
  * limitations under the License.
  */
 
+#include "common/arguments.h"
+#include "common/configuration.h"
+
 #include <filamentapp/Config.h>
 #include <filamentapp/FilamentApp.h>
 #include <filamentapp/IBL.h>
@@ -70,6 +73,7 @@ struct App {
     ResourceLoader* resourceLoader = nullptr;
     gltfio::TextureProvider* stbDecoder = nullptr;
     gltfio::TextureProvider* ktxDecoder = nullptr;
+    gltfio::TextureProvider* webpDecoder = nullptr;
     int instanceToAnimate = -1;
     std::vector<FilamentInstance*> instances;
 };
@@ -85,8 +89,7 @@ static void printUsage(char* name) {
         "Options:\n"
         "   --help, -h\n"
         "       Prints this message\n\n"
-        "   --api, -a\n"
-        "       Specify the backend API: opengl (default), vulkan, or metal\n\n"
+        "API_USAGE"
         "   --ibl=<path to cmgen IBL>, -i <path>\n"
         "       Override the built-in IBL\n\n"
         "   --num=<number of initial instances>, -n <num>\n"
@@ -99,6 +102,10 @@ static void printUsage(char* name) {
     const std::string from("SHOWCASE");
     for (size_t pos = usage.find(from); pos != std::string::npos; pos = usage.find(from, pos)) {
         usage.replace(pos, from.length(), exec_name);
+    }
+    const std::string apiUsage("API_USAGE");
+    for (size_t pos = usage.find(apiUsage); pos != std::string::npos; pos = usage.find(apiUsage, pos)) {
+        usage.replace(pos, apiUsage.length(), samples::getBackendAPIArgumentsUsage());
     }
     std::cout << usage;
 }
@@ -124,15 +131,7 @@ static int handleCommandLineArguments(int argc, char* argv[], App* app) {
                 printUsage(argv[0]);
                 exit(0);
             case 'a':
-                if (arg == "opengl") {
-                    app->config.backend = Engine::Backend::OPENGL;
-                } else if (arg == "vulkan") {
-                    app->config.backend = Engine::Backend::VULKAN;
-                } else if (arg == "metal") {
-                    app->config.backend = Engine::Backend::METAL;
-                } else {
-                    std::cerr << "Unrecognized backend. Must be 'opengl'|'vulkan'|'metal'.\n";
-                }
+                app->config.backend = samples::parseArgumentsForBackend(arg);
                 break;
             case 'm':
                 app->instanceToAnimate = atoi(arg.c_str());
@@ -215,6 +214,13 @@ int main(int argc, char** argv) {
             app.resourceLoader->addTextureProvider("image/png", app.stbDecoder);
             app.resourceLoader->addTextureProvider("image/jpeg", app.stbDecoder);
             app.resourceLoader->addTextureProvider("image/ktx2", app.ktxDecoder);
+            if (isWebpSupported()) {
+                app.webpDecoder = createWebpProvider(app.engine);                
+                app.resourceLoader->addTextureProvider("image/webp", app.webpDecoder);
+            }
+            else {
+                app.webpDecoder = nullptr;
+            }
         }
 
         if (!app.resourceLoader->asyncBeginLoad(app.asset)) {
@@ -247,8 +253,11 @@ int main(int argc, char** argv) {
         app.names = new NameComponentManager(EntityManager::get());
         app.viewer = new ViewerGui(engine, scene, view);
 
-        app.materials = (app.materialSource == JITSHADER) ? createJitShaderProvider(engine) :
-                createUbershaderProvider(engine, UBERARCHIVE_DEFAULT_DATA, UBERARCHIVE_DEFAULT_SIZE);
+        app.materials = (app.materialSource == JITSHADER)
+                                ? createJitShaderProvider(engine, false /* optimize */,
+                                          samples::getJitMaterialVariantFilter(app.config.backend))
+                                : createUbershaderProvider(engine, UBERARCHIVE_DEFAULT_DATA,
+                                          UBERARCHIVE_DEFAULT_SIZE);
 
         app.loader = AssetLoader::create({engine, app.materials, app.names });
         if (filename.isEmpty()) {
@@ -279,6 +288,7 @@ int main(int argc, char** argv) {
         delete app.resourceLoader;
         delete app.stbDecoder;
         delete app.ktxDecoder;
+        delete app.webpDecoder;
 
         AssetLoader::destroy(&app.loader);
     };

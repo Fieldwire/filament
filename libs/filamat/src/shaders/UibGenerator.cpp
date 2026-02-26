@@ -22,9 +22,69 @@
 #include <private/filament/EngineEnums.h>
 #include <backend/DriverEnums.h>
 
+#include <utils/debug.h>
+
+#include <stdlib.h>
+
 namespace filament {
 
 using namespace backend;
+
+BufferInterfaceBlock const& UibGenerator::get(UibGenerator::Ubo ubo) noexcept {
+    assert_invariant(ubo != Ubo::MaterialParams);
+    switch (ubo) {
+        case Ubo::FrameUniforms:
+            return getPerViewUib();
+        case Ubo::ObjectUniforms:
+            return getPerRenderableUib();
+        case Ubo::BonesUniforms:
+            return getPerRenderableBonesUib();
+        case Ubo::MorphingUniforms:
+            return getPerRenderableMorphingUib();
+        case Ubo::LightsUniforms:
+            return getLightsUib();
+        case Ubo::ShadowUniforms:
+            return getShadowUib();
+        case Ubo::FroxelRecordUniforms:
+            return getFroxelRecordUib();
+        case Ubo::FroxelsUniforms:
+            return getFroxelsUib();
+        case Ubo::MaterialParams:
+            abort();
+    }
+}
+
+UibGenerator::Binding UibGenerator::getBinding(UibGenerator::Ubo ubo) noexcept {
+    switch (ubo) {
+        case Ubo::FrameUniforms:
+            return { +DescriptorSetBindingPoints::PER_VIEW,
+                     +PerViewBindingPoints::FRAME_UNIFORMS };
+        case Ubo::ObjectUniforms:
+            return { +DescriptorSetBindingPoints::PER_RENDERABLE,
+                     +PerRenderableBindingPoints::OBJECT_UNIFORMS };
+        case Ubo::BonesUniforms:
+            return { +DescriptorSetBindingPoints::PER_RENDERABLE,
+                     +PerRenderableBindingPoints::BONES_UNIFORMS };
+        case Ubo::MorphingUniforms:
+            return { +DescriptorSetBindingPoints::PER_RENDERABLE,
+                     +PerRenderableBindingPoints::MORPHING_UNIFORMS };
+        case Ubo::LightsUniforms:
+            return { +DescriptorSetBindingPoints::PER_VIEW,
+                     +PerViewBindingPoints::LIGHTS };
+        case Ubo::ShadowUniforms:
+            return { +DescriptorSetBindingPoints::PER_VIEW,
+                     +PerViewBindingPoints::SHADOWS };
+        case Ubo::FroxelRecordUniforms:
+            return { +DescriptorSetBindingPoints::PER_VIEW,
+                     +PerViewBindingPoints::RECORD_BUFFER };
+        case Ubo::FroxelsUniforms:
+            return { +DescriptorSetBindingPoints::PER_VIEW,
+                     +PerViewBindingPoints::FROXEL_BUFFER };
+        case Ubo::MaterialParams:
+            return { +DescriptorSetBindingPoints::PER_MATERIAL,
+                     +PerMaterialBindingPoints::MATERIAL_PARAMS };
+    }
+}
 
 static_assert(CONFIG_MAX_SHADOW_CASCADES == 4,
         "Changing CONFIG_MAX_SHADOW_CASCADES affects PerView size and breaks materials.");
@@ -39,6 +99,8 @@ BufferInterfaceBlock const& UibGenerator::getPerViewUib() noexcept  {
             { "worldFromViewMatrix",    0, Type::MAT4,   Precision::HIGH, FeatureLevel::FEATURE_LEVEL_0 },
             { "clipFromViewMatrix",     0, Type::MAT4,   Precision::HIGH, FeatureLevel::FEATURE_LEVEL_0 },
             { "viewFromClipMatrix",     0, Type::MAT4,   Precision::HIGH, FeatureLevel::FEATURE_LEVEL_0 },
+            { "eyeFromViewMatrix",      CONFIG_MAX_STEREOSCOPIC_EYES,
+                                           Type::MAT4,   Precision::HIGH },
             { "clipFromWorldMatrix",    CONFIG_MAX_STEREOSCOPIC_EYES,
                                            Type::MAT4,   Precision::HIGH, FeatureLevel::FEATURE_LEVEL_0 },
             { "worldFromClipMatrix",    0, Type::MAT4,   Precision::HIGH, FeatureLevel::FEATURE_LEVEL_0 },
@@ -59,7 +121,7 @@ BufferInterfaceBlock const& UibGenerator::getPerViewUib() noexcept  {
             { "logicalViewportOffset",  0, Type::FLOAT2, Precision::HIGH, FeatureLevel::FEATURE_LEVEL_0 },
 
             { "lodBias",                0, Type::FLOAT, Precision::DEFAULT, FeatureLevel::FEATURE_LEVEL_0 },
-            { "refractionLodOffset",    0, Type::FLOAT, Precision::DEFAULT, FeatureLevel::FEATURE_LEVEL_0 },
+            { "refractionLodOffset",    0, Type::FLOAT, Precision::DEFAULT },
             { "derivativesScale",       0, Type::FLOAT2                  },
 
             { "oneOverFarMinusNear",    0, Type::FLOAT,  Precision::HIGH, FeatureLevel::FEATURE_LEVEL_0 },
@@ -80,6 +142,10 @@ BufferInterfaceBlock const& UibGenerator::getPerViewUib() noexcept  {
             { "fParams",                0, Type::UINT3                   },
             { "lightChannels",          0, Type::INT                     },
             { "froxelCountXY",          0, Type::FLOAT2                  },
+            { "enableFroxelViz",        0, Type::INT                     },
+            { "dynReserved0",           0, Type::INT                     },
+            { "dynReserved1",           0, Type::INT                     },
+            { "dynReserved2",           0, Type::INT                     },
 
             { "iblLuminance",           0, Type::FLOAT,  Precision::DEFAULT, FeatureLevel::FEATURE_LEVEL_0 },
             { "iblRoughnessOneLevel",   0, Type::FLOAT,  Precision::DEFAULT, FeatureLevel::FEATURE_LEVEL_0 },
@@ -116,19 +182,21 @@ BufferInterfaceBlock const& UibGenerator::getPerViewUib() noexcept  {
             // ------------------------------------------------------------------------------------
             // Fog [variant: FOG]
             // ------------------------------------------------------------------------------------
-            { "fogDensity",              0, Type::FLOAT3,Precision::HIGH, FeatureLevel::FEATURE_LEVEL_0 },
+            { "fogDensity",              0, Type::FLOAT3,Precision::HIGH },
             { "fogStart",                0, Type::FLOAT, Precision::HIGH, FeatureLevel::FEATURE_LEVEL_0 },
-            { "fogMaxOpacity",           0, Type::FLOAT, Precision::DEFAULT, FeatureLevel::FEATURE_LEVEL_0 },
+            { "fogMaxOpacity",           0, Type::FLOAT, Precision::DEFAULT },
             { "fogMinMaxMip",            0, Type::UINT,  Precision::HIGH },
-            { "fogHeightFalloff",        0, Type::FLOAT, Precision::HIGH, FeatureLevel::FEATURE_LEVEL_0 },
+            { "fogHeightFalloff",        0, Type::FLOAT, Precision::HIGH },
             { "fogCutOffDistance",       0, Type::FLOAT, Precision::HIGH, FeatureLevel::FEATURE_LEVEL_0 },
             { "fogColor",                0, Type::FLOAT3, Precision::DEFAULT, FeatureLevel::FEATURE_LEVEL_0 },
-            { "fogColorFromIbl",         0, Type::FLOAT, Precision::DEFAULT, FeatureLevel::FEATURE_LEVEL_0 },
-            { "fogInscatteringStart",    0, Type::FLOAT, Precision::HIGH, FeatureLevel::FEATURE_LEVEL_0 },
-            { "fogInscatteringSize",     0, Type::FLOAT, Precision::DEFAULT, FeatureLevel::FEATURE_LEVEL_0 },
+            { "fogColorFromIbl",         0, Type::FLOAT, Precision::DEFAULT },
+            { "fogInscatteringStart",    0, Type::FLOAT, Precision::HIGH },
+            { "fogInscatteringSize",     0, Type::FLOAT, Precision::DEFAULT },
             { "fogOneOverFarMinusNear",  0, Type::FLOAT, Precision::HIGH },
             { "fogNearOverFarMinusNear", 0, Type::FLOAT, Precision::HIGH },
             { "fogFromWorldMatrix",      0, Type::MAT3, Precision::HIGH, FeatureLevel::FEATURE_LEVEL_0 },
+            { "fogLinearParams",         0, Type::FLOAT2, Precision::HIGH, FeatureLevel::FEATURE_LEVEL_0 },
+            { "fogReserved0",            0, Type::FLOAT2, Precision::HIGH },
 
             // ------------------------------------------------------------------------------------
             // Screen-space reflections [variant: SSR (i.e.: VSM | SRE)]
@@ -211,7 +279,8 @@ BufferInterfaceBlock const& UibGenerator::getPerRenderableMorphingUib() noexcept
 BufferInterfaceBlock const& UibGenerator::getFroxelRecordUib() noexcept {
     static BufferInterfaceBlock const uib = BufferInterfaceBlock::Builder()
             .name(FroxelRecordUib::_name)
-            .add({{ "records", 1024, BufferInterfaceBlock::Type::UINT4, Precision::HIGH }})
+            .add({{ "records", 1024, BufferInterfaceBlock::Type::UINT4, Precision::HIGH, {},
+                    {}, {}, "CONFIG_FROXEL_RECORD_BUFFER_HEIGHT"}})
             .build();
     return uib;
 }

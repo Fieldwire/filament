@@ -31,11 +31,17 @@ if (WIN32)
         set(SRCS ${SRCS} src/BlueGLCoreWindowsImpl.S)
     endif()
 elseif (APPLE AND NOT IOS)
-    set(SRCS ${SRCS} src/BlueGLDarwin.cpp)
+    if (FILAMENT_SUPPORTS_OSMESA)
+        set(SRCS ${SRCS} src/BlueGLOSMesa.cpp)
+    else()
+        set(SRCS ${SRCS} src/BlueGLDarwin.cpp)
+    endif()
     set(SRCS ${SRCS} src/BlueGLCoreDarwinUniversalImpl.S)
 elseif(LINUX)
-    if(FILAMENT_SUPPORTS_EGL_ON_LINUX)
+    if (FILAMENT_SUPPORTS_EGL_ON_LINUX)
         set(SRCS ${SRCS} src/BlueGLLinuxEGL.cpp)
+    elseif (FILAMENT_SUPPORTS_OSMESA)
+        set(SRCS ${SRCS} src/BlueGLOSMesa.cpp)
     else()
         set(SRCS ${SRCS} src/BlueGLLinux.cpp)
     endif()
@@ -50,6 +56,14 @@ include_directories(${PUBLIC_HDR_DIR})
 # we're building a library
 add_library(${TARGET} STATIC ${PUBLIC_HDRS} ${SRCS})
 
+if(FILAMENT_SUPPORTS_OSMESA)
+    if (APPLE)
+        target_compile_options(${TARGET} PRIVATE -I${FILAMENT_OSMESA_PATH}/include)
+    else()
+        target_compile_options(${TARGET} PRIVATE -I${FILAMENT_OSMESA_PATH}/include/GL)
+    endif()
+endif()
+
 # specify where the public headers of this library are
 target_include_directories(${TARGET} PUBLIC ${PUBLIC_HDR_DIR})
 set_target_properties(${TARGET} PROPERTIES FOLDER Libs)
@@ -60,17 +74,19 @@ endif()
 
 install(TARGETS ${TARGET} ARCHIVE DESTINATION lib/${DIST_DIR})
 
-# Build the tests...
-add_executable(test_${TARGET}
-    tests/OpenGLSupport.cpp
-    tests/OpenGLSupport.hpp
-    tests/test_bluegl.cpp)
+if (FILAMENT_BUILD_TESTING)
+    # Build the tests...
+    add_executable(test_${TARGET}
+        tests/OpenGLSupport.cpp
+        tests/OpenGLSupport.hpp
+        tests/test_bluegl.cpp)
 
-if (LINUX)
-    target_link_libraries(test_${TARGET} PUBLIC dl)
+    if (LINUX)
+        target_link_libraries(test_${TARGET} PUBLIC dl)
+    endif()
+
+    # and we're linking against the libraries below, importing their public headers
+    target_link_libraries(test_${TARGET} LINK_PUBLIC ${TARGET})
+    target_link_libraries(test_${TARGET} LINK_PUBLIC gtest)
+    set_target_properties(test_${TARGET} PROPERTIES FOLDER Tests)
 endif()
-
-# and we're linking against the libraries below, importing their public headers
-target_link_libraries(test_${TARGET} LINK_PUBLIC ${TARGET})
-target_link_libraries(test_${TARGET} LINK_PUBLIC gtest)
-set_target_properties(test_${TARGET} PROPERTIES FOLDER Tests)

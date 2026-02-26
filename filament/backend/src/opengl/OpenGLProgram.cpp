@@ -17,6 +17,7 @@
 #include "OpenGLProgram.h"
 
 #include "GLUtils.h"
+#include "GLTexture.h"
 #include "OpenGLDriver.h"
 #include "ShaderCompilerService.h"
 
@@ -24,17 +25,21 @@
 #include <backend/Program.h>
 #include <backend/Handle.h>
 
+#include <private/utils/Tracing.h>
+
+#include <utils/BitmaskEnum.h>
 #include <utils/compiler.h>
 #include <utils/debug.h>
 #include <utils/FixedCapacityVector.h>
 #include <utils/Log.h>
-#include <utils/Systrace.h>
 
 #include <algorithm>
 #include <array>
+#include <algorithm>
+#include <new>
 #include <string_view>
 #include <utility>
-#include <new>
+#include <vector>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -46,27 +51,24 @@ using namespace utils;
 using namespace backend;
 
 struct OpenGLProgram::LazyInitializationData {
-    Program::UniformBlockInfo uniformBlockInfo;
-    Program::SamplerGroupInfo samplerGroupInfo;
-    std::array<Program::UniformInfo, Program::UNIFORM_BINDING_COUNT> bindingUniformInfo;
-    utils::FixedCapacityVector<Program::PushConstant> vertexPushConstants;
-    utils::FixedCapacityVector<Program::PushConstant> fragmentPushConstants;
+    Program::DescriptorSetInfo descriptorBindings;
+    Program::BindingUniformsInfo bindingUniformInfo;
+    FixedCapacityVector<Program::PushConstant> vertexPushConstants;
+    FixedCapacityVector<Program::PushConstant> fragmentPushConstants;
 };
 
 
 OpenGLProgram::OpenGLProgram() noexcept = default;
 
 OpenGLProgram::OpenGLProgram(OpenGLDriver& gld, Program&& program) noexcept
-        : HwProgram(std::move(program.getName())) {
+        : HwProgram(std::move(program.getName())), mRec709Location(-1) {
     auto* const lazyInitializationData = new(std::nothrow) LazyInitializationData();
-    lazyInitializationData->samplerGroupInfo = std::move(program.getSamplerGroupInfo());
     if (UTILS_UNLIKELY(gld.getContext().isES2())) {
         lazyInitializationData->bindingUniformInfo = std::move(program.getBindingUniformInfo());
-    } else {
-        lazyInitializationData->uniformBlockInfo = std::move(program.getUniformBlockBindings());
     }
     lazyInitializationData->vertexPushConstants = std::move(program.getPushConstants(ShaderStage::VERTEX));
     lazyInitializationData->fragmentPushConstants = std::move(program.getPushConstants(ShaderStage::FRAGMENT));
+    lazyInitializationData->descriptorBindings = std::move(program.getDescriptorBindings());
 
     ShaderCompilerService& compiler = gld.getShaderCompilerService();
     mToken = compiler.createProgram(name, std::move(program));
@@ -85,6 +87,7 @@ OpenGLProgram::~OpenGLProgram() noexcept {
         delete lazyInitializationData;
 
         ShaderCompilerService::terminate(mToken);
+        assert_invariant(!mToken);
     }
 
     delete [] mUniformsRecords;
@@ -95,8 +98,7 @@ OpenGLProgram::~OpenGLProgram() noexcept {
 }
 
 void OpenGLProgram::initialize(OpenGLDriver& gld) {
-
-    SYSTRACE_CALL();
+    FILAMENT_TRACING_CALL(FILAMENT_TRACING_CATEGORY_FILAMENT);
 
     assert_invariant(gl.program == 0);
     assert_invariant(mToken);
@@ -120,40 +122,114 @@ void OpenGLProgram::initialize(OpenGLDriver& gld) {
  * checkProgramStatus() has been successfully called.
  */
 void OpenGLProgram::initializeProgramState(OpenGLContext& context, GLuint program,
-        LazyInitializationData& lazyInitializationData) noexcept {
+        LazyInitializationData& lazyInitializationData) {
+    FILAMENT_TRACING_CALL(FILAMENT_TRACING_CATEGORY_FILAMENT);
 
-    SYSTRACE_CALL();
+    // from the pipeline layout we compute a mapping from {set, binding} to {binding}
+    // for both buffers and textures
 
+    for (auto&& entry: lazyInitializationData.descriptorBindings) {
+        std::sort(entry.begin(), entry.end(),
+                [](Program::Descriptor const& lhs, Program::Descriptor const& rhs) {
+                    return lhs.binding < rhs.binding;
+                });
+    }
+
+    GLuint tmu = 0;
+    GLuint binding = 0;
+
+    // needed for samplers
+    context.useProgram(program);
+
+    UTILS_NOUNROLL
+    for (descriptor_set_t set = 0; set < MAX_DESCRIPTOR_SET_COUNT; set++) {
+        for (Program::Descriptor const& entry: lazyInitializationData.descriptorBindings[set]) {
+            switch (entry.type) {
+                case DescriptorType::UNIFORM_BUFFER:
+                case DescriptorType::SHADER_STORAGE_BUFFER: {
+                    if (!entry.name.empty()) {
 #ifndef FILAMENT_SILENCE_NOT_SUPPORTED_BY_ES2
-    if (!context.isES2()) {
-        // Note: This is only needed, because the layout(binding=) syntax is not permitted in glsl
-        // (ES3.0 and GL4.1). The backend needs a way to associate a uniform block to a binding point.
-        UTILS_NOUNROLL
-        for (GLuint binding = 0, n = lazyInitializationData.uniformBlockInfo.size();
-                binding < n; binding++) {
-            auto const& name = lazyInitializationData.uniformBlockInfo[binding];
-            if (!name.empty()) {
-                GLuint const index = glGetUniformBlockIndex(program, name.c_str());
-                if (index != GL_INVALID_INDEX) {
-                    glUniformBlockBinding(program, index, binding);
+                        if (UTILS_LIKELY(!context.isES2())) {
+                            GLuint const index = glGetUniformBlockIndex(program,
+                                    entry.name.c_str());
+                            if (index != GL_INVALID_INDEX) {
+                                // this can fail if the program doesn't use this descriptor
+                                glUniformBlockBinding(program, index, binding);
+                                mBindingMap.insert(set, entry.binding,
+                                        { binding, entry.type });
+                                ++binding;
+                            }
+                        } else
+#endif
+                        {
+                            auto pos = std::find_if(lazyInitializationData.bindingUniformInfo.begin(),
+                                    lazyInitializationData.bindingUniformInfo.end(),
+                                    [&name = entry.name](const auto& item) {
+                                return std::get<1>(item) == name;
+                            });
+                            if (pos != lazyInitializationData.bindingUniformInfo.end()) {
+                                binding = std::get<0>(*pos);
+                                mBindingMap.insert(set, entry.binding, { binding, entry.type });
+                            }
+                        }
+                    }
+                    break;
                 }
-                CHECK_GL_ERROR(utils::slog.e)
+                case DescriptorType::SAMPLER_2D_FLOAT:
+                case DescriptorType::SAMPLER_2D_INT:
+                case DescriptorType::SAMPLER_2D_UINT:
+                case DescriptorType::SAMPLER_2D_DEPTH:
+                case DescriptorType::SAMPLER_2D_ARRAY_FLOAT:
+                case DescriptorType::SAMPLER_2D_ARRAY_INT:
+                case DescriptorType::SAMPLER_2D_ARRAY_UINT:
+                case DescriptorType::SAMPLER_2D_ARRAY_DEPTH:
+                case DescriptorType::SAMPLER_CUBE_FLOAT:
+                case DescriptorType::SAMPLER_CUBE_INT:
+                case DescriptorType::SAMPLER_CUBE_UINT:
+                case DescriptorType::SAMPLER_CUBE_DEPTH:
+                case DescriptorType::SAMPLER_CUBE_ARRAY_FLOAT:
+                case DescriptorType::SAMPLER_CUBE_ARRAY_INT:
+                case DescriptorType::SAMPLER_CUBE_ARRAY_UINT:
+                case DescriptorType::SAMPLER_CUBE_ARRAY_DEPTH:
+                case DescriptorType::SAMPLER_3D_FLOAT:
+                case DescriptorType::SAMPLER_3D_INT:
+                case DescriptorType::SAMPLER_3D_UINT:
+                case DescriptorType::SAMPLER_2D_MS_FLOAT:
+                case DescriptorType::SAMPLER_2D_MS_INT:
+                case DescriptorType::SAMPLER_2D_MS_UINT:
+                case DescriptorType::SAMPLER_2D_MS_ARRAY_FLOAT:
+                case DescriptorType::SAMPLER_2D_MS_ARRAY_INT:
+                case DescriptorType::SAMPLER_2D_MS_ARRAY_UINT:
+                case DescriptorType::SAMPLER_EXTERNAL: {
+                    if (!entry.name.empty()) {
+                        GLint const loc = glGetUniformLocation(program, entry.name.c_str());
+                        if (loc >= 0) {
+                            // this can fail if the program doesn't use this descriptor
+                            mBindingMap.insert(set, entry.binding, { tmu, entry.type });
+                            glUniform1i(loc, GLint(tmu));
+                            ++tmu;
+                        }
+                    }
+                    break;
+                }
+                case DescriptorType::INPUT_ATTACHMENT:
+                    break;
             }
         }
-    } else
-#endif
-    {
+        CHECK_GL_ERROR()
+    }
+
+    if (context.isES2()) {
         // ES2 initialization of (fake) UBOs
         UniformsRecord* const uniformsRecords = new(std::nothrow) UniformsRecord[Program::UNIFORM_BINDING_COUNT];
         UTILS_NOUNROLL
-        for (GLuint binding = 0, n = Program::UNIFORM_BINDING_COUNT; binding < n; binding++) {
-            Program::UniformInfo& uniforms = lazyInitializationData.bindingUniformInfo[binding];
-            uniformsRecords[binding].locations.reserve(uniforms.size());
-            uniformsRecords[binding].locations.resize(uniforms.size());
+        for (auto&& [index, name, uniforms] : lazyInitializationData.bindingUniformInfo) {
+            uniformsRecords[index].locations.reserve(uniforms.size());
+            uniformsRecords[index].locations.resize(uniforms.size());
             for (size_t j = 0, c = uniforms.size(); j < c; j++) {
                 GLint const loc = glGetUniformLocation(program, uniforms[j].name.c_str());
-                uniformsRecords[binding].locations[j] = loc;
-                if (UTILS_UNLIKELY(binding == 0)) {
+                uniformsRecords[index].locations[j] = loc;
+                if (UTILS_UNLIKELY(index == 0)) {
                     // This is a bit of a gross hack here, we stash the location of
                     // "frameUniforms.rec709", which obviously the backend shouldn't know about,
                     // which is used for emulating the "rec709" colorspace in the shader.
@@ -165,50 +241,10 @@ void OpenGLProgram::initializeProgramState(OpenGLContext& context, GLuint progra
                     }
                 }
             }
-            uniformsRecords[binding].uniforms = std::move(uniforms);
+            uniformsRecords[index].uniforms = std::move(uniforms);
         }
         mUniformsRecords = uniformsRecords;
     }
-
-    uint8_t usedBindingCount = 0;
-    uint8_t tmu = 0;
-
-    UTILS_NOUNROLL
-    for (size_t i = 0, c = lazyInitializationData.samplerGroupInfo.size(); i < c; i++) {
-        auto const& samplers = lazyInitializationData.samplerGroupInfo[i].samplers;
-        if (samplers.empty()) {
-            // this binding point doesn't have any samplers, skip it.
-            continue;
-        }
-
-        // keep this in the loop, so we skip it in the rare case a program doesn't have
-        // sampler. The context cache will prevent repeated calls to GL.
-        context.useProgram(program);
-
-        bool atLeastOneSamplerUsed = false;
-        UTILS_NOUNROLL
-        for (const Program::Sampler& sampler: samplers) {
-            // find its location and associate a TMU to it
-            GLint const loc = glGetUniformLocation(program, sampler.name.c_str());
-            if (loc >= 0) {
-                // this can fail if the program doesn't use this sampler
-                glUniform1i(loc, tmu);
-                atLeastOneSamplerUsed = true;
-            }
-            tmu++;
-        }
-
-        // if this program doesn't use any sampler from this HwSamplerGroup, just cancel the
-        // whole group.
-        if (atLeastOneSamplerUsed) {
-            // Cache the sampler uniform locations for each interface block
-            mUsedSamplerBindingPoints[usedBindingCount] = i;
-            usedBindingCount++;
-        } else {
-            tmu -= samplers.size();
-        }
-    }
-    mUsedBindingsCount = usedBindingCount;
 
     auto& vertexConstants = lazyInitializationData.vertexPushConstants;
     auto& fragmentConstants = lazyInitializationData.fragmentPushConstants;
@@ -218,66 +254,46 @@ void OpenGLProgram::initializeProgramState(OpenGLContext& context, GLuint progra
         mPushConstants.reserve(totalConstantCount);
         mPushConstantFragmentStageOffset = vertexConstants.size();
         auto const transformAndAdd = [&](Program::PushConstant const& constant) {
-            GLint const loc = glGetUniformLocation(program, constant.name.c_str());
-            mPushConstants.push_back({loc, constant.type});
+            if (!constant.name.empty()) {
+                GLint const loc = glGetUniformLocation(program, constant.name.c_str());
+                mPushConstants.push_back({loc, constant.type});
+            } else {
+                // If the constant is not named, then we assume it will not be referenced in this
+                // program.
+                mPushConstants.push_back({ -1, constant.type });
+            }
         };
         std::for_each(vertexConstants.cbegin(), vertexConstants.cend(), transformAndAdd);
         std::for_each(fragmentConstants.cbegin(), fragmentConstants.cend(), transformAndAdd);
     }
 }
 
-void OpenGLProgram::updateSamplers(OpenGLDriver* const gld) const noexcept {
-    using GLTexture = OpenGLDriver::GLTexture;
-
-#ifndef FILAMENT_SILENCE_NOT_SUPPORTED_BY_ES2
-    bool const es2 = gld->getContext().isES2();
-#endif
-
-    // cache a few member variable locally, outside the loop
-    auto const& UTILS_RESTRICT samplerBindings = gld->getSamplerBindings();
-    auto const& UTILS_RESTRICT usedBindingPoints = mUsedSamplerBindingPoints;
-
-    for (uint8_t i = 0, tmu = 0, n = mUsedBindingsCount; i < n; i++) {
-        size_t const binding = usedBindingPoints[i];
-        assert_invariant(binding < Program::SAMPLER_BINDING_COUNT);
-        auto const * const sb = samplerBindings[binding];
-        assert_invariant(sb);
-        if (!sb) continue; // should never happen, this would be a user error.
-        for (uint8_t j = 0, m = sb->textureUnitEntries.size(); j < m; ++j, ++tmu) { // "<=" on purpose here
-            Handle<HwTexture> th = sb->textureUnitEntries[j].th;
-            if (th) { // program may not use all samplers of sampler group
-                GLTexture const* const t = gld->handle_cast<GLTexture const*>(th);
-                gld->bindTexture(tmu, t);
-#ifndef FILAMENT_SILENCE_NOT_SUPPORTED_BY_ES2
-                if (UTILS_LIKELY(!es2)) {
-                    GLuint const s = sb->textureUnitEntries[j].sampler;
-                    gld->bindSampler(tmu, s);
-                }
-#endif
-            }
-        }
-    }
-    CHECK_GL_ERROR(utils::slog.e)
-}
-
-void OpenGLProgram::updateUniforms(uint32_t index, GLuint id, void const* buffer, uint16_t age) noexcept {
+void OpenGLProgram::updateUniforms(
+        uint32_t const index, GLuint const id, void const* buffer,
+        uint16_t const age, uint32_t const offset) const noexcept {
     assert_invariant(mUniformsRecords);
     assert_invariant(buffer);
 
     // only update the uniforms if the UBO has changed since last time we updated
     UniformsRecord const& records = mUniformsRecords[index];
-    if (records.id == id && records.age == age) {
+    if (records.id == id && records.age == age && records.offset == offset) {
         return;
     }
     records.id = id;
     records.age = age;
+    records.offset = offset;
 
     assert_invariant(records.uniforms.size() == records.locations.size());
+
+    // apply the offset to the buffer
+    buffer = static_cast<char const*>(buffer) + offset;
 
     for (size_t i = 0, c = records.uniforms.size(); i < c; i++) {
         Program::Uniform const& u = records.uniforms[i];
         GLint const loc = records.locations[i];
-        if (loc < 0) {
+        // mRec709Location is special, it is handled by setRec709ColorSpace() and the corresponding
+        // entry in `buffer` is typically not initialized, so we skip it.
+        if (loc < 0 || loc == mRec709Location) {
             continue;
         }
         // u.offset is in 'uint32_t' units
@@ -319,9 +335,40 @@ void OpenGLProgram::updateUniforms(uint32_t index, GLuint id, void const* buffer
                 glUniform4iv(loc, u.size, bi);
                 break;
 
-            case UniformType::MAT3:
-                glUniformMatrix3fv(loc, u.size, GL_FALSE, bf);
+            case UniformType::MAT3: {
+                // glUniformMatrix3fv expect a packed mat3, but the UBO is in std140
+                // also, the GLES spec says:
+                // Locations for sequential array indices are not required to be sequential.
+                // The location for "a[1]" may or may not be equal to the location for "a[0]" + 1.
+                // Furthermore, since unused elements at the end of uniform arrays may be trimmed
+                // the location of the i + 1 array element may not be valid even if the location of
+                // the i element is valid. As a direct consequence, the value of the location of
+                // "a[0]" + 1 may refer to a different uniform entirely. Applications that wish to
+                // set individual array elements should query the locations of each element
+                // separately.
+
+                struct std140 {
+                    struct mat3 : public std::array<std::array<GLfloat, 4>, 3> {
+                    };
+                };
+                std140::mat3 const* const b = reinterpret_cast<std140::mat3 const*>(bf);
+
+                struct mat3 : public std::array<std::array<GLfloat, 3>, 3> {
+                    explicit mat3(std140::mat3 const& other) noexcept
+                        : std::array<std::array<GLfloat, 3>, 3>{ {
+                            { { other[0][0], other[0][1], other[0][2] } },
+                            { { other[1][0], other[1][1], other[1][2] } },
+                            { { other[2][0], other[2][1], other[2][2] } }
+                        } } {
+                    }
+                };
+
+                std::vector<mat3> const temp{ b, b + u.size };
+                glUniformMatrix3fv(loc, u.size, GL_FALSE,
+                        reinterpret_cast<GLfloat const*>(temp.data()));
                 break;
+            }
+
             case UniformType::MAT4:
                 glUniformMatrix4fv(loc, u.size, GL_FALSE, bf);
                 break;

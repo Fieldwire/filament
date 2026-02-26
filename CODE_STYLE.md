@@ -20,7 +20,7 @@ The guiding principles of the filament code style and code formatting can be res
 - class access modifiers are not indented
 - last line of `.cpp` or `.h` file must be an empty line
 
-```
+```c++
 for (int i = 0; i < max; i++) {
 }
 
@@ -73,12 +73,24 @@ src/data.inc
 - `public` class attributes *are not* prefixed
 - class attributes and methods are lower camelcase
 
-```
+```c++
 extern int gGlobalWarming;
 
 class FooBar {
 public:
-    void methodName();
+    FooBar(int attributeName, int sizeInBytes)
+            : mAttributeName(attributeName),
+              sizeInBytes(sizeInBytes) {}
+
+    void reallyLongMethodNameWithLotsOfArguments(bool argument1,
+            int someSecondArgument, int bestArgument) {
+        std::pair<bool, int> pair = {
+            argument1,
+            argument2,
+        };
+        // etc
+    }
+
     int sizeInBytes;
 private:
     int mAttributeName;
@@ -97,7 +109,7 @@ private:
 - always include the copyright notice at the top of every file
 - make sure the date is correct
 
-```
+```c++
 /*
  * Copyright (C) 2018 The Android Open Source Project
  *
@@ -121,13 +133,25 @@ private:
 - other headers are sorted in reverse order of their layering, that is, lower layer headers last
 - within a layer, headers are sorted alphabetically
 - strive for implementing one class per file
-- `STL` limited in public headers to:
-    - `type_traits`
+- `STL` limited in **filament** public headers to:
+    - `array`
+    - `initializer_list`
+    - `iterator`
     - `limits`
+    - `optional`
+    - `type_traits`
+    - `utility`
+    - `variant`
+
+For **libfilament** the rule of thumb is that STL headers that don't generate code are allowed (e.g. `type_traits`),
+conversely containers and algorithms are not allowed. There are exceptions such as `array`. See above for the full list.
+- The following `STL` headers are banned entirely, from public and private headers as well as implementation files:
+  - `iostream`
+
 
 *Sorting the headers is important to help catching missing `#include` directives.*
 
-```
+```c++
 /*
  * Copyright (C) 2018 The Android Open Source Project
  *
@@ -171,7 +195,7 @@ private:
 ### Misc
 
 - Use `auto` only when the type appears on the same line or with iterators and lambdas.
-```
+```c++
 auto foo = new Foo();
 for (auto& i : collection) { }
 ```

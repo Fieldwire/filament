@@ -14,7 +14,19 @@
  * limitations under the License.
  */
 
-#include "backend/Program.h"
+#include <backend/Program.h>
+#include <backend/DriverEnums.h>
+
+#include <utils/CString.h>
+#include <utils/Invocable.h>
+#include <utils/Panic.h>
+#include <utils/debug.h>
+#include <utils/ostream.h>
+
+#include <utility>
+
+#include <stddef.h>
+#include <stdint.h>
 
 namespace filament::backend {
 
@@ -26,90 +38,75 @@ Program::Program() noexcept {  // NOLINT(modernize-use-equals-default)
 
 Program::Program(Program&& rhs) noexcept = default;
 
+Program& Program::operator=(Program&& rhs) noexcept = default;
+
 Program::~Program() noexcept = default;
 
-Program& Program::priorityQueue(CompilerPriorityQueue priorityQueue) noexcept {
+Program& Program::priorityQueue(CompilerPriorityQueue const priorityQueue) noexcept {
     mPriorityQueue = priorityQueue;
     return *this;
 }
 
 Program& Program::diagnostics(CString const& name,
-        Invocable<io::ostream&(io::ostream&)>&& logger) {
+        Invocable<io::ostream&(CString const& name, io::ostream&)>&& logger) {
     mName = name;
     mLogger = std::move(logger);
     return *this;
 }
 
-Program& Program::shader(ShaderStage shader, void const* data, size_t size) {
+Program& Program::shader(ShaderStage shader, void const* data, size_t const size) {
     ShaderBlob blob(size);
     std::copy_n((const uint8_t *)data, size, blob.data());
     mShadersSource[size_t(shader)] = std::move(blob);
     return *this;
 }
 
-Program& Program::shaderLanguage(ShaderLanguage shaderLanguage) {
+Program& Program::shaderLanguage(ShaderLanguage const shaderLanguage) {
     mShaderLanguage = shaderLanguage;
     return *this;
 }
 
-Program& Program::uniformBlockBindings(
-        FixedCapacityVector<std::pair<utils::CString, uint8_t>> const& uniformBlockBindings) noexcept {
-    for (auto const& item : uniformBlockBindings) {
-        assert_invariant(item.second < UNIFORM_BINDING_COUNT);
-        mUniformBlocks[item.second] = item.first;
-    }
+Program& Program::descriptorBindings(descriptor_set_t const set,
+        DescriptorBindingsInfo descriptorBindings) noexcept {
+    mDescriptorBindings[set] = std::move(descriptorBindings);
     return *this;
 }
 
-Program& Program::uniforms(uint32_t index, UniformInfo const& uniforms) noexcept {
-    assert_invariant(index < UNIFORM_BINDING_COUNT);
-    mBindingUniformInfo[index] = uniforms;
+Program& Program::uniforms(uint32_t index, CString name, UniformInfo uniforms) {
+    mBindingUniformsInfo.reserve(mBindingUniformsInfo.capacity() + 1);
+    mBindingUniformsInfo.emplace_back(index, std::move(name), std::move(uniforms));
     return *this;
 }
 
-
-Program& Program::attributes(
-        utils::FixedCapacityVector<std::pair<utils::CString, uint8_t>> attributes) noexcept {
+Program& Program::attributes(AttributesInfo attributes) noexcept {
     mAttributes = std::move(attributes);
     return *this;
 }
 
-Program& Program::setSamplerGroup(size_t bindingPoint, ShaderStageFlags stageFlags,
-        const Program::Sampler* samplers, size_t count) noexcept {
-    auto& groupData = mSamplerGroups[bindingPoint];
-    groupData.stageFlags = stageFlags;
-    auto& samplerList = groupData.samplers;
-    samplerList.reserve(count);
-    samplerList.resize(count);
-    std::copy_n(samplers, count, samplerList.data());
-    return *this;
-}
-
-Program& Program::specializationConstants(
-        FixedCapacityVector<SpecializationConstant> specConstants) noexcept {
+Program& Program::specializationConstants(SpecializationConstantsInfo specConstants) noexcept {
     mSpecializationConstants = std::move(specConstants);
     return *this;
 }
 
 Program& Program::pushConstants(ShaderStage stage,
-        utils::FixedCapacityVector<PushConstant> constants) noexcept {
+        FixedCapacityVector<PushConstant> constants) noexcept {
     mPushConstants[static_cast<uint8_t>(stage)] = std::move(constants);
     return *this;
 }
 
-Program& Program::cacheId(uint64_t cacheId) noexcept {
+Program& Program::cacheId(uint64_t const cacheId) noexcept {
     mCacheId = cacheId;
     return *this;
 }
 
-Program& Program::multiview(bool multiview) noexcept {
+Program& Program::multiview(bool const multiview) noexcept {
     mMultiview = multiview;
     return *this;
 }
 
 io::ostream& operator<<(io::ostream& out, const Program& builder) {
     out << "Program{";
-    builder.mLogger(out);
+    builder.mLogger(builder.mName, out);
     out << "}";
     return out;
 }

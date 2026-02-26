@@ -16,11 +16,18 @@
 
 #include "private/filament/SamplerInterfaceBlock.h"
 
-#include <utils/Panic.h>
-#include <utils/compiler.h>
+#include <private/filament/DescriptorSets.h>
 
+#include <backend/DriverEnums.h>
+
+#include <utils/Panic.h>
+
+#include <initializer_list>
+#include <iterator>
+#include <string_view>
 #include <utility>
 
+#include <stddef.h>
 #include <stdint.h>
 
 using namespace utils;
@@ -42,12 +49,21 @@ SamplerInterfaceBlock::Builder::stageFlags(backend::ShaderStageFlags stageFlags)
     return *this;
 }
 
-SamplerInterfaceBlock::Builder& SamplerInterfaceBlock::Builder::add(
-        std::string_view samplerName, Type type, Format format,
-        Precision precision, bool multisample) noexcept {
+SamplerInterfaceBlock::Builder& SamplerInterfaceBlock::Builder::add(std::string_view samplerName,
+        Binding binding, Type type, Format format, Precision precision, bool filterable,
+        bool multisample, std::string_view transformName, ShaderStageFlags stages) noexcept {
     mEntries.push_back({
-            { samplerName.data(), samplerName.size() }, { },
-            uint8_t(mEntries.size()), type, format, precision, multisample });
+        { samplerName.data(), samplerName.size() }, // name
+        {},                                         // uniform name
+        binding,
+        type,
+        format,
+        precision,
+        filterable,
+        multisample,
+        stages,
+        { transformName.data(), transformName.size() },
+    });
     return *this;
 }
 
@@ -57,8 +73,9 @@ SamplerInterfaceBlock SamplerInterfaceBlock::Builder::build() {
 
 SamplerInterfaceBlock::Builder& SamplerInterfaceBlock::Builder::add(
         std::initializer_list<ListEntry> list) noexcept {
-    for (auto& e : list) {
-        add(e.name, e.type, e.format, e.precision, e.multisample);
+    for (auto& e: list) {
+        add(e.name, e.binding, e.type, e.format, e.precision, e.filterable,
+                e.multisample, e.transformName, e.stages);
     }
     return *this;
 }
@@ -79,15 +96,26 @@ SamplerInterfaceBlock::SamplerInterfaceBlock(Builder const& builder) noexcept
 
     auto& samplersInfoList = mSamplersInfoList;
 
-    size_t i = 0;
     for (auto const& e : builder.mEntries) {
-        assert_invariant(i == e.offset);
-        SamplerInfo& info = samplersInfoList[i++];
+        size_t const i = std::distance(builder.mEntries.data(), &e);
+        SamplerInfo& info = samplersInfoList[i];
+
+        // We verify the following assumption.
+        //   - float sampler can be filterable or not, default to filterable
+        //   - int sampler is not filterable
+        //   - shadow sampler uses comparison operator and should be filterable.
+        FILAMENT_CHECK_PRECONDITION(
+                ((info.format == Format::INT || info.format == Format::UINT) && !info.filterable) ||
+                (info.format == Format::SHADOW && info.filterable) ||
+                (info.format == Format::FLOAT))
+                << "Format and filterable flag combination not allowed. "
+                << "format=" << (int) info.format << " filterable=" << info.filterable;
+
         info = e;
+        info.stages &= builder.mStageFlags;
         info.uniformName = generateUniformName(mName.c_str(), e.name.c_str());
-        infoMap[{ info.name.data(), info.name.size() }] = info.offset; // info.name.c_str() guaranteed constant
+        infoMap[{ info.name.data(), info.name.size() }] = i; // info.name.c_str() guaranteed constant
     }
-    assert_invariant(i == samplersInfoList.size());
 }
 
 const SamplerInterfaceBlock::SamplerInfo* SamplerInterfaceBlock::getSamplerInfo(
@@ -97,7 +125,7 @@ const SamplerInterfaceBlock::SamplerInfo* SamplerInterfaceBlock::getSamplerInfo(
     return &mSamplersInfoList[pos->second];
 }
 
-utils::CString SamplerInterfaceBlock::generateUniformName(const char* group, const char* sampler) noexcept {
+CString SamplerInterfaceBlock::generateUniformName(const char* group, const char* sampler) noexcept {
     char uniformName[256];
 
     // sampler interface block name
@@ -112,9 +140,27 @@ utils::CString SamplerInterfaceBlock::generateUniformName(const char* group, con
             std::min(sizeof(uniformName) / 2 - 2, strlen(sampler)),
             prefix + 1);
     *last++ = 0; // null terminator
-    assert(last <= std::end(uniformName));
+    assert_invariant(last <= std::end(uniformName));
 
     return CString{ uniformName, size_t(last - uniformName) - 1u };
+}
+
+SamplerInterfaceBlock::SamplerInfoList SamplerInterfaceBlock::filterSamplerList(
+        SamplerInfoList list, backend::DescriptorSetLayout const& descriptorSetLayout) {
+    // remove all the samplers that are not included in the descriptor-set layout
+    list.erase(
+            std::remove_if(list.begin(), list.end(),
+                    [&](auto const& entry) {
+                        auto pos = std::find_if(
+                                descriptorSetLayout.descriptors.begin(),
+                                descriptorSetLayout.descriptors.end(),
+                                [&entry](const auto& item) {
+                                    return item.binding == entry.binding;
+                                });
+                        return pos == descriptorSetLayout.descriptors.end();
+                    }), list.end());
+
+    return list;
 }
 
 } // namespace filament
