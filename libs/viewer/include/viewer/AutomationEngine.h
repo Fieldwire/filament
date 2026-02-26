@@ -56,6 +56,22 @@ public:
      * Allows users to toggle screenshots, change the sleep duration between tests, etc.
      */
     struct Options {
+
+        /**
+         * Formats that could be used for exporting the screenshots.
+         */
+        enum class ExportFormat : uint8_t {
+            /**
+             * Tagged Image File Format (TIFF)
+             */
+            TIFF = 0,
+
+            /**
+             * Netpbm color image format (Portable Pixel Map)
+             */
+            PPM = 1,
+        };
+
         /**
          * Minimum time that automation waits between applying a settings object and advancing
          * to the next test case. Specified in seconds.
@@ -82,6 +98,11 @@ public:
          * If true, the tick function writes out a settings JSON file before advancing.
          */
         bool exportSettings = false;
+
+        /**
+         * Which image format will be used for exporting screenshots.
+         */
+        ExportFormat exportFormat = ExportFormat::TIFF;
     };
 
     /**
@@ -96,7 +117,7 @@ public:
         Scene* scene;
         IndirectLight* indirectLight;
         utils::Entity sunlight;
-        utils::Entity* assetLights;
+        const utils::Entity* assetLights;
         size_t assetLightCount;
     };
 
@@ -191,6 +212,11 @@ public:
     ViewerOptions getViewerOptions() const;
 
     /**
+     * Gets the current full settings object.
+     */
+    const Settings& getSettings() const { return *mSettings; }
+
+    /**
      * Signals that batch mode can begin. Call this after all meshes and textures finish loading.
      */
     void signalBatchMode() { mBatchModeAllowed = true; }
@@ -243,6 +269,10 @@ private:
     Engine* mColorGradingEngine = nullptr;
     ColorGrading* mColorGrading = nullptr;
     ColorGradingSettings mColorGradingSettings = {};
+    std::vector<utils::Entity> mCustomLights;
+
+    void updateCustomLights(Engine* engine, const std::vector<LightDefinition>& lights,
+            Scene* scene);
 
     size_t mCurrentTest;
     float mElapsedTime;

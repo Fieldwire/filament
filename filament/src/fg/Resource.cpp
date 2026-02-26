@@ -85,7 +85,7 @@ void VirtualResource::neededByPass(PassNode* pNode) noexcept {
 
 ImportedRenderTarget::~ImportedRenderTarget() noexcept = default;
 
-ImportedRenderTarget::ImportedRenderTarget(char const* resourceName,
+ImportedRenderTarget::ImportedRenderTarget(utils::StaticString resourceName,
         FrameGraphTexture::Descriptor const& mainAttachmentDesc,
         FrameGraphRenderPass::ImportDescriptor const& importedDesc,
         Handle<HwRenderTarget> target)
@@ -95,32 +95,32 @@ ImportedRenderTarget::ImportedRenderTarget(char const* resourceName,
 }
 
 UTILS_NOINLINE
-void ImportedRenderTarget::assertConnect(FrameGraphTexture::Usage u) {
+void ImportedRenderTarget::assertConnect(FrameGraphTexture::Usage const u) const {
     constexpr auto ANY_ATTACHMENT = FrameGraphTexture::Usage::COLOR_ATTACHMENT |
                                     FrameGraphTexture::Usage::DEPTH_ATTACHMENT |
                                     FrameGraphTexture::Usage::STENCIL_ATTACHMENT;
 
     FILAMENT_CHECK_PRECONDITION(none(u & ~ANY_ATTACHMENT))
-            << "Imported render target resource \"" << name
+            << "Imported render target resource \"" << name.c_str()
             << "\" can only be used as an attachment (usage=" << utils::to_string(u).c_str() << ')';
 }
 
 bool ImportedRenderTarget::connect(DependencyGraph& graph, PassNode* passNode,
-        ResourceNode* resourceNode, TextureUsage u) {
+        ResourceNode* resourceNode, TextureUsage const u) {
     // pass Node to resource Node edge (a write to)
     assertConnect(u);
     return Resource::connect(graph, passNode, resourceNode, u);
 }
 
 bool ImportedRenderTarget::connect(DependencyGraph& graph, ResourceNode* resourceNode,
-        PassNode* passNode, TextureUsage u) {
+        PassNode* passNode, TextureUsage const u) {
     // resource Node to pass Node edge (a read from)
     assertConnect(u);
     return Resource::connect(graph, resourceNode, passNode, u);
 }
 
 FrameGraphTexture::Usage ImportedRenderTarget::usageFromAttachmentsFlags(
-        TargetBufferFlags attachments) noexcept {
+        TargetBufferFlags const attachments) noexcept {
 
     if (any(attachments & TargetBufferFlags::COLOR_ALL))
         return FrameGraphTexture::Usage::COLOR_ATTACHMENT;

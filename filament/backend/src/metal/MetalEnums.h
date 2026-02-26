@@ -71,7 +71,8 @@ constexpr inline MTLIndexType getIndexType(size_t elementSize) noexcept {
     } else if (elementSize == 4) {
         return MTLIndexTypeUInt32;
     }
-    FILAMENT_CHECK_POSTCONDITION(false) << "Index element size not supported.";
+    assert_invariant(false);
+    return MTLIndexTypeUInt16;
 }
 
 constexpr inline MTLVertexFormat getMetalFormat(ElementType type, bool normalized) noexcept {
@@ -184,6 +185,7 @@ inline MTLPixelFormat getMetalFormat(PixelDataFormat format, PixelDataType type)
     CONVERT(RGBA_INTEGER, UINT, RGBA32Uint);
     CONVERT(RGBA_INTEGER, INT, RGBA32Sint);
     CONVERT(RGBA, FLOAT, RGBA32Float);
+    CONVERT(DEPTH_COMPONENT, FLOAT, Depth32Float);
     #undef CONVERT
 
     return MTLPixelFormatInvalid;
@@ -195,7 +197,7 @@ inline MTLPixelFormat getMetalFormatLinear(MTLPixelFormat format) {
         case MTLPixelFormatRG8Unorm_sRGB: return MTLPixelFormatRG8Unorm;
         case MTLPixelFormatRGBA8Unorm_sRGB: return MTLPixelFormatRGBA8Unorm;
         case MTLPixelFormatBGRA8Unorm_sRGB: return MTLPixelFormatBGRA8Unorm;
-#if !defined(IOS)
+#if !defined(FILAMENT_IOS)
         case MTLPixelFormatBC1_RGBA_sRGB: return MTLPixelFormatBC1_RGBA;
         case MTLPixelFormatBC2_RGBA_sRGB: return MTLPixelFormatBC2_RGBA;
         case MTLPixelFormatBC3_RGBA_sRGB: return MTLPixelFormatBC3_RGBA;
@@ -234,32 +236,47 @@ inline MTLPixelFormat getMetalFormatLinear(MTLPixelFormat format) {
     return format;
 }
 
-constexpr inline bool isMetalFormatInteger(MTLPixelFormat format) {
+constexpr inline bool isMetalFormatUnsignedInteger(MTLPixelFormat format) {
     switch (format) {
         case MTLPixelFormatR8Uint:
-        case MTLPixelFormatR8Sint:
         case MTLPixelFormatR16Uint:
-        case MTLPixelFormatR16Sint:
         case MTLPixelFormatRG8Uint:
-        case MTLPixelFormatRG8Sint:
         case MTLPixelFormatR32Uint:
-        case MTLPixelFormatR32Sint:
         case MTLPixelFormatRG16Uint:
-        case MTLPixelFormatRG16Sint:
         case MTLPixelFormatRGBA8Uint:
-        case MTLPixelFormatRGBA8Sint:
         case MTLPixelFormatRGB10A2Uint:
         case MTLPixelFormatRG32Uint:
-        case MTLPixelFormatRG32Sint:
         case MTLPixelFormatRGBA16Uint:
-        case MTLPixelFormatRGBA16Sint:
         case MTLPixelFormatRGBA32Uint:
+            return true;
+
+        default:
+            return false;
+    }
+    return false;
+}
+
+constexpr inline bool isMetalFormatSignedInteger(MTLPixelFormat format) {
+    switch (format) {
+        case MTLPixelFormatR8Sint:
+        case MTLPixelFormatR16Sint:
+        case MTLPixelFormatRG8Sint:
+        case MTLPixelFormatR32Sint:
+        case MTLPixelFormatRG16Sint:
+        case MTLPixelFormatRGBA8Sint:
+        case MTLPixelFormatRG32Sint:
+        case MTLPixelFormatRGBA16Sint:
         case MTLPixelFormatRGBA32Sint:
             return true;
 
         default:
             return false;
     }
+    return false;
+}
+
+constexpr inline bool isMetalFormatInteger(MTLPixelFormat format) {
+    return isMetalFormatUnsignedInteger(format) || isMetalFormatSignedInteger(format);
 }
 
 constexpr inline bool isMetalFormatStencil(MTLPixelFormat format) {
@@ -267,7 +284,7 @@ constexpr inline bool isMetalFormatStencil(MTLPixelFormat format) {
         case MTLPixelFormatStencil8:
         case MTLPixelFormatDepth32Float_Stencil8:
         case MTLPixelFormatX32_Stencil8:
-#if !defined(IOS)
+#if !defined(FILAMENT_IOS)
         case MTLPixelFormatDepth24Unorm_Stencil8:
         case MTLPixelFormatX24_Stencil8:
 #endif

@@ -11,6 +11,12 @@
 // com.google.android.filament.exclude-vulkan
 //     When set, support for Vulkan will be excluded.
 //
+// com.google.android.filament.include-webgpu
+//     When set, enables WebGPU support.
+//
+// com.google.android.filament.fgviewer
+//     When set, enables fgviewer
+//
 // com.google.android.filament.matdbg
 //     When set, enables matdbg
 //
@@ -61,6 +67,14 @@ buildscript {
             .gradleProperty("com.google.android.filament.exclude-vulkan")
             .isPresent()
 
+    def includeWebGPU = providers
+            .gradleProperty("com.google.android.filament.include-webgpu")
+            .isPresent()
+
+    def fgviewer = providers
+                 .gradleProperty("com.google.android.filament.fgviewer")
+                 .isPresent()
+
     def matdbg = providers
             .gradleProperty("com.google.android.filament.matdbg")
             .isPresent()
@@ -83,12 +97,12 @@ buildscript {
         'minSdk': 21,
         'targetSdk': 34,
         'compileSdk': 34,
-        'kotlin': '2.0.0',
-        'kotlin_coroutines': '1.9.0-RC',
-        'buildTools': '34.0.0',
-        'ndk': '27.0.11718014',
+        'kotlin': '2.0.21',
+        'kotlin_coroutines': '1.9.0',
+        'buildTools': '35.0.0',
+        'ndk': '29.0.14206865',
         'androidx_core': '1.13.1',
-        'androidx_annotations': '1.8.0'
+        'androidx_annotations': '1.9.0'
     ]
 
     ext.deps = [
@@ -104,17 +118,20 @@ buildscript {
     ]
 
     dependencies {
-        classpath 'com.android.tools.build:gradle:8.4.1'
+        classpath 'com.android.tools.build:gradle:8.6.1'
         classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:${versions.kotlin}"
     }
 
     ext.cmakeArgs = [
         "--no-warn-unused-cli",
+        "-DANDROID_WEAK_API_DEFS=ON",
         "-DANDROID_PIE=ON",
         "-DANDROID_PLATFORM=21",
         "-DANDROID_STL=c++_static",
         "-DFILAMENT_DIST_DIR=${filamentPath}".toString(),
         "-DFILAMENT_SUPPORTS_VULKAN=${excludeVulkan ? 'OFF' : 'ON'}".toString(),
+        "-DFILAMENT_SUPPORTS_WEBGPU=${includeWebGPU ? 'ON' : 'OFF'}".toString(),
+        "-DFILAMENT_ENABLE_FGVIEWER=${fgviewer ? 'ON' : 'OFF'}".toString(),
         "-DFILAMENT_ENABLE_MATDBG=${matdbg ? 'ON' : 'OFF'}".toString(),
         "-DFILAMENT_DISABLE_MATOPT=${matnopt ? 'ON' : 'OFF'}".toString()
     ]
@@ -162,6 +179,8 @@ nexusPublishing {
     repositories {
         sonatype {
             stagingProfileId = '9a75a224a4f17b'
+            nexusUrl.set(uri("https://ossrh-staging-api.central.sonatype.com/service/local/"))
+            snapshotRepositoryUrl.set(uri("https://central.sonatype.com/repository/maven-snapshots/"))
         }
     }
 }
@@ -175,7 +194,7 @@ subprojects {
         google()
     }
 
-    if (!name.startsWith("sample")) {
+    if (!name.startsWith("sample") && name != "filament-tools") {
         apply plugin: 'com.android.library'
 
         android {

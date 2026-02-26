@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.19)
 project(filamat-android)
 
+set(CMAKE_CXX_STANDARD 20)
+
 option(FILAMENT_ENABLE_MATDBG "Enables Material debugger" OFF)
 
 set(FILAMENT_DIR ${FILAMENT_DIST_DIR})
@@ -11,6 +13,13 @@ if (FILAMENT_SUPPORTS_VULKAN)
     message("Library filamat ignores Vulkan settings")
 endif()
 
+if (FILAMENT_SUPPORTS_WEBGPU)
+    # See third_party/dawn/tnt/CMakeLists.txt and libs/filamat/CMakeLists.txt
+    add_library(tint STATIC IMPORTED)
+    set_target_properties(tint PROPERTIES IMPORTED_LOCATION
+            ${FILAMENT_DIR}/lib/${ANDROID_ABI}/libtint_combined.a)
+endif()
+
 add_library(${FILAMAT_FLAVOR} STATIC IMPORTED)
 set_target_properties(${FILAMAT_FLAVOR} PROPERTIES IMPORTED_LOCATION
         ${FILAMENT_DIR}/lib/${ANDROID_ABI}/lib${FILAMAT_FLAVOR}.a)
@@ -18,6 +27,10 @@ set_target_properties(${FILAMAT_FLAVOR} PROPERTIES IMPORTED_LOCATION
 add_library(utils STATIC IMPORTED)
 set_target_properties(utils PROPERTIES IMPORTED_LOCATION
         ${FILAMENT_DIR}/lib/${ANDROID_ABI}/libutils.a)
+
+add_library(perfetto STATIC IMPORTED)
+set_target_properties(perfetto PROPERTIES IMPORTED_LOCATION
+        ${FILAMENT_DIR}/lib/${ANDROID_ABI}/libperfetto.a)
 
 add_library(filabridge STATIC IMPORTED)
 set_target_properties(filabridge PROPERTIES IMPORTED_LOCATION
@@ -33,6 +46,7 @@ set_target_properties(shaders PROPERTIES IMPORTED_LOCATION
 
 set(FILAMAT_INCLUDE_DIRS
         ../../libs/utils/include
+        ../../third_party/perfetto
         )
 
 include_directories(${FILAMENT_DIR}/include)
@@ -48,6 +62,8 @@ target_link_libraries(filamat-jni
         filabridge
         shaders
         utils
+        perfetto
         log
         smol-v
+        $<$<STREQUAL:${FILAMENT_SUPPORTS_WEBGPU},ON>:tint>
 )

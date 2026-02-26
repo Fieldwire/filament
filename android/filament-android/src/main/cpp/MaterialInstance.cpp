@@ -329,6 +329,18 @@ Java_com_google_android_filament_MaterialInstance_nSetCullingMode(JNIEnv*,
     instance->setCullingMode((MaterialInstance::CullingMode) cullingMode);
 }
 
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_google_android_filament_MaterialInstance_nSetCullingModeSeparate(JNIEnv*, jclass,
+        jlong nativeMaterialInstance,
+        jlong colorPassCullingMode, jlong shadowPassCullingMode) {
+    MaterialInstance* instance = (MaterialInstance*) nativeMaterialInstance;
+    instance->setCullingMode(
+            (MaterialInstance::CullingMode) colorPassCullingMode,
+            (MaterialInstance::CullingMode) shadowPassCullingMode);
+}
+
 extern "C"
 JNIEXPORT void JNICALL
 Java_com_google_android_filament_MaterialInstance_nSetColorWrite(JNIEnv*,
@@ -506,6 +518,14 @@ Java_com_google_android_filament_MaterialInstance_nGetCullingMode(JNIEnv* env, j
 }
 
 extern "C"
+JNIEXPORT jint JNICALL
+Java_com_google_android_filament_MaterialInstance_nGetShadowCullingMode(JNIEnv* env, jclass,
+        jlong nativeMaterialInstance) {
+    MaterialInstance* instance = (MaterialInstance*)nativeMaterialInstance;
+    return (jint)instance->getShadowCullingMode();
+}
+
+extern "C"
 JNIEXPORT jboolean JNICALL
 Java_com_google_android_filament_MaterialInstance_nIsColorWriteEnabled(JNIEnv* env, jclass clazz,
         jlong nativeMaterialInstance) {
@@ -543,4 +563,20 @@ Java_com_google_android_filament_MaterialInstance_nGetDepthFunc(JNIEnv* env, jcl
         jlong nativeMaterialInstance) {
     MaterialInstance* instance = (MaterialInstance*)nativeMaterialInstance;
     return (jint)instance->getDepthFunc();
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_google_android_filament_MaterialInstance_nSetTransparencyMode(JNIEnv*, jclass,
+        jlong nativeMaterialInstance, jint mode) {
+    MaterialInstance* instance = (MaterialInstance*) nativeMaterialInstance;
+    instance->setTransparencyMode((MaterialInstance::TransparencyMode) mode);
+}
+
+extern "C"
+JNIEXPORT jint JNICALL
+Java_com_google_android_filament_MaterialInstance_nGetTransparencyMode(JNIEnv*, jclass,
+        jlong nativeMaterialInstance) {
+    MaterialInstance* instance = (MaterialInstance*) nativeMaterialInstance;
+    return (jint) instance->getTransparencyMode();
 }

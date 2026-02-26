@@ -16,6 +16,9 @@
 
 #include "BackendTest.h"
 
+#include "Lifetimes.h"
+#include "Skip.h"
+
 using namespace filament;
 using namespace filament::backend;
 
@@ -27,15 +30,18 @@ TEST_F(BackendTest, FrameScheduledCallback) {
     // Create a SwapChain.
     // In order for the frameScheduledCallback to be called, this must be a real SwapChain (not
     // headless) so we obtain a drawable.
-    auto swapChain = createSwapChain();
+    auto swapChain = addCleanup(createSwapChain());
 
-    Handle<HwRenderTarget> renderTarget = api.createDefaultRenderTarget();
+    Handle<HwRenderTarget> renderTarget = addCleanup(api.createDefaultRenderTarget());
 
     int callbackCountA = 0;
-    api.setFrameScheduledCallback(swapChain, nullptr, [&callbackCountA](PresentCallable callable) {
-        callable();
-        callbackCountA++;
-    });
+    api.setFrameScheduledCallback(
+            swapChain, nullptr,
+            [&callbackCountA](PresentCallable callable) {
+                callable();
+                callbackCountA++;
+            },
+            0);
 
     // Render the first frame.
     api.makeCurrent(swapChain, swapChain);
@@ -58,9 +64,20 @@ TEST_F(BackendTest, FrameScheduledCallback) {
     api.setFrameScheduledCallback(swapChain, nullptr, [&callbackCountB](PresentCallable callable) {
         callable();
         callbackCountB++;
-    });
+    }, 0);
 
-    // Render one final frame.
+    // Render another frame.
+    api.makeCurrent(swapChain, swapChain);
+    api.beginFrame(0, 0, 0);
+    api.beginRenderPass(renderTarget, {});
+    api.endRenderPass(0);
+    api.commit(swapChain);
+    api.endFrame(0);
+
+    // Now, unset the callback
+    api.setFrameScheduledCallback(swapChain, nullptr, {}, 0);
+
+    // Render a final frame. This time no callback should be called.
     api.makeCurrent(swapChain, swapChain);
     api.beginFrame(0, 0, 0);
     api.beginRenderPass(renderTarget, {});
@@ -78,10 +95,14 @@ TEST_F(BackendTest, FrameScheduledCallback) {
 }
 
 TEST_F(BackendTest, FrameCompletedCallback) {
+    SKIP_IF(Backend::OPENGL, "Frame callbacks are unsupported in OpenGL");
+    SKIP_IF(Backend::VULKAN, "Frame callbacks are unsupported in Vulkan, see b/417254479");
+    SKIP_IF(Backend::WEBGPU, "Frame callbacks are unsupported in WebGPU");
+
     auto& api = getDriverApi();
 
     // Create a SwapChain.
-    auto swapChain = api.createSwapChainHeadless(256, 256, 0);
+    auto swapChain = addCleanup(createSwapChain());
 
     int callbackCountA = 0;
     api.setFrameCompletedCallback(swapChain, nullptr,

@@ -538,11 +538,27 @@ public class MaterialInstance {
     }
 
     /**
+     * Sets the transparency mode for this material instance.
+     * @see Material.TransparencyMode
+     */
+    public void setTransparencyMode(@NonNull Material.TransparencyMode mode) {
+        nSetTransparencyMode(getNativeObject(), mode.ordinal());
+    }
+
+    /**
      * Returns whether double-sided lighting is enabled when the parent Material has double-sided
      * capability.
      */
     public boolean isDoubleSided() {
         return nIsDoubleSided(getNativeObject());
+    }
+
+    /**
+     * Returns the transparency mode.
+     */
+    @NonNull
+    public Material.TransparencyMode getTransparencyMode() {
+        return Material.EnumCache.sTransparencyModeValues[nGetTransparencyMode(getNativeObject())];
     }
 
     /**
@@ -557,11 +573,33 @@ public class MaterialInstance {
     }
 
     /**
+     * Overrides the default triangle culling state that was set on the material separately for the
+     * color and shadow passes
+     *
+     * @see
+     * <a href="https://google.github.io/filament/Materials.html#materialdefinitions/materialblock/rasterization:culling">
+     * Rasterization: culling</a>
+     */
+    public void setCullingMode(@NonNull Material.CullingMode colorPassCullingMode,
+                               @NonNull Material.CullingMode shadowPassCullingMode) {
+        nSetCullingModeSeparate(getNativeObject(),
+            colorPassCullingMode.ordinal(), shadowPassCullingMode.ordinal());
+    }
+
+    /**
      * Returns the face culling mode.
      */
     @NonNull
     public Material.CullingMode getCullingMode() {
         return sCullingModeValues[nGetCullingMode(getNativeObject())];
+    }
+
+    /**
+     * Returns the face culling mode for the shadow passes.
+     */
+    @NonNull
+    public Material.CullingMode getShadowCullingMode() {
+        return sCullingModeValues[nGetShadowCullingMode(getNativeObject())];
     }
 
     /**
@@ -920,6 +958,8 @@ public class MaterialInstance {
 
     private static native void nSetDoubleSided(long nativeMaterialInstance, boolean doubleSided);
     private static native void nSetCullingMode(long nativeMaterialInstance, long mode);
+    private static native void nSetCullingModeSeparate(long nativeMaterialInstance,
+            long colorPassCullingMode, long shadowPassCullingMode);
     private static native void nSetColorWrite(long nativeMaterialInstance, boolean enable);
     private static native void nSetDepthWrite(long nativeMaterialInstance, boolean enable);
     private static native void nSetStencilWrite(long nativeMaterialInstance, boolean enable);
@@ -952,9 +992,12 @@ public class MaterialInstance {
     private static native float nGetSpecularAntiAliasingThreshold(long nativeMaterialInstance);
     private static native boolean nIsDoubleSided(long nativeMaterialInstance);
     private static native int nGetCullingMode(long nativeMaterialInstance);
+    private static native int nGetShadowCullingMode(long nativeMaterialInstance);
     private static native boolean nIsColorWriteEnabled(long nativeMaterialInstance);
     private static native boolean nIsDepthWriteEnabled(long nativeMaterialInstance);
     private static native boolean nIsStencilWriteEnabled(long nativeMaterialInstance);
     private static native boolean nIsDepthCullingEnabled(long nativeMaterialInstance);
     private static native int nGetDepthFunc(long nativeMaterialInstance);
+    private static native void nSetTransparencyMode(long nativeMaterialInstance, int mode);
+    private static native int nGetTransparencyMode(long nativeMaterialInstance);
 }

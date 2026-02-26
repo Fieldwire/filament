@@ -18,54 +18,49 @@
 #define TNT_FILAMENT_BACKEND_VULKANDRIVER_H
 
 #include "VulkanBlitter.h"
+#include "VulkanBufferCache.h"
 #include "VulkanConstants.h"
 #include "VulkanContext.h"
 #include "VulkanFboCache.h"
 #include "VulkanHandles.h"
+#include "VulkanMemory.h"
 #include "VulkanPipelineCache.h"
+#include "VulkanQueryManager.h"
 #include "VulkanReadPixels.h"
-#include "VulkanResourceAllocator.h"
 #include "VulkanSamplerCache.h"
+#include "VulkanSemaphoreManager.h"
 #include "VulkanStagePool.h"
-#include "VulkanUtility.h"
+#include "VulkanYcbcrConversionCache.h"
+#include "vulkan/VulkanDescriptorSetCache.h"
+#include "vulkan/VulkanDescriptorSetLayoutCache.h"
+#include "vulkan/VulkanExternalImageManager.h"
+#include "vulkan/VulkanStreamedImageManager.h"
+#include "vulkan/VulkanPipelineLayoutCache.h"
+#include "vulkan/memory/ResourceManager.h"
+#include "vulkan/memory/ResourcePointer.h"
+#include "vulkan/utils/Definitions.h"
+
 #include "backend/DriverEnums.h"
-#include "caching/VulkanDescriptorSetManager.h"
-#include "caching/VulkanPipelineLayoutCache.h"
 
 #include "DriverBase.h"
 #include "private/backend/Driver.h"
 
+#include <utils/FixedCapacityVector.h>
 #include <utils/Allocator.h>
 #include <utils/compiler.h>
 
 namespace filament::backend {
 
 class VulkanPlatform;
-struct VulkanSamplerGroup;
 
 // The maximum number of attachments for any renderpass (color + resolve + depth)
 constexpr uint8_t MAX_RENDERTARGET_ATTACHMENT_TEXTURES =
         MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT * 2 + 1;
 
-// We need to store information about a render pass to enable better barriers at the end of a
-// renderpass.
-struct RenderPassFboBundle {
-    using AttachmentArray =
-            CappedArray<VulkanAttachment, MAX_RENDERTARGET_ATTACHMENT_TEXTURES>;
-
-    AttachmentArray attachments;
-    bool hasColorResolve = false;
-
-    void clear() {
-        attachments.clear();
-        hasColorResolve = false;
-    }
-};
-
 class VulkanDriver final : public DriverBase {
 public:
-    static Driver* create(VulkanPlatform* platform, VulkanContext const& context,
-            Platform::DriverConfig const& driverConfig) noexcept;
+    static Driver* create(VulkanPlatform* platform, VulkanContext& context,
+            Platform::DriverConfig const& driverConfig);
 
 #if FVK_ENABLED(FVK_DEBUG_DEBUG_UTILS)
     // Encapsulates the VK_EXT_debug_utils extension.  In particular, we use
@@ -77,7 +72,7 @@ public:
     private:
         static DebugUtils* get();
 
-        DebugUtils(VkInstance instance, VkDevice device, VulkanContext const* context);
+        DebugUtils(VkInstance instance, VkDevice device, VulkanContext const& context);
         ~DebugUtils();
 
         VkInstance const mInstance;
@@ -92,19 +87,24 @@ public:
 #endif // FVK_ENABLED(FVK_DEBUG_DEBUG_UTILS)
 
 private:
+    template<typename D>
+    using resource_ptr = fvkmemory::resource_ptr<D>;
+
     static constexpr uint8_t MAX_SAMPLER_BINDING_COUNT = Program::SAMPLER_BINDING_COUNT;
 
     void debugCommandBegin(CommandStream* cmds, bool synchronous,
             const char* methodName) noexcept override;
 
-    inline VulkanDriver(VulkanPlatform* platform, VulkanContext const& context,
-            Platform::DriverConfig const& driverConfig) noexcept;
+    VulkanDriver(VulkanPlatform* platform, VulkanContext& context,
+            Platform::DriverConfig const& driverConfig);
 
     ~VulkanDriver() noexcept override;
 
     Dispatcher getDispatcher() const noexcept final;
 
     ShaderModel getShaderModel() const noexcept final;
+    utils::FixedCapacityVector<ShaderLanguage> getShaderLanguages(
+            ShaderLanguage preferredLanguage) const noexcept final;
 
     template<typename T>
     friend class ConcreteDispatcher;
@@ -126,51 +126,93 @@ private:
 
 private:
     void collectGarbage();
+    void bindPipelineImpl(PipelineState const& pipelineState, VkPipelineLayout pipelineLayout,
+            fvkutils::DescriptorSetMask descriptorSetMask);
+
+    // Flush the current command buffer and reset the pipeline state.
+    void endCommandRecording();
+
+    void acquireNextSwapchainImage();
 
     VulkanPlatform* mPlatform = nullptr;
-    std::unique_ptr<VulkanTimestamps> mTimestamps;
+    fvkmemory::ResourceManager mResourceManager;
 
-    // Placeholder resources
-    VulkanTexture* mEmptyTexture;
-    VulkanBufferObject* mEmptyBufferObject;
-
-    VulkanSwapChain* mCurrentSwapChain = nullptr;
-    VulkanRenderTarget* mDefaultRenderTarget = nullptr;
-    VulkanRenderPass mCurrentRenderPass = {};
+    resource_ptr<VulkanSwapChain> mCurrentSwapChain;
+    resource_ptr<VulkanRenderTarget> mDefaultRenderTarget;
+    VulkanRenderPassContext mCurrentRenderPass = {};
     VmaAllocator mAllocator = VK_NULL_HANDLE;
     VkDebugReportCallbackEXT mDebugCallback = VK_NULL_HANDLE;
 
-    VulkanContext mContext = {};
-    VulkanResourceAllocator mResourceAllocator;
-    VulkanResourceManager mResourceManager;
+    VulkanContext& mContext;
 
-    // Used for resources that are created synchronously and used and destroyed on the backend
-    // thread.
-    VulkanThreadSafeResourceManager mThreadSafeResourceManager;
-
+    VulkanSemaphoreManager mSemaphoreManager;
     VulkanCommands mCommands;
     VulkanPipelineLayoutCache mPipelineLayoutCache;
     VulkanPipelineCache mPipelineCache;
     VulkanStagePool mStagePool;
+    VulkanBufferCache mBufferCache;
     VulkanFboCache mFramebufferCache;
+    VulkanYcbcrConversionCache mYcbcrConversionCache;
     VulkanSamplerCache mSamplerCache;
     VulkanBlitter mBlitter;
-    VulkanSamplerGroup* mSamplerBindings[MAX_SAMPLER_BINDING_COUNT] = {};
     VulkanReadPixels mReadPixels;
-    VulkanDescriptorSetManager mDescriptorSetManager;
+    VulkanDescriptorSetLayoutCache mDescriptorSetLayoutCache;
+    VulkanDescriptorSetCache mDescriptorSetCache;
+    VulkanQueryManager mQueryManager;
+    VulkanExternalImageManager mExternalImageManager;
+    VulkanStreamedImageManager mStreamedImageManager;
 
-    VulkanDescriptorSetManager::GetPipelineLayoutFunction mGetPipelineFunction;
+    // This maps a VulkanSwapchain to a native swapchain. VulkanSwapchain should have a copy of the
+    // Platform::Swapchain pointer, but queryFrameTimestamps() and queryCompositorTiming() are
+    // synchronous calls, making access to VulkanSwapchain unsafe (this difference vs other backends
+    // is due to the ref-counting of vulkan resources).
+    struct {
+        std::mutex lock;
+        std::unordered_map<HandleId, Platform::SwapChain*> nativeSwapchains;
+    } mTiming;
 
     // This is necessary for us to write to push constants after binding a pipeline.
-    struct BoundPipeline {
-        VulkanProgram* program;
-        VkPipelineLayout pipelineLayout;
+    using DescriptorSetLayoutHandleList = std::array<resource_ptr<VulkanDescriptorSetLayout>,
+            VulkanDescriptorSetLayout::UNIQUE_DESCRIPTOR_SET_COUNT>;
+
+    struct BindInDrawBundle {
+        PipelineState pipelineState = {};
+        DescriptorSetLayoutHandleList dsLayoutHandles = {};
+        fvkutils::DescriptorSetMask descriptorSetMask = {};
+        resource_ptr<VulkanProgram> program = {};
     };
-    BoundPipeline mBoundPipeline = {};
-    RenderPassFboBundle mRenderPassFboInfo;
+
+    struct {
+        // For push constant
+        resource_ptr<VulkanProgram> program = {};
+        // For push commiting dynamic ubos in draw()
+        VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+        fvkutils::DescriptorSetMask descriptorSetMask = {};
+
+        std::pair<bool, BindInDrawBundle> bindInDraw = {false, {}};
+    } mPipelineState = {};
+
+    struct {
+        // This tracks whether the app has seen external samplers bound to a the descriptor set.
+        // This will force bindPipeline to take a slow path.
+        bool hasExternalSamplerLayouts = false;
+        bool hasBoundExternalImages = false;
+
+        bool hasExternalSamplers() const noexcept {
+            return hasExternalSamplerLayouts && hasBoundExternalImages;
+        }
+    } mAppState;
 
     bool const mIsSRGBSwapChainSupported;
+    bool const mIsMSAASwapChainSupported;
+    bool const mAcquireSwapChainInMakeCurrent;
     backend::StereoscopicType const mStereoscopicType;
+    uint8_t const mStereoscopicEyeCount;
+    backend::AsynchronousMode const mAsynchronousMode;
+
+    // setAcquiredImage is a DECL_DRIVER_API_SYNCHRONOUS_N which means we don't necessarily have the
+    // data to process it at call time. So we store it and process it during updateStreams.
+    std::vector<resource_ptr<VulkanStream>> mStreamsWithPendingAcquiredImage;
 };
 
 } // namespace filament::backend

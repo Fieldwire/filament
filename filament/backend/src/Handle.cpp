@@ -16,11 +16,16 @@
 
 #include <backend/Handle.h>
 
+#include <utils/compiler.h>
+#include <utils/CallStack.h>
+#include <utils/ostream.h>
+
 #ifndef NDEBUG
-#   include <string>
+#   include <utils/CString.h>
+#   include <string_view>
 #endif
 
-#include <utils/CallStack.h>
+#include <stddef.h>
 
 using namespace utils;
 
@@ -28,15 +33,15 @@ namespace filament::backend {
 
 #ifndef NDEBUG
 
-static char const * const kOurNamespace = "filament::backend";
+static char const * const kOurNamespace = "filament::backend::";
 
 // removes all occurrences of "what" from "str"
 UTILS_NOINLINE
-static std::string& removeAll(std::string& str, const std::string& what) noexcept {
+static CString& removeAll(CString& str, const std::string_view what) noexcept {
     if (!what.empty()) {
-        const std::string empty;
+        const CString empty;
         size_t pos = 0;
-        while ((pos = str.find(what, pos)) != std::string::npos) {
+        while ((pos = std::string_view{ str.data(), str.size() }.find(what, pos)) != std::string_view::npos) {
             str.replace(pos, what.length(), empty);
         }
     }
@@ -45,13 +50,13 @@ static std::string& removeAll(std::string& str, const std::string& what) noexcep
 
 template <typename T>
 UTILS_NOINLINE
-static io::ostream& logHandle(io::ostream& out, std::string& typeName, T id) noexcept {
+static io::ostream& logHandle(io::ostream& out, CString& typeName, T id) noexcept {
     return out << removeAll(typeName, kOurNamespace) << " @ " << id;
 }
 
 template <typename T>
 io::ostream& operator<<(io::ostream& out, const Handle<T>& h) noexcept {
-    std::string s(CallStack::typeName<Handle<T>>().c_str());
+    CString s{ CallStack::typeName<Handle<T>>() };
     return logHandle(out, s, h.getId());
 }
 
@@ -60,7 +65,6 @@ template io::ostream& operator<<(io::ostream& out, const Handle<HwVertexBuffer>&
 template io::ostream& operator<<(io::ostream& out, const Handle<HwIndexBuffer>& h) noexcept;
 template io::ostream& operator<<(io::ostream& out, const Handle<HwRenderPrimitive>& h) noexcept;
 template io::ostream& operator<<(io::ostream& out, const Handle<HwProgram>& h) noexcept;
-template io::ostream& operator<<(io::ostream& out, const Handle<HwSamplerGroup>& h) noexcept;
 template io::ostream& operator<<(io::ostream& out, const Handle<HwTexture>& h) noexcept;
 template io::ostream& operator<<(io::ostream& out, const Handle<HwRenderTarget>& h) noexcept;
 template io::ostream& operator<<(io::ostream& out, const Handle<HwFence>& h) noexcept;
@@ -68,6 +72,9 @@ template io::ostream& operator<<(io::ostream& out, const Handle<HwSwapChain>& h)
 template io::ostream& operator<<(io::ostream& out, const Handle<HwStream>& h) noexcept;
 template io::ostream& operator<<(io::ostream& out, const Handle<HwTimerQuery>& h) noexcept;
 template io::ostream& operator<<(io::ostream& out, const Handle<HwBufferObject>& h) noexcept;
+template io::ostream& operator<<(io::ostream& out, const Handle<HwDescriptorSet>& h) noexcept;
+template io::ostream& operator<<(io::ostream& out, const Handle<HwDescriptorSetLayout>& h) noexcept;
+template io::ostream& operator<<(io::ostream& out, const Handle<HwVertexBufferInfo>& h) noexcept;
 
 #endif
 

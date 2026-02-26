@@ -19,6 +19,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include "utils/CString.h"
 
 namespace test {
 
@@ -30,7 +31,20 @@ enum class Backend : uint8_t {
     OPENGL = 1,
     VULKAN = 2,
     METAL = 3,
-    NOOP = 4,
+    WEBGPU = 4,
+    NOOP = 5,
+};
+
+enum class OperatingSystem : uint8_t {
+    OTHER = 1,
+    // Also represents android phones.
+    LINUX = 2,
+    // Also represents iOS phones.
+    APPLE = 3,
+
+    CONTINUOUS_INTEGRATION = 4,
+    CI = 4,
+    // TODO: When tests support windows add it here.
 };
 
 struct NativeView {
@@ -50,9 +64,10 @@ NativeView getNativeView();
  * No tests will be run yet.
  *
  * @param backend The backend to run the tests on.
+ * @param operatingSystem The operating system the tests are being run on.
  * @param isMobile True if the platform is a mobile platform (iOS or Android).
  */
-void initTests(Backend backend, bool isMobile, int& argc, char* argv[]);
+void initTests(Backend backend, OperatingSystem operatingSystem, bool isMobile, int& argc, char* argv[]);
 
 /**
  * Test runners should call runTests when they are ready for tests to be run.
@@ -61,12 +76,18 @@ void initTests(Backend backend, bool isMobile, int& argc, char* argv[]);
  */
 int runTests();
 
+struct TestArguments {
+    Backend backend;
+    bool headlessOnly = false;
+    bool isContinuousIntegration = false;
+};
+
 /**
  * A utility method that can be invoked by test runners to parse arguments.
  * Looks through the provided command-line arguments and finds any -a <backend> arguments.
  */
-Backend parseArgumentsForBackend(int argc, char* argv[]);
+TestArguments parseArguments(int argc, char* argv[]);
 
-}
+} // namespace test
 
 #endif

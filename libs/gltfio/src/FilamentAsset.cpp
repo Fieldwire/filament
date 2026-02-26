@@ -37,12 +37,8 @@ FFilamentAsset::~FFilamentAsset() {
     // Free transient load-time data if they haven't been freed yet.
     releaseSourceData();
 
-    // Destroy all instance objects. Instance entities / components are
-    // destroyed later in this method because they are owned by the asset
-    // (except for the root of the instance).
     for (FFilamentInstance* instance : mInstances) {
         mEntityManager->destroy(instance->mRoot);
-        delete instance;
     }
 
     delete mWireframe;
@@ -79,6 +75,12 @@ FFilamentAsset::~FFilamentAsset() {
         }
     }
 
+    // FilamentInstances need to be destroyed after the renderables have been destroyed
+    // so that there are no dangling MaterialInstance around
+    for (FFilamentInstance* instance : mInstances) {
+        delete instance;
+    }
+
     for (auto vb : mVertexBuffers) {
         mEngine->destroy(vb);
     }
@@ -108,7 +110,7 @@ const char* FFilamentAsset::getExtras(utils::Entity entity) const noexcept {
 void FFilamentAsset::addTextureBinding(MaterialInstance* materialInstance,
         const char* parameterName, const cgltf_texture* srcTexture,
         TextureProvider::TextureFlags flags) {
-    if (!srcTexture->image && !srcTexture->basisu_image) {
+    if (!srcTexture->image && !srcTexture->basisu_image && !srcTexture->webp_image) {
 #ifndef NDEBUG
         slog.w << "Texture is missing image (" << srcTexture->name << ")." << io::endl;
 #endif

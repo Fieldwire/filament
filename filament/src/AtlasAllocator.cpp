@@ -16,13 +16,22 @@
 
 #include "AtlasAllocator.h"
 
+#include <utils/compiler.h>
+#include <utils/algorithm.h>
 #include <utils/debug.h>
+#include <utils/QuadTree.h>
+
+#include <algorithm>
+#include <utility>
+
+#include <stddef.h>
+#include <stdint.h>
 
 namespace filament {
 
 using namespace utils;
 
-static inline constexpr std::pair<uint8_t, uint8_t> unmorton(uint16_t m) noexcept {
+static constexpr std::pair<uint8_t, uint8_t> unmorton(uint16_t const m) noexcept {
     uint32_t r = (m | (uint32_t(m) << 15u)) & 0x55555555u;
     r = (r | (r >> 1u)) & 0x33333333u;
     r = (r | (r >> 2u)) & 0x0f0f0f0fu;
@@ -30,14 +39,14 @@ static inline constexpr std::pair<uint8_t, uint8_t> unmorton(uint16_t m) noexcep
     return { uint8_t(r), uint8_t(r >> 16u) };
 }
 
-AtlasAllocator::AtlasAllocator(size_t maxTextureSize) noexcept {
+AtlasAllocator::AtlasAllocator(size_t const maxTextureSize) noexcept {
     // round to power-of-two immediately inferior or equal to the size specified.
-    mMaxTextureSizePot = (sizeof(maxTextureSize) * 8 - 1u) - utils::clz(maxTextureSize);
+    mMaxTextureSizePot = (sizeof(maxTextureSize) * 8 - 1u) - clz(maxTextureSize);
 }
 
-AtlasAllocator::Allocation AtlasAllocator::allocate(size_t textureSize) noexcept {
+AtlasAllocator::Allocation AtlasAllocator::allocate(size_t const textureSize) noexcept {
     Allocation result{};
-    const size_t powerOfTwo = (sizeof(textureSize) * 8 - 1u) - utils::clz(textureSize);
+    const size_t powerOfTwo = (sizeof(textureSize) * 8 - 1u) - clz(textureSize);
 
     // asked for a texture size too large
     if (UTILS_UNLIKELY(powerOfTwo > mMaxTextureSizePot)) {
@@ -63,16 +72,64 @@ AtlasAllocator::Allocation AtlasAllocator::allocate(size_t textureSize) noexcept
         result.viewport.width  = dimension;
         result.viewport.height = dimension;
         result.layer = loc.code >> (2 * layer);
+        result.code = loc.code;
+        result.level = loc.l;
     }
     return result;
 }
 
-void AtlasAllocator::clear(size_t maxTextureSize) noexcept {
-    std::fill(mQuadTree.begin(), mQuadTree.end(), Node{});
-    mMaxTextureSizePot = (sizeof(maxTextureSize) * 8 - 1u) - utils::clz(maxTextureSize);
+void AtlasAllocator::free(Allocation const& allocation) noexcept {
+    if (UTILS_UNLIKELY(!allocation.isValid())) {
+        return;
+    }
+
+    // 1. Mark the node as unallocated
+    const size_t i = QuadTreeUtils::index(allocation.level, allocation.code);
+    Node& node = mQuadTree[i];
+
+    // In debug builds, ensure we are freeing something that was actually allocated
+    assert_invariant(node.isAllocated());
+    assert_invariant(!node.hasChildren());
+
+    node.allocated = false;
+
+    // 2. Coalesce up the tree
+    // We walk up to the root. If a parent's children count drops to 0, it means all its children are free.
+    // However, we don't mark the parent as 'allocated' (that would mean it's occupied by a larger block).
+    // We just ensure the parent knows it has one less child.
+    // The 'allocated' flag is only true if a specific block is claimed.
+    // The 'children' count tracks how many sub-blocks are claimed or split.
+
+    int8_t currentL = allocation.level;
+    uint16_t currentCode = allocation.code;
+
+    while (currentL > 0) {
+        const size_t p = QuadTreeUtils::parent(currentL, currentCode);
+        Node& parent = mQuadTree[p];
+
+        // The parent must have children (since we just came from one)
+        assert_invariant(parent.hasChildren());
+
+        parent.children--;
+
+        // If the parent still has children, we stop coalescing because this branch is still partially in use.
+        if (parent.hasChildren()) {
+            break;
+        }
+
+        // If the parent has no more children, it is now a candidate for being allocated as a larger block later.
+        // We continue up the tree to update its parent.
+        currentL--;
+        currentCode >>= 2;
+    }
 }
 
-AtlasAllocator::NodeId AtlasAllocator::allocateInLayer(size_t maxHeight) noexcept {
+void AtlasAllocator::clear(size_t const maxTextureSize) noexcept {
+    std::fill(mQuadTree.begin(), mQuadTree.end(), Node{});
+    mMaxTextureSizePot = (sizeof(maxTextureSize) * 8 - 1u) - clz(maxTextureSize);
+}
+
+AtlasAllocator::NodeId AtlasAllocator::allocateInLayer(size_t const maxHeight) noexcept {
     using namespace QuadTreeUtils;
 
     NodeId candidate{ -1, 0 };
@@ -151,11 +208,22 @@ AtlasAllocator::NodeId AtlasAllocator::allocateInLayer(size_t maxHeight) noexcep
             }
         } else if (candidate.l < int8_t(QuadTree::height())) {
             // we need to create the hierarchy down to the level we need
+
+            if (candidate.l > 0) {
+                // first thing to do is to update our parent's children count (the first node
+                // doesn't have a parent).
+                size_t const pi = parent(candidate.l, candidate.code);
+                Node& parentNode = mQuadTree[pi];
+                assert_invariant(!parentNode.isAllocated());
+                assert_invariant(!parentNode.hasAllChildren());
+                parentNode.children++;
+            }
+
             NodeId found{ -1, 0 };
             QuadTree::traverse(candidate.l, candidate.code,
                     [this, n, &found](NodeId const& curr) -> QuadTree::TraversalResult {
-                        size_t const i = index(curr.l, curr.code);
-                        Node& node = mQuadTree[i];
+                        size_t const j = index(curr.l, curr.code);
+                        Node& node = mQuadTree[j];
                         if (curr.l == n) {
                             found = curr;
                             assert_invariant(!node.hasChildren());

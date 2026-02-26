@@ -54,6 +54,7 @@ public class Material {
         static final CullingMode[] sCullingModeValues = CullingMode.values();
         static final VertexBuffer.VertexAttribute[] sVertexAttributeValues =
                 VertexBuffer.VertexAttribute.values();
+        static final TransparencyMode[] sTransparencyModeValues = TransparencyMode.values();
     }
 
     private long mNativeObject;
@@ -161,6 +162,31 @@ public class Material {
     }
 
     /**
+     * How transparent objects are handled
+     *
+     * @see
+     * <a href="https://google.github.io/filament/Materials.html#materialdefinitions/materialblock/blendingandtransparency:transparencymode">
+     * Blending and transparency: transparencyMode</a>
+     */
+    public enum TransparencyMode {
+        /** The transparent object is drawn honoring the raster state. */
+        DEFAULT,
+
+        /**
+         * The transparent object is first drawn in the depth buffer,
+         * then in the color buffer, honoring the culling mode, but ignoring the depth test function.
+         */
+        TWO_PASSES_ONE_SIDE,
+
+        /**
+         * The transparent object is drawn twice in the color buffer,
+         * first with back faces only, then with front faces; the culling
+         * mode is ignored. Can be combined with two-sided lighting.
+         */
+        TWO_PASSES_TWO_SIDES
+    }
+
+    /**
      * Supported refraction modes
      *
      * @see
@@ -239,9 +265,40 @@ public class Material {
         FRONT_AND_BACK
     }
 
+    /**
+     * Shader compiler priority queue
+     *
+     * On platforms which support parallel shader compilation, compilation requests will be
+     * processed in order of priority, then insertion order.
+     *
+     * See {@link #compile(CompilerPriorityQueue, int, Object, Runnable)}.
+     */
     public enum CompilerPriorityQueue {
+        /** We need this program NOW.
+         *
+         * When passed as an argument to {@link #compile(CompilerPriorityQueue, int, Object,
+         * Runnable)}, if the platform doesn't support parallel compilation, but does support
+         * amortized shader compilation, the given shader program will be synchronously compiled.
+         */
+        CRITICAL,
+        /** We will need this program soon. */
         HIGH,
+        /** We will need this program eventually. */
         LOW
+    }
+
+    /**
+     * Defines whether a material instance should use UBO batching or not.
+     */
+    public enum UboBatchingMode {
+        /**
+         * For default, it follows the engine settings.
+         * If UBO batching is enabled on the engine and the material domain is SURFACE, it
+         * turns on the UBO batching. Otherwise, it turns off the UBO batching.
+        */
+        DEFAULT,
+        /** Disable the Ubo Batching for this material */
+        DISABLED
     }
 
     public static class UserVariantFilterBit {
@@ -344,9 +401,19 @@ public class Material {
     }
 
     public static class Builder {
+        public enum ShadowSamplingQuality {
+            /** 2x2 PCF */
+            HARD,
+            /** 3x3 gaussian filter */
+            LOW,
+        }
+
         private Buffer mBuffer;
         private int mSize;
         private int mShBandCount = 0;
+        private ShadowSamplingQuality mShadowSamplingQuality = ShadowSamplingQuality.LOW;
+        private UboBatchingMode mUboBatchingMode = UboBatchingMode.DEFAULT;
+
 
         /**
          * Specifies the material data. The material data is a binary blob produced by
@@ -379,6 +446,29 @@ public class Material {
         }
 
         /**
+         * Set the quality of shadow sampling. This is only taken into account
+         * if this material is lit and in the surface domain.
+         * @param quality
+         * @return Reference to this Builder for chaining calls.
+         */
+        @NonNull
+        public Builder shadowSamplingQuality(ShadowSamplingQuality quality) {
+            mShadowSamplingQuality = quality;
+            return this;
+        }
+
+        /**
+         * Set the batching mode of the instances created from this material.
+         * @param uboBatchingMode
+         * @return Reference to this Builder for chaining calls.
+         */
+        @NonNull
+        public Builder uboBatching(UboBatchingMode mode) {
+            mUboBatchingMode = mode;
+            return this;
+        }
+
+        /**
          * Creates and returns the Material object.
          *
          * @param engine reference to the Engine instance to associate this Material with
@@ -390,7 +480,7 @@ public class Material {
         @NonNull
         public Material build(@NonNull Engine engine) {
             long nativeMaterial = nBuilderBuild(engine.getNativeObject(),
-                mBuffer, mSize, mShBandCount);
+                mBuffer, mSize, mShBandCount, mShadowSamplingQuality.ordinal(), mUboBatchingMode.ordinal());
             if (nativeMaterial == 0) throw new IllegalStateException("Couldn't create Material");
             return new Material(nativeMaterial);
         }
@@ -521,6 +611,18 @@ public class Material {
      */
     public BlendingMode getBlendingMode() {
         return EnumCache.sBlendingModeValues[nGetBlendingMode(getNativeObject())];
+    }
+
+    /**
+     * Returns the transparency mode of this material.
+     * This value only makes sense when the blending mode is transparent or fade.
+     *
+     * @see
+     * <a href="https://google.github.io/filament/Materials.html#materialdefinitions/materialblock/blendingandtransparency:transparencymode">
+     * Blending and transparency: transparencyMode</a>
+     */
+    public TransparencyMode getTransparencyMode() {
+        return EnumCache.sTransparencyModeValues[nGetTransparencyMode(getNativeObject())];
     }
 
     /**
@@ -747,6 +849,21 @@ public class Material {
      */
     public boolean hasParameter(@NonNull String name) {
         return nHasParameter(getNativeObject(), name);
+    }
+
+    /**
+     * 
+     * Returns the name of the transform parameter associated with the given sampler parameter.
+     * In the case the parameter doesn't have a transform name field, it will return an empty string.
+     * 
+     * @param samplerName the name of the sampler parameter to query.
+     * 
+     * @see
+     * <a href="https://google.github.io/filament/Materials.html#materialdefinitions/materialblock/general:parameters">
+     * General: parameters</a>
+     */
+    public String getParameterTransformName(@NonNull String samplerName) {
+        return nGetParameterTransformName(getNativeObject(), samplerName);
     }
 
     /**
@@ -1041,7 +1158,7 @@ public class Material {
         mNativeObject = 0;
     }
 
-    private static native long nBuilderBuild(long nativeEngine, @NonNull Buffer buffer, int size, int shBandCount);
+    private static native long nBuilderBuild(long nativeEngine, @NonNull Buffer buffer, int size, int shBandCount, int shadowQuality, int uboBatchingMode);
     private static native long nCreateInstance(long nativeMaterial);
     private static native long nCreateInstanceWithName(long nativeMaterial, @NonNull String name);
     private static native long nGetDefaultInstance(long nativeMaterial);
@@ -1051,6 +1168,7 @@ public class Material {
     private static native int nGetShading(long nativeMaterial);
     private static native int nGetInterpolation(long nativeMaterial);
     private static native int nGetBlendingMode(long nativeMaterial);
+    private static native int nGetTransparencyMode(long nativeMaterial);
     private static native int nGetVertexDomain(long nativeMaterial);
     private static native int nGetCullingMode(long nativeMaterial);
     private static native boolean nIsColorWriteEnabled(long nativeMaterial);
@@ -1073,4 +1191,5 @@ public class Material {
     private static native int nGetRequiredAttributes(long nativeMaterial);
 
     private static native boolean nHasParameter(long nativeMaterial, @NonNull String name);
+    private static native String nGetParameterTransformName(long nativeMaterial, @NonNull String samplerName);
 }

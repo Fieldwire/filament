@@ -18,6 +18,9 @@
 #define TNT_FILAMENT_BACKEND_VULKANFBOCACHE_H
 
 #include "VulkanContext.h"
+#include "vulkan/memory/Resource.h"
+#include "vulkan/memory/ResourceManager.h"
+#include "vulkan/memory/ResourcePointer.h"
 
 #include <utils/Hash.h>
 
@@ -26,6 +29,9 @@
 #include <tsl/robin_map.h>
 
 namespace filament::backend {
+
+struct VulkanFramebuffer;
+struct VulkanRenderPass;
 
 // Simple manager for VkFramebuffer and VkRenderPass objects.
 //
@@ -42,36 +48,25 @@ public:
     // RenderPassKey is a small POD representing the immutable state that is used to construct
     // a VkRenderPass. It is hashed and used as a lookup key.
     struct alignas(8) RenderPassKey {
-        // For each target, we need to know three image layouts: the layout BEFORE the pass, the
-        // layout DURING the pass, and the layout AFTER the pass. Here are the rules:
-        // - For depth, we explicitly specify all three layouts.
-        // - Color targets have their initial image layout specified with a bitmask.
-        // - For each color target, the pre-existing layout is either UNDEFINED (0) or GENERAL (1).
-        // - The render pass and final images layout for color buffers is always
-        //   VulkanLayout::COLOR_ATTACHMENT.
-        uint8_t initialColorLayoutMask;
-
-        // Note that if VulkanLayout grows beyond 16, we'd need to up this.
-        VulkanLayout initialDepthLayout : 8;
-        uint8_t padding0;
-        uint8_t padding1;
-
         VkFormat colorFormat[MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT]; // 32 bytes
         VkFormat depthFormat; // 4 bytes
         TargetBufferFlags clear; // 4 bytes
         TargetBufferFlags discardStart; // 4 bytes
         TargetBufferFlags discardEnd; // 4 bytes
+
+        VulkanLayout initialDepthLayout; // 1 byte
         uint8_t samples; // 1 byte
         uint8_t needsResolveMask; // 1 byte
+        uint8_t usesLazilyAllocatedMemory; // 1 byte
         uint8_t subpassMask; // 1 byte
         uint8_t viewCount; // 1 byte
+        uint8_t padding[2];
     };
     struct RenderPassVal {
-        VkRenderPass handle;
+        fvkmemory::resource_ptr<VulkanRenderPass> handle;
         uint32_t timestamp;
     };
     static_assert(0 == MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT % 8);
-    static_assert(sizeof(RenderPassKey::initialColorLayoutMask) == MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT / 8);
     static_assert(sizeof(TargetBufferFlags) == 4, "TargetBufferFlags has unexpected size.");
     static_assert(sizeof(VkFormat) == 4, "VkFormat has unexpected size.");
     static_assert(sizeof(RenderPassKey) == 56, "RenderPassKey has unexpected size.");
@@ -94,7 +89,7 @@ public:
         VkImageView depth; // 8 bytes
     };
     struct FboVal {
-        VkFramebuffer handle;
+        fvkmemory::resource_ptr<VulkanFramebuffer> handle;
         uint32_t timestamp;
     };
     static_assert(sizeof(VkRenderPass) == 8, "VkRenderPass has unexpected size.");
@@ -109,21 +104,29 @@ public:
     ~VulkanFboCache();
 
     // Retrieves or creates a VkFramebuffer handle.
-    VkFramebuffer getFramebuffer(FboKey config) noexcept;
+    fvkmemory::resource_ptr<VulkanFramebuffer> getFramebuffer(
+        FboKey const& config, fvkmemory::ResourceManager* resManager) noexcept;
 
     // Retrieves or creates a VkRenderPass handle.
-    VkRenderPass getRenderPass(RenderPassKey config) noexcept;
+    fvkmemory::resource_ptr<VulkanRenderPass> getRenderPass(
+        RenderPassKey const& config, fvkmemory::ResourceManager* resManager) noexcept;
 
     // Evicts old unused Vulkan objects. Call this once per frame.
     void gc() noexcept;
 
+    // Frees all Framebuffer objects. Call this every time a the swapchain is resized
+    void resetFramebuffers() noexcept;
+
     // Frees all Vulkan objects. Call this during shutdown before the device is destroyed.
-    void reset() noexcept;
+    void terminate() noexcept;
 
 private:
     VkDevice mDevice;
-    tsl::robin_map<FboKey, FboVal, FboKeyHashFn, FboKeyEqualFn> mFramebufferCache;
-    tsl::robin_map<RenderPassKey, RenderPassVal, RenderPassHash, RenderPassEq> mRenderPassCache;
+    using FboMap = tsl::robin_map<FboKey, FboVal, FboKeyHashFn, FboKeyEqualFn>;
+    FboMap mFramebufferCache;
+
+    using RenderPassMap = tsl::robin_map<RenderPassKey, RenderPassVal, RenderPassHash, RenderPassEq>;
+    RenderPassMap mRenderPassCache;
     tsl::robin_map<VkRenderPass, uint32_t> mRenderPassRefCount;
     uint32_t mCurrentTime = 0;
 };
