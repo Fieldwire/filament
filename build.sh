@@ -1,6 +1,13 @@
 #!/bin/bash
 set -e
 
+# Source local environment overrides if present
+FILAMENT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "${FILAMENT_ROOT}/.env.local" ]]; then
+    # shellcheck source=.env.local
+    source "${FILAMENT_ROOT}/.env.local"
+fi
+
 # Host tools required by Android, WebGL, and iOS builds
 MOBILE_HOST_TOOLS="matc resgen cmgen filamesh uberz"
 WEB_HOST_TOOLS="${MOBILE_HOST_TOOLS} mipgen filamesh"
@@ -99,6 +106,30 @@ function print_help {
     echo "    Build gltf_viewer:"
     echo "        \$ ./$self_name release gltf_viewer"
     echo ""
+    echo "    [Fieldwire] Full clean build + Android (arm64-v8a,armeabi-v7a) + deploy AARs to fieldwire_android:"
+    echo "        \$ ./$self_name fw-deploy                  (release, default; symbols extracted by default)"
+    echo "        \$ ./$self_name fw-deploy debug            (debug)"
+    echo "        \$ ./$self_name fw-deploy -fw /path/to/fieldwire_android"
+    echo "        \$ ./$self_name fw-deploy --matc           (also recompile highlight.mat)"
+    echo "        \$ ./$self_name fw-deploy --skip-symbols     (skip symbol extraction)"
+    echo ""
+    echo "    [Fieldwire] Desktop build + copy matc to fieldwire_android + recompile highlight.mat:"
+    echo "        \$ ./$self_name fw-matc                    (release, default)"
+    echo "        \$ ./$self_name fw-matc debug              (debug)"
+    echo "        \$ ./$self_name fw-matc --skip-build       (skip desktop build, use existing matc binary)"
+    echo "        \$ ./$self_name fw-matc -fw /path/to/fieldwire_android"
+    echo ""
+    echo "    [Fieldwire] Android build + extract .so symbols from AARs → libs/filament/symbols/:"
+    echo "        \$ ./$self_name fw-symbols                 (runs Android build by default)"
+    echo "        \$ ./$self_name fw-symbols --skip-build      (skip Android build, use existing AARs)"
+    echo "        \$ ./$self_name fw-symbols -fw /path/to/fieldwire_android"
+    echo ""
+    echo "    [Fieldwire] Flags:"
+    echo "        -fw <path>      Path to fieldwire_android root. Defaults to FW_APP_PATH in .env.local."
+    echo "        --matc          Also run matc step after fw-deploy."
+    echo "        --skip-symbols  Skip symbol extraction in fw-deploy."
+    echo "        --skip-build    Skip build step (fw-matc: desktop build; fw-symbols: Android build)."
+    echo ""
  }
 
 function print_matdbg_help {
@@ -183,6 +214,16 @@ STEREOSCOPIC_OPTION=""
 IOS_BUILD_SIMULATOR=false
 BUILD_UNIVERSAL_LIBRARIES=false
 
+# Fieldwire
+FW_APP_PATH=                 # set via -fw or .env.local
+FW_ISSUE_DEPLOY=false
+FW_ISSUE_MATC=false
+FW_ISSUE_SYMBOLS=false
+FW_SKIP_BUILD=false          # --skip-build: skip desktop build in fw-matc
+FW_SKIP_BUILD_ANDROID=false  # --skip-build: skip Android build in fw-symbols
+FW_UPDATE_MATC=false         # --matc: also run matc step in fw-deploy
+FW_SKIP_SYMBOLS=false          # --skip-symbols: skip symbol extraction in fw-deploy
+
 BUILD_GENERATOR=Ninja
 BUILD_COMMAND=ninja
 BUILD_CUSTOM_TARGETS=
@@ -206,6 +247,262 @@ function build_clean_aggressive {
     echo "Cleaning build directories..."
     rm -Rf out
     git clean -qfX android
+}
+
+# Fieldwire: full clean desktop build + Android (arm64-v8a,armeabi-v7a) + copy AARs to fieldwire_android
+function deploy_to_fieldwire {
+
+    if [[ -z "${FW_APP_PATH}" ]]; then
+        echo "Error: fw-deploy requires a path to fieldwire_android. Supply it one of three ways:"
+        echo "  1. Automatically via .env.local:  echo 'FW_APP_PATH=/path/to/fieldwire_android' > .env.local"
+        echo "  2. Explicitly:                    ./build.sh fw-deploy -fw /path/to/fieldwire_android"
+        echo "  3. From .env.local at runtime:    source .env.local && ./build.sh fw-deploy -fw \$FW_APP_PATH"
+        exit 1
+    fi
+
+    local FW_AAR_DEST="${FW_APP_PATH}/libs/filament"
+    local AARS=(
+        "filament-android-release.aar"
+        "gltfio-android-release.aar"
+        "filament-utils-android-release.aar"
+    )
+
+    local BUILD_TYPE="release"
+    if [[ "${ISSUE_DEBUG_BUILD}" == "true" ]]; then
+        BUILD_TYPE="debug"
+    fi
+
+    echo "========================================"
+    echo " [fw-deploy] Step 1/3: Clean desktop ${BUILD_TYPE} build (~6-11 min)"
+    echo "========================================"
+    build_clean
+    INSTALL_COMMAND=install
+    ISSUE_DESKTOP_BUILD=true
+    ISSUE_ANDROID_BUILD=false
+    check_debug_release_build build_desktop
+
+    echo "========================================"
+    echo " [fw-deploy] Step 2/3: Android ${BUILD_TYPE} build, arm64-v8a + armeabi-v7a (~50 min)"
+    echo "========================================"
+    INSTALL_COMMAND=install
+    ISSUE_DESKTOP_BUILD=false
+    ISSUE_ANDROID_BUILD=true
+    ABI_ARM64_V8A=true
+    ABI_ARMEABI_V7A=true
+    ABI_X86=false
+    ABI_X86_64=false
+    ABI_GRADLE_OPTION="arm64-v8a,armeabi-v7a"
+    check_debug_release_build build_android
+
+    echo "========================================"
+    echo " [fw-deploy] Step 3/3: Copying AARs to ${FW_AAR_DEST}"
+    echo "========================================"
+    if [ ! -d "${FW_AAR_DEST}" ]; then
+        echo "ERROR: FW AAR destination not found: ${FW_AAR_DEST}"
+        exit 1
+    fi
+    for aar in "${AARS[@]}"; do
+        local src="out/${aar}"
+        local dst="${FW_AAR_DEST}/${aar}"
+        if [ ! -f "${src}" ]; then
+            echo "ERROR: Built AAR not found: ${src}"
+            exit 1
+        fi
+        cp "${src}" "${dst}"
+        echo "  Copied: ${aar}"
+    done
+
+    if [[ "${FW_UPDATE_MATC}" == "true" ]]; then
+        echo "========================================"
+        echo " [fw-deploy] Step 4: Updating matc in fieldwire_android"
+        echo "========================================"
+        FW_SKIP_BUILD=true  # desktop build already completed in step 1
+        matc_for_fieldwire
+    fi
+
+    if [[ "${FW_SKIP_SYMBOLS}" != "true" ]]; then
+        echo "========================================"
+        echo " [fw-deploy] Step 4: Extracting symbols"
+        echo "========================================"
+        FW_SKIP_BUILD_ANDROID=true  # Android build already completed in step 2
+        symbols_for_fieldwire
+    fi
+
+    echo "========================================"
+    echo " [fw-deploy] All steps complete."
+    echo " Next: clean build fieldwire_android and test on device."
+    echo "========================================"
+}
+
+# Fieldwire: build (optional) + copy matc + recompile highlight.mat in fieldwire_android
+function matc_for_fieldwire {
+
+    if [[ -z "${FW_APP_PATH}" ]]; then
+        echo "Error: fw-matc requires a path to fieldwire_android. Supply it one of three ways:"
+        echo "  1. Automatically via .env.local:  echo 'FW_APP_PATH=/path/to/fieldwire_android' > .env.local"
+        echo "  2. Explicitly:                    ./build.sh fw-matc -fw /path/to/fieldwire_android"
+        echo "  3. From .env.local at runtime:    source .env.local && ./build.sh fw-matc -fw \$FW_APP_PATH"
+        exit 1
+    fi
+
+    local BUILD_TYPE="release"
+    if [[ "${ISSUE_DEBUG_BUILD}" == "true" ]]; then
+        BUILD_TYPE="debug"
+    fi
+
+    local MATC_BIN="out/${BUILD_TYPE}/filament/bin/matc"
+    local FW_MATC_DIR="${FW_APP_PATH}/bim/tools"
+    local FW_MAT_SRC="${FW_APP_PATH}/bim/tools/material/highlight.mat"
+    local FW_MAT_OUT="${FW_APP_PATH}/bim/src/main/assets/material/highlight.filamat"
+
+    if [[ "${FW_SKIP_BUILD}" != "true" ]]; then
+        echo "========================================"
+        echo " [fw-matc] Step 1/3: Desktop ${BUILD_TYPE} build (~30s-2min)"
+        echo "========================================"
+        INSTALL_COMMAND=install
+        ISSUE_DESKTOP_BUILD=true
+        ISSUE_ANDROID_BUILD=false
+        if [[ "${BUILD_TYPE}" == "release" ]]; then
+            ISSUE_RELEASE_BUILD=true
+        else
+            ISSUE_DEBUG_BUILD=true
+        fi
+        check_debug_release_build build_desktop
+    else
+        echo " [fw-matc] Skipping desktop build (--skip-build)"
+    fi
+
+    echo "========================================"
+    echo " [fw-matc] Step 2/3: Copying matc to ${FW_MATC_DIR}"
+    echo "========================================"
+    if [ ! -f "${MATC_BIN}" ]; then
+        echo "ERROR: matc binary not found at: ${MATC_BIN}"
+        echo "  Run without --skip-build to trigger a desktop build first, or run:"
+        echo "  ./build.sh release -i"
+        exit 1
+    fi
+    if [ ! -d "${FW_MATC_DIR}" ]; then
+        echo "ERROR: FW matc directory not found: ${FW_MATC_DIR}"
+        exit 1
+    fi
+    cp "${MATC_BIN}" "${FW_MATC_DIR}/matc"
+    echo "  Copied: matc → ${FW_MATC_DIR}/matc"
+
+    echo "========================================"
+    echo " [fw-matc] Step 3/3: Compiling highlight.mat"
+    echo "========================================"
+    if [ ! -f "${FW_MAT_SRC}" ]; then
+        echo "ERROR: highlight.mat not found at: ${FW_MAT_SRC}"
+        exit 1
+    fi
+    "${FW_MATC_DIR}/matc" -p mobile -a all -o "${FW_MAT_OUT}" "${FW_MAT_SRC}"
+    echo "  Compiled: highlight.filamat → ${FW_MAT_OUT}"
+
+    echo "========================================"
+    echo " [fw-matc] Done."
+    echo "========================================"
+}
+
+# Fieldwire: extract .so files from AARs and copy to libs/filament/symbols/
+function symbols_for_fieldwire {
+    if [[ -z "${FW_APP_PATH}" ]]; then
+        echo "Error: fw-symbols requires a path to fieldwire_android. Supply it one of three ways:"
+        echo "  1. Automatically via .env.local:  echo 'FW_APP_PATH=/path/to/fieldwire_android' > .env.local"
+        echo "  2. Explicitly:                    ./build.sh fw-symbols -fw /path/to/fieldwire_android"
+        echo "  3. From .env.local at runtime:    source .env.local && ./build.sh fw-symbols -fw \$FW_APP_PATH"
+        exit 1
+    fi
+
+    local AARS=(
+        "filament-android-release"
+        "gltfio-android-release"
+        "filament-utils-android-release"
+    )
+    local SYMBOLS_DEST="${FW_APP_PATH}/libs/filament/symbols"
+    local TMP_DIR
+    TMP_DIR=$(mktemp -d)
+
+    if [[ "${FW_SKIP_BUILD_ANDROID}" != "true" ]]; then
+        echo "========================================"
+        echo " [fw-symbols] Step 1/2: Android release build, arm64-v8a + armeabi-v7a (~50 min)"
+        echo "========================================"
+        INSTALL_COMMAND=install
+        ISSUE_RELEASE_BUILD=true
+        ISSUE_DESKTOP_BUILD=false
+        ISSUE_ANDROID_BUILD=true
+        ABI_ARM64_V8A=true
+        ABI_ARMEABI_V7A=true
+        ABI_X86=false
+        ABI_X86_64=false
+        ABI_GRADLE_OPTION="arm64-v8a,armeabi-v7a"
+        check_debug_release_build build_android
+    else
+        echo " [fw-symbols] Skipping Android build (--skip-build)"
+    fi
+
+    echo "========================================"
+    echo " [fw-symbols] Step 2/2: Extracting .so files from AARs → ${SYMBOLS_DEST}"
+    echo "========================================"
+
+    for aar_name in "${AARS[@]}"; do
+        local aar_src="out/${aar_name}.aar"
+        local aar_zip="${TMP_DIR}/${aar_name}.zip"
+        local aar_extract="${TMP_DIR}/${aar_name}"
+        local sym_dest="${SYMBOLS_DEST}/${aar_name}"
+
+        if [ ! -f "${aar_src}" ]; then
+            echo "ERROR: AAR not found: ${aar_src}"
+            rm -rf "${TMP_DIR}"
+            exit 1
+        fi
+
+        echo "  Processing: ${aar_name}.aar"
+        cp "${aar_src}" "${aar_zip}"
+        mkdir -p "${aar_extract}"
+        unzip -q "${aar_zip}" "jni/**" -d "${aar_extract}"
+
+        mkdir -p "${sym_dest}"
+        cp -r "${aar_extract}/jni/." "${sym_dest}/jni/"
+        echo "  Copied .so files → ${sym_dest}/jni/"
+    done
+
+    rm -rf "${TMP_DIR}"
+
+    echo "========================================"
+    echo " [fw-symbols] Done."
+    echo " Next: run uploadCrashlyticsSymbolFile<BuildVariant> in fieldwire_android."
+    echo "========================================"
+}
+
+function build_tools_for_split_build {
+    local build_type_arg=$1
+    local lc_build_type=$(echo "${build_type_arg}" | tr '[:upper:]' '[:lower:]')
+    PREBUILT_TOOLS_DIR="out/prebuilt-tools-${lc_build_type}"
+
+    echo "Building tools for split build (${lc_build_type}) in ${PREBUILT_TOOLS_DIR}..."
+    mkdir -p "${PREBUILT_TOOLS_DIR}"
+
+    pushd "${PREBUILT_TOOLS_DIR}" > /dev/null
+
+    local lc_name=$(echo "${UNAME}" | tr '[:upper:]' '[:lower:]')
+    local architectures=""
+    if [[ "${lc_name}" == "darwin" ]]; then
+        if [[ "${BUILD_UNIVERSAL_LIBRARIES}" == "true" ]]; then
+            architectures="-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64"
+        fi
+    fi
+
+    cmake \
+        -G "${BUILD_GENERATOR}" \
+        -DFILAMENT_EXPORT_PREBUILT_EXECUTABLES_DIR=${PREBUILT_TOOLS_DIR} \
+        -DCMAKE_BUILD_TYPE="${build_type_arg}" \
+        ${WEBGPU_OPTION} \
+        ${architectures} \
+        ../..
+
+    ${BUILD_COMMAND} ${WEB_HOST_TOOLS}
+
+    popd > /dev/null
 }
 
 function build_desktop_target {
@@ -972,14 +1269,38 @@ fi
 
 shift $((OPTIND - 1))
 
-for arg; do
+args=("$@")
+i=0
+while [[ $i -lt ${#args[@]} ]]; do
+    arg="${args[$i]}"
     if [[ $(echo "${arg}" | tr '[:upper:]' '[:lower:]') == "release" ]]; then
         ISSUE_RELEASE_BUILD=true
     elif [[ $(echo "${arg}" | tr '[:upper:]' '[:lower:]') == "debug" ]]; then
         ISSUE_DEBUG_BUILD=true
+    elif [[ $(echo "${arg}" | tr '[:upper:]' '[:lower:]') == "fw-deploy" ]]; then
+        FW_ISSUE_DEPLOY=true
+    elif [[ $(echo "${arg}" | tr '[:upper:]' '[:lower:]') == "fw-matc" ]]; then
+        FW_ISSUE_MATC=true
+    elif [[ $(echo "${arg}" | tr '[:upper:]' '[:lower:]') == "fw-symbols" ]]; then
+        FW_ISSUE_SYMBOLS=true
+    elif [[ "${arg}" == "-fw" ]]; then
+        i=$((i + 1))
+        if [[ $i -ge ${#args[@]} ]]; then
+            echo "Error: -fw requires a path argument" >&2
+            exit 1
+        fi
+        FW_APP_PATH="${args[$i]}"
+    elif [[ "${arg}" == "--skip-build" ]]; then
+        FW_SKIP_BUILD=true
+        FW_SKIP_BUILD_ANDROID=true
+    elif [[ "${arg}" == "--matc" ]]; then
+        FW_UPDATE_MATC=true
+    elif [[ "${arg}" == "--skip-symbols" ]]; then
+        FW_SKIP_SYMBOLS=true
     else
         BUILD_CUSTOM_TARGETS="${BUILD_CUSTOM_TARGETS} ${arg}"
     fi
+    i=$((i + 1))
 done
 
 validate_build_command
@@ -1018,4 +1339,26 @@ fi
 
 if [[ "${PRINT_MATDBG_HELP}" == "true" ]]; then
     print_matdbg_help
+fi
+
+if [[ "${PRINT_FGVIEWER_HELP}" == "true" ]]; then
+    print_fgviewer_help
+fi
+
+if [[ "${FW_ISSUE_DEPLOY}" == "true" ]]; then
+    if [[ "${ISSUE_DEBUG_BUILD}" != "true" ]]; then
+        ISSUE_RELEASE_BUILD=true
+    fi
+    deploy_to_fieldwire
+fi
+
+if [[ "${FW_ISSUE_MATC}" == "true" ]]; then
+    if [[ "${ISSUE_DEBUG_BUILD}" != "true" ]]; then
+        ISSUE_RELEASE_BUILD=true
+    fi
+    matc_for_fieldwire
+fi
+
+if [[ "${FW_ISSUE_SYMBOLS}" == "true" ]]; then
+    symbols_for_fieldwire
 fi
