@@ -871,6 +871,12 @@ public:
      */
     size_t getIndexCountAt(Instance instance, size_t primitiveIndex) const noexcept;
 
+    /**
+     * Swaps only the index buffer for the given primitive while reusing the existing vertex buffer.
+     */
+    void swapIndexBufferAt(Instance instance, size_t primitiveIndex,
+            IndexBuffer* UTILS_NONNULL indices, size_t offset, size_t count) noexcept;
+
     /*! \cond PRIVATE */
     template<typename T>
     struct is_supported_vector_type {

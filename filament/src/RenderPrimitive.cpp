@@ -70,6 +70,7 @@ void FRenderPrimitive::set(HwRenderPrimitiveFactory& factory, backend::DriverApi
     mVertexBufferInfoHandle = vertexBuffer->getVertexBufferInfoHandle();
 
     mPrimitiveType = type;
+    mVertexBuffer = vertexBuffer;
     mIndexOffset = offset;
     mIndexCount = count;
     mEnabledAttributes = enabledAttributes;

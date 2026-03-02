@@ -54,6 +54,7 @@ public:
     const FMaterialInstance* getMaterialInstance() const noexcept { return mMaterialInstance; }
     backend::RenderPrimitiveHandle getHwHandle() const noexcept { return mHandle; }
     backend::VertexBufferInfoHandle getVertexBufferInfoHandle() const { return mVertexBufferInfoHandle; }
+    FVertexBuffer* getVertexBuffer() const noexcept { return mVertexBuffer; }
     uint32_t getIndexOffset() const noexcept { return mIndexOffset; }
     uint32_t getIndexCount() const noexcept { return mIndexCount; }
     uint32_t getMorphingBufferOffset() const noexcept { return mMorphingBufferOffset; }
@@ -83,6 +84,7 @@ private:
         FMaterialInstance const* mMaterialInstance = nullptr;
         backend::Handle<backend::HwRenderPrimitive> mHandle = {};
         backend::Handle<backend::HwVertexBufferInfo> mVertexBufferInfoHandle = {};
+        FVertexBuffer* mVertexBuffer = nullptr;
         uint32_t mIndexOffset = 0;
         uint32_t mIndexCount = 0;
         uint32_t mMorphingBufferOffset = 0;

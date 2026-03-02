@@ -343,16 +343,10 @@ public class FilamentAsset {
      * </pre>
      */
     public static class MeshData {
-        /** Number of vertex positions (each position is 3 floats: x, y, z) */
-        public final int positionCount;
-
-        /** Number of indices (every 3 indices form a triangle) */
-        public final int indexCount;
-
         /**
          * Direct ByteBuffer containing positions as floats (x, y, z per vertex).
          * Read as FloatBuffer: positions.order(ByteOrder.nativeOrder()).asFloatBuffer()
-         * Total bytes = positionCount * 12 (3 floats * 4 bytes)
+         * Each position is 12 bytes (3 floats * 4 bytes)
          */
         @Nullable
         public final java.nio.ByteBuffer positions;
@@ -360,17 +354,26 @@ public class FilamentAsset {
         /**
          * Direct ByteBuffer containing indices as uint32.
          * Read as IntBuffer: indices.order(ByteOrder.nativeOrder()).asIntBuffer()
-         * Total bytes = indexCount * 4
+         * Each index is 4 bytes
          */
         @Nullable
         public final java.nio.ByteBuffer indices;
 
-        MeshData(int positionCount, int indexCount,
-                 java.nio.ByteBuffer positions, java.nio.ByteBuffer indices) {
-            this.positionCount = positionCount;
-            this.indexCount = indexCount;
+        /**
+         * Direct ByteBuffer containing expanded indices as uint32.
+         * Read as IntBuffer: expandedIndices.order(ByteOrder.nativeOrder()).asIntBuffer()
+         * Each index is 4 bytes
+         * This is useful for rendering operations where vertex sharing is not needed.
+         */
+        @Nullable
+        public final java.nio.ByteBuffer expandedIndices;
+
+        MeshData(java.nio.ByteBuffer positions,
+                 java.nio.ByteBuffer indices,
+                 java.nio.ByteBuffer expandedIndices) {
             this.positions = positions;
             this.indices = indices;
+            this.expandedIndices = expandedIndices;
         }
     }
 
@@ -417,13 +420,23 @@ public class FilamentAsset {
             return null;
         }
 
-        int positionCount = (int) info[0];
-        int indexCount = (int) info[1];
+        // info: [positionsPtr, positionsSize, indicesPtr, indicesSize, expandedIndicesPtr, expandedIndicesSize]
+        long positionsPtr = info[0];
+        long positionsSize = info[1];
+        long indicesPtr = info[2];
+        long indicesSize = info[3];
+        long expandedIndicesPtr = info[4];
+        long expandedIndicesSize = info[5];
 
-        java.nio.ByteBuffer positions = nGetMeshPositionsBuffer(mNativeObject, entityId);
-        java.nio.ByteBuffer indices = nGetMeshIndicesBuffer(mNativeObject, entityId);
+        // Create direct ByteBuffers from native pointers
+        java.nio.ByteBuffer positions = positionsPtr != 0 && positionsSize > 0
+            ? nNewDirectByteBuffer(positionsPtr, (int) positionsSize) : null;
+        java.nio.ByteBuffer indices = indicesPtr != 0 && indicesSize > 0
+            ? nNewDirectByteBuffer(indicesPtr, (int) indicesSize) : null;
+        java.nio.ByteBuffer expandedIndices = expandedIndicesPtr != 0 && expandedIndicesSize > 0
+            ? nNewDirectByteBuffer(expandedIndicesPtr, (int) expandedIndicesSize) : null;
 
-        return new MeshData(positionCount, indexCount, positions, indices);
+        return new MeshData(positions, indices, expandedIndices);
     }
 
     void clearNativeObject() {
@@ -473,6 +486,7 @@ public class FilamentAsset {
     private static native long nGetPickingRegistry(long nativeAsset);
 
     private static native long[] nGetMeshDataInfo(long nativeAsset, int entityId);
-    private static native java.nio.ByteBuffer nGetMeshPositionsBuffer(long nativeAsset, int entityId);
-    private static native java.nio.ByteBuffer nGetMeshIndicesBuffer(long nativeAsset, int entityId);
+
+    // Helper to create a direct ByteBuffer from native pointer
+    private static native java.nio.ByteBuffer nNewDirectByteBuffer(long address, int capacity);
 }

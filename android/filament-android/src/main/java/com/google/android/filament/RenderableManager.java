@@ -902,6 +902,13 @@ public class RenderableManager {
                 0, indices.getIndexCount());
     }
 
+    public void swapIndexBufferAt(@EntityInstance int i, @IntRange(from = 0) int primitiveIndex,
+            @NonNull IndexBuffer indices, @IntRange(from = 0) int offset,
+            @IntRange(from = 0) int count) {
+        nSwapIndexBufferAt(mNativeObject, i, primitiveIndex,
+                indices.getNativeObject(), offset, count);
+    }
+
      /**
      * Changes the drawing order for blended primitives. The drawing order is either global or
      * local (default) to this Renderable. In either case, the Renderable priority takes precedence.
@@ -1017,4 +1024,6 @@ public class RenderableManager {
     private static native void nSetBlendOrderAt(long nativeRenderableManager, int i, int primitiveIndex, int blendOrder);
     private static native void nSetGlobalBlendOrderEnabledAt(long nativeRenderableManager, int i, int primitiveIndex, boolean enabled);
     private static native int nGetEnabledAttributesAt(long nativeRenderableManager, int i, int primitiveIndex);
+    private static native void nSwapIndexBufferAt(long nativeRenderableManager, int i,
+            int primitiveIndex, long nativeIndexBuffer, int offset, int count);
 }

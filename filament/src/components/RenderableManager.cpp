@@ -877,6 +877,18 @@ void FRenderableManager::setGeometryAt(Instance instance, uint8_t level, size_t 
     }
 }
 
+void FRenderableManager::swapIndexBufferAt(Instance instance, uint8_t level, size_t primitiveIndex,
+        FIndexBuffer* indices, size_t offset, size_t count) noexcept {
+    if (instance) {
+        Slice<FRenderPrimitive>& primitives = getRenderPrimitives(instance, level);
+        if (primitiveIndex < primitives.size()) {
+            FRenderPrimitive& prim = primitives[primitiveIndex];
+            prim.set(mHwRenderPrimitiveFactory, mEngine.getDriverApi(),
+                    prim.getPrimitiveType(), prim.getVertexBuffer(), indices, offset, count);
+        }
+    }
+}
+
 void FRenderableManager::setBones(Instance ci,
         Bone const* UTILS_RESTRICT transforms, size_t boneCount, size_t offset) {
     if (ci) {

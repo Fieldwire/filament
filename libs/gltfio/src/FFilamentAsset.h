@@ -100,6 +100,13 @@ struct Primitive {
     MorphTargetBuffer* morphTargetBuffer = nullptr;
     uint32_t morphTargetOffset;
     std::vector<int> slotIndices;
+
+    // Temporary storage for expanded indices during loading (AssetLoaderExtended only)
+    // NOTE: This is mesh-level storage because Primitives are cached and reused across
+    // multiple nodes. The indices are extracted in createPrimitives() (where slot.data
+    // is available) and then copied per-entity to PickingRegistry in ResourceLoader.
+    // Cleared immediately after copying to save memory.
+    std::vector<uint32_t> expandedIndices;
 };
 using MeshCache = utils::FixedCapacityVector<utils::FixedCapacityVector<Primitive>>;
 

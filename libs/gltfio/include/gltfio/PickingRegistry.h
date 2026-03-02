@@ -51,6 +51,12 @@ struct MeshData {
     std::unique_ptr<tinybvh::BVH> bvh;          // BVH for accelerated ray tracing
     std::vector<tinybvh::bvhvec4> bvhVertices;  // Per-vertex data should be persisted, because tinybvh stores a pointer to this
 
+    // For AssetLoaderExtended:
+    // When vertices are duplicated during tangent generation, the index buffer is remapped.
+    // We store these expanded indices so triangle filtering can work correctly.
+    // The vertex buffer itself is reused from the renderable - we don't need to store positions.
+    std::vector<uint32_t> expandedIndices;       // Remapped indices for expanded vertex buffer
+
     MeshData() = default;
     MeshData(MeshData&&) noexcept = default;
     MeshData& operator=(MeshData&&) noexcept = default;
@@ -98,6 +104,20 @@ public:
     bool registerMesh(utils::Entity entity, const cgltf_mesh* mesh);
 
     /**
+     * Register expanded indices for an entity (used by AssetLoaderExtended).
+     * When vertices are duplicated during tangent generation, the renderable's index buffer
+     * is remapped to reference the expanded vertices. This method stores those remapped indices
+     * so triangle filtering can work correctly with the expanded vertex layout.
+     *
+     * @param entity The entity to update
+     * @param expandedIndices Remapped indices that match the renderable's vertex buffer
+     * @param indexCount Number of indices
+     * @return true if successful, false if entity not found
+     */
+    bool registerExpandedIndices(utils::Entity entity,
+                                  const uint32_t* expandedIndices, size_t indexCount);
+
+    /**
      * Perform ray-triangle intersection test against a specific entity's mesh.
      * Computes ray from screen coordinates and optionally skips triangles in specified ranges.
      *
@@ -140,6 +160,12 @@ public:
      * Clear all registered meshes.
      */
     void clear();
+
+    /**
+     * Log the total memory usage of indices and expandedIndices for all registered entities.
+     * Useful for debugging memory consumption after asset loading.
+     */
+    void logMemoryUsage() const;
 
 private:
     // Build BVH for a mesh
