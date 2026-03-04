@@ -428,7 +428,29 @@ public class FilamentAsset {
         long expandedIndicesPtr = info[4];
         long expandedIndicesSize = info[5];
 
-        // Create direct ByteBuffers from native pointers
+        // Guard against silent truncation: ByteBuffer capacity is int-sized (max 2,147,483,647 bytes).
+        // Fail fast with null rather than producing a ByteBuffer with a truncated capacity
+        // that silently reads garbage beyond the true end of the data.
+        //   positions:        max ~178M vertices     (Integer.MAX_VALUE / 12 bytes per float3)
+        //   indices:          max ~178M triangles    (Integer.MAX_VALUE / 4 bytes per uint32 / 3 indices per triangle)
+        //   expandedIndices:  max ~178M triangles    (same as indices)
+        if (positionsSize > Integer.MAX_VALUE) {
+            android.util.Log.e("FilamentAsset",
+                    "getMeshData: positionsSize " + positionsSize + " exceeds Integer.MAX_VALUE for entity " + entityId);
+            return null;
+        }
+        if (indicesSize > Integer.MAX_VALUE) {
+            android.util.Log.e("FilamentAsset",
+                    "getMeshData: indicesSize " + indicesSize + " exceeds Integer.MAX_VALUE for entity " + entityId);
+            return null;
+        }
+        if (expandedIndicesSize > Integer.MAX_VALUE) {
+            android.util.Log.e("FilamentAsset",
+                    "getMeshData: expandedIndicesSize " + expandedIndicesSize + " exceeds Integer.MAX_VALUE for entity " + entityId);
+            return null;
+        }
+
+        // Safe to cast to int now — all sizes verified above to fit within Integer.MAX_VALUE.
         java.nio.ByteBuffer positions = positionsPtr != 0 && positionsSize > 0
             ? nNewDirectByteBuffer(positionsPtr, (int) positionsSize) : null;
         java.nio.ByteBuffer indices = indicesPtr != 0 && indicesSize > 0
@@ -487,6 +509,7 @@ public class FilamentAsset {
 
     private static native long[] nGetMeshDataInfo(long nativeAsset, int entityId);
 
-    // Helper to create a direct ByteBuffer from native pointer
+    // Creates a direct ByteBuffer from a native pointer.
+    // capacity is int — callers must verify the size fits within Integer.MAX_VALUE before calling.
     private static native java.nio.ByteBuffer nNewDirectByteBuffer(long address, int capacity);
 }
