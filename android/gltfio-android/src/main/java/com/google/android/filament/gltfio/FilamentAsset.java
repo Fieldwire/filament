@@ -378,31 +378,39 @@ public class FilamentAsset {
     }
 
     /**
-     * Gets mesh data (positions and indices) for an entity.
+     * Gets mesh data (positions, indices, and expanded indices) for an entity.
      *
-     * <p>The returned ByteBuffers directly reference native C++ memory, avoiding any copying.
-     * This is the most memory-efficient way to access mesh geometry data.</p>
+     * <p>The returned {@link MeshData} contains three direct {@link java.nio.ByteBuffer}s that
+     * reference native C++ memory owned by the {@code PickingRegistry} — no copy is made.</p>
      *
-     * <p><b>IMPORTANT:</b> The buffers are only valid while the FilamentAsset exists.
+     * <ul>
+     *   <li><b>positions</b> — float3 per vertex (x, y, z), 12 bytes each.
+     *       Vertex count = {@code positions.capacity() / 12}.</li>
+     *   <li><b>indices</b> — uint32 per index slot, 4 bytes each, 3 slots per triangle.
+     *       Triangle count = {@code indices.capacity() / 4 / 3}.</li>
+     *   <li><b>expandedIndices</b> — uint32, same layout as indices but remapped to the
+     *       expanded (de-duplicated) vertex buffer used by the GPU renderable. Present only
+     *       when the asset was loaded via {@code AssetLoaderExtended}; may be null otherwise.</li>
+     * </ul>
+     *
+     * <p><b>IMPORTANT:</b> The buffers are only valid while the {@link FilamentAsset} exists.
      * Do not cache or use them after the asset is destroyed.</p>
      *
      * <p>Example usage:</p>
      * <pre>
      * MeshData mesh = asset.getMeshData(entityId);
-     * if (mesh != null && mesh.positions != null) {
+     * if (mesh != null && mesh.positions != null && mesh.indices != null) {
      *     FloatBuffer positions = mesh.positions
      *         .order(ByteOrder.nativeOrder())
      *         .asFloatBuffer();
-     *     for (int i = 0; i < mesh.positionCount; i++) {
-     *         float x = positions.get(i * 3);
-     *         float y = positions.get(i * 3 + 1);
-     *         float z = positions.get(i * 3 + 2);
-     *     }
+     *     int vertexCount = mesh.positions.capacity() / 12; // 3 floats * 4 bytes
      *
      *     IntBuffer indices = mesh.indices
      *         .order(ByteOrder.nativeOrder())
      *         .asIntBuffer();
-     *     for (int i = 0; i < mesh.indexCount / 3; i++) {
+     *     int triangleCount = mesh.indices.capacity() / 4 / 3; // uint32, 3 per triangle
+     *
+     *     for (int i = 0; i < triangleCount; i++) {
      *         int i0 = indices.get(i * 3);
      *         int i1 = indices.get(i * 3 + 1);
      *         int i2 = indices.get(i * 3 + 2);
@@ -411,7 +419,9 @@ public class FilamentAsset {
      * </pre>
      *
      * @param entityId The entity to get mesh data for
-     * @return MeshData containing positions and indices, or null if not found
+     * @return {@link MeshData} containing positions, indices, and expandedIndices,
+     *         or null if the entity is not registered in the PickingRegistry or
+     *         any buffer size exceeds {@link Integer#MAX_VALUE}
      */
     @Nullable
     public MeshData getMeshData(@Entity int entityId) {
