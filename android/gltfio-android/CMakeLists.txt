@@ -11,6 +11,7 @@ option(FILAMENT_SUPPORTS_WEBP_TEXTURES "Enable webp texture support on Android" 
 set(CMAKE_CXX_STANDARD 20)
 
 set(FILAMENT_DIR ${FILAMENT_DIST_DIR})
+set(GLTFIO_DIR ../../libs/gltfio)
 set(DRACO_DIR ../../third_party/draco)
 
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../filament-android ${CMAKE_CURRENT_BINARY_DIR}/filament-android)
@@ -52,6 +53,14 @@ set_target_properties(perfetto PROPERTIES IMPORTED_LOCATION
 add_library(uberzlib STATIC IMPORTED)
 set_target_properties(uberzlib PROPERTIES IMPORTED_LOCATION
         ${FILAMENT_DIR}/lib/${ANDROID_ABI}/libuberzlib.a)
+
+add_library(zstd STATIC IMPORTED)
+set_target_properties(zstd PROPERTIES IMPORTED_LOCATION
+        ${FILAMENT_DIR}/lib/${ANDROID_ABI}/libzstd.a)
+
+add_library(meshoptimizer STATIC IMPORTED)
+set_target_properties(meshoptimizer PROPERTIES IMPORTED_LOCATION
+        ${FILAMENT_DIR}/lib/${ANDROID_ABI}/libmeshoptimizer.a)
 
 add_library(uberarchive STATIC IMPORTED)
 set_target_properties(uberarchive PROPERTIES IMPORTED_LOCATION
@@ -138,6 +147,8 @@ set(GLTFIO_INCLUDE_DIRS
         ../../third_party/tiny-bvh
         ../../libs/utils/include
         ../../libs/ktxreader/include
+        ../../third_party/basisu/zstd
+        ../../third_party/meshoptimizer/src
 )
 
 if (FILAMENT_SUPPORTS_WEBP_TEXTURES)
@@ -167,6 +178,8 @@ target_link_libraries(gltfio-jni
         PRIVATE dracodec
         PRIVATE utils
         PRIVATE uberzlib
+        PRIVATE zstd
+        PRIVATE meshoptimizer
         PRIVATE perfetto        # needed only when FILAMENT_ENABLE_PERFETTO is defined
         PRIVATE log             # needed only when perfetto above is used
 )

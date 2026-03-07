@@ -54,7 +54,7 @@ public:
     const FMaterialInstance* getMaterialInstance() const noexcept { return mMaterialInstance; }
     backend::RenderPrimitiveHandle getHwHandle() const noexcept { return mHandle; }
     backend::VertexBufferInfoHandle getVertexBufferInfoHandle() const { return mVertexBufferInfoHandle; }
-    FVertexBuffer* getVertexBuffer() const noexcept { return mVertexBuffer; }
+    const FVertexBuffer* getVertexBuffer() const noexcept { return mVertexBuffer; }
     uint32_t getIndexOffset() const noexcept { return mIndexOffset; }
     uint32_t getIndexCount() const noexcept { return mIndexCount; }
     uint32_t getMorphingBufferOffset() const noexcept { return mMorphingBufferOffset; }

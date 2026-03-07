@@ -910,7 +910,7 @@ AttributeBitset FRenderableManager::getEnabledAttributesAt(
 size_t FRenderableManager::getIndexCountAt(
         Instance const instance, uint8_t const level, size_t const primitiveIndex) const noexcept {
     if (instance) {
-        Slice<FRenderPrimitive> const& primitives = getRenderPrimitives(instance, level);
+        Slice<const FRenderPrimitive> primitives = getRenderPrimitives(instance, level);
         if (primitiveIndex < primitives.size()) {
             return primitives[primitiveIndex].getIndexCount();
         }
@@ -933,7 +933,7 @@ void FRenderableManager::setGeometryAt(Instance const instance, uint8_t const le
 void FRenderableManager::swapIndexBufferAt(Instance instance, uint8_t level, size_t primitiveIndex,
         FIndexBuffer* indices, size_t offset, size_t count) noexcept {
     if (instance) {
-        Slice<FRenderPrimitive>& primitives = getRenderPrimitives(instance, level);
+        Slice<FRenderPrimitive> primitives = getRenderPrimitives(instance, level);
         if (primitiveIndex < primitives.size()) {
             FRenderPrimitive& prim = primitives[primitiveIndex];
             prim.set(mHwRenderPrimitiveFactory, mEngine.getDriverApi(),
