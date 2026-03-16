@@ -44,7 +44,9 @@ FFilamentAsset::~FFilamentAsset() {
     delete mWireframe;
 
     // Start fresh
-    mPickingRegistry.clear();
+    if (const auto pickingRegistry = getPickingRegistry()) {
+        pickingRegistry->clear();
+    }
 
     // Destroy name components.
     if (mNameManager) {

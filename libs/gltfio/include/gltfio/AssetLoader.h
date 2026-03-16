@@ -50,6 +50,11 @@ struct AssetConfigurationExtended {
     //! gltfio/ResourceLoader.h
     char const* gltfPath;
 
+    //! When true, the BVH is built for triangle picking (ray casting). Set false to suppress
+    //! BVH construction for models where picking is not needed (e.g. full-model entity picking,
+    //! or PickMode.None). Suppressing BVH avoids OOM on large models (150K+ objects).
+    bool trianglePickingEnabled = false;
+
     //! Client can use this method to check if the extended implementation is supported on their
     //! platform or not.
     static bool isSupported();

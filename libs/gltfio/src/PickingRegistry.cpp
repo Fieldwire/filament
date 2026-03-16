@@ -84,6 +84,62 @@ PickingRegistry& PickingRegistry::operator=(PickingRegistry&&) noexcept = defaul
 // Mesh Registration
 // ============================================================================
 
+bool PickingRegistry::commitRegistrations(
+    const cgltf_mesh *gltfMeshes,
+    const size_t meshCacheSize,
+    const std::function<size_t(size_t)> &getPrimsSize,
+    const std::function<std::vector<uint32_t>&(size_t, size_t)> &getExpandedIndices
+) {
+    if (pendingRegistrations.empty()) {
+        return true;
+    }
+
+    bool allSucceeded = true;
+
+    for (const auto& [entity, mesh] : pendingRegistrations) {
+        if (!registerMesh(entity, mesh)) {
+            allSucceeded = false;
+            continue;
+        }
+
+        const cgltf_size meshIndex = mesh - gltfMeshes;
+        if (meshIndex < meshCacheSize) {
+            const auto primsSize = getPrimsSize(meshIndex);
+
+            if (primsSize > 1) {
+                slog.w << "Mesh '" << (mesh->name ? mesh->name : "<unnamed>")
+                       << "' has " << primsSize << " primitives. "
+                       << "ExpandedIndices registration only supports single-primitive meshes. "
+                       << "Triangle filtering may not work correctly for this mesh." << io::endl;
+            }
+
+            if (primsSize == 1) {
+                auto& expandedIndices = getExpandedIndices(meshIndex, 0);
+                if (!expandedIndices.empty()) {
+                    registerExpandedIndices(entity,
+                        expandedIndices.data(),
+                        expandedIndices.size());
+                }
+            }
+        }
+    }
+
+    pendingRegistrations.clear();
+
+    // Free expandedIndices from meshCache now that all entities are registered
+    for (size_t i = 0; i < meshCacheSize; i++) {
+        const size_t primsSize = getPrimsSize(i);
+        for (size_t j = 0; j < primsSize; j++) {
+            auto& expandedIndices = getExpandedIndices(i, j);
+            expandedIndices.clear();
+            expandedIndices.shrink_to_fit();
+        }
+    }
+
+    logMemoryUsage();
+    return allSucceeded;
+}
+
 bool PickingRegistry::registerMesh(const Entity entity, const cgltf_mesh* mesh) {
     if (!mesh) {
         slog.w << "PickingRegistry: NULL mesh pointer for entity " << entity.getId() << io::endl;

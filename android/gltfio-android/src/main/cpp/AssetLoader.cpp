@@ -270,17 +270,35 @@ Java_com_google_android_filament_gltfio_AssetLoader_nCreateAsset(JNIEnv* env, jc
 
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_com_google_android_filament_gltfio_AssetLoader_nCreateAssetLoaderExtended(JNIEnv* env, jclass,
-                                                                               jlong nativeEngine, jobject provider, jlong nativeEntities, jstring filePath, jstring defaultNodeName) {
-    Engine* engine = (Engine*) nativeEngine;
+Java_com_google_android_filament_gltfio_AssetLoader_nFwCreateAssetLoader(
+    JNIEnv* env,
+    jclass jlass,
+    const jlong nativeEngine,
+    jobject provider,
+    jlong nativeEntities,
+    jboolean generateNormals,
+    jboolean trianglePickingEnabled
+) {
+    jstring defaultNodeName = env->NewStringUTF("Unknown Object");
+    if (!generateNormals && !trianglePickingEnabled) {
+        return Java_com_google_android_filament_gltfio_AssetLoader_nCreateAssetLoader(
+            env,
+            jlass,
+            nativeEngine,
+            provider,
+            nativeEntities,
+            defaultNodeName
+        );
+    }
+
+    Engine* engine = reinterpret_cast<Engine *>(nativeEngine);
     MaterialProvider* materialProvider = nullptr;
 
     // First check for a fast path that passes a native MaterialProvider into the loader.
     // This drastically reduces the number of JNI calls while the asset is being loaded.
     jclass klass = env->GetObjectClass(provider);
-    jmethodID getNativeObject = env->GetMethodID(klass, "getNativeObject", "()J");
-    if (getNativeObject) {
-        materialProvider = (MaterialProvider*) env->CallLongMethod(provider, getNativeObject);
+    if (jmethodID getNativeObject = env->GetMethodID(klass, "getNativeObject", "()J")) {
+        materialProvider = reinterpret_cast<MaterialProvider *>(env->CallLongMethod(provider, getNativeObject));
     } else {
         env->ExceptionClear();
     }
@@ -289,26 +307,25 @@ Java_com_google_android_filament_gltfio_AssetLoader_nCreateAssetLoaderExtended(J
         materialProvider = new JavaMaterialProvider(env, provider);
     }
 
-    EntityManager* entities = (EntityManager*) nativeEntities;
+    EntityManager* entities = reinterpret_cast<EntityManager *>(nativeEntities);
     NameComponentManager* names = new NameComponentManager(*entities);
 
-    const char *nativeFilePath = env->GetStringUTFChars(filePath, nullptr);
     const char *nativeDefaultNodeName = env->GetStringUTFChars(defaultNodeName, nullptr);
 
     AssetConfigurationExtended ext = {
-            .gltfPath = nativeFilePath
+        .gltfPath = "",
+        .trianglePickingEnabled = static_cast<bool>(trianglePickingEnabled)
     };
 
-    AssetConfiguration config = {
-            .engine = engine,
-            .materials = materialProvider,
-            .names = names,
-            .defaultNodeName = const_cast<char *>(nativeDefaultNodeName),
-            .ext = &ext,
+    const AssetConfiguration config = {
+        .engine = engine,
+        .materials = materialProvider,
+        .names = names,
+        .defaultNodeName = const_cast<char *>(nativeDefaultNodeName),
+        .ext = &ext,
     };
 
-    env->ReleaseStringUTFChars(filePath, nativeFilePath);
-    env->ReleaseStringUTFChars(defaultNodeName,  nativeDefaultNodeName);
+    env->ReleaseStringUTFChars(defaultNodeName, nativeDefaultNodeName);
 
     return (jlong) AssetLoader::create(config);
 }

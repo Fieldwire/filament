@@ -23,6 +23,7 @@
 #include <vector>
 #include <unordered_map>
 #include <memory>
+#include <functional>
 
 // Forward declaration of cgltf types
 struct cgltf_mesh;
@@ -92,6 +93,30 @@ public:
     // Enable move operations (implemented in .cpp where MeshData is complete)
     PickingRegistry(PickingRegistry&&) noexcept;
     PickingRegistry& operator=(PickingRegistry&&) noexcept;
+
+    // Defer mesh registration for picking until ResourceLoader has loaded cgltf buffers
+    // At this point, buffer->data is NULL, so we can't read vertex positions yet
+    // Store the entity-mesh pair to be processed later in ResourceLoader::loadResources()
+    void enqueueMesh(utils::Entity entity, const cgltf_mesh* mesh) {
+        pendingRegistrations.emplace_back(entity, mesh);
+    }
+
+    /**
+     * Register all queued meshes into the registry, then clear the queue.
+     * Callbacks allow callers to provide mesh data without exposing MeshCache to this header.
+     *
+     * @param gltfMeshes       base pointer for mesh index arithmetic
+     * @param meshCacheSize    number of entries in the mesh cache
+     * @param getPrimsSize     (meshIndex) -> number of primitives for that mesh
+     * @param getExpandedIndices (meshIndex, primIndex) -> reference to expandedIndices vector for that primitive
+     * @return true if all meshes registered successfully; false if any failed (sets mBvhBuildFailed on asset)
+     */
+    bool commitRegistrations(
+        const cgltf_mesh* gltfMeshes,
+        size_t meshCacheSize,
+        const std::function<size_t(size_t)>& getPrimsSize,
+        const std::function<std::vector<uint32_t>&(size_t, size_t)>& getExpandedIndices
+    );
 
     /**
      * Register a mesh from a GLTF mesh structure.
@@ -175,6 +200,10 @@ private:
     // Returns true if successful, false otherwise
     static bool computeScreenRay(View* view, math::int2 position,
                                  math::float3& outOrigin, math::float3& outDirection);
+
+    // Queued during node traversal (AssetLoader); consumed by commitRegistrations().
+    // Only populated when enabled == true.
+    std::vector<std::pair<utils::Entity, const cgltf_mesh*>> pendingRegistrations;
 
     // Entity to mesh data mapping
     std::unordered_map<utils::Entity, MeshData, utils::Entity::Hasher> mMeshes;

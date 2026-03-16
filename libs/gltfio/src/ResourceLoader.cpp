@@ -480,57 +480,20 @@ bool ResourceLoader::loadResources(FFilamentAsset* asset, bool async) {
         ResourceLoaderExtended::loadResources(slots, pImpl->mEngine, asset->mBufferObjects);
     }
 
-    // Register meshes for picking - this works for both standard and extended paths
-    // For standard path: buffers were just loaded above via loadCgltfBuffers()
-    // For extended path: buffers were loaded earlier in AssetLoaderExtended::createPrimitive()
-    // In both cases, buffer->data is now valid and we can read vertex positions
-    for (const auto& [entity, mesh] : asset->mPendingMeshRegistrations) {
-        asset->mPickingRegistry.registerMesh(entity, mesh);
-
-        // For AssetLoaderExtended: also register expanded indices if available
-        // This allows triangle filtering to work correctly with expanded vertex buffers
-        // NOTE: Multiple entities can share the same primitive (via mMeshCache).
-        // Since assign() copies the data, all entities will copy from the shared expandedIndices.
-        // We clear all primitives after the loop to avoid clearing while other entities still need it.
-        const cgltf_size meshIndex = mesh - gltf->meshes;
-        if (meshIndex < asset->mMeshCache.size()) {
-            const auto& prims = asset->mMeshCache[meshIndex];
-
-            // Warn if mesh has multiple primitives - we only handle single-primitive meshes
-            if (prims.size() > 1) {
-                slog.w << "Mesh '" << (mesh->name ? mesh->name : "<unnamed>")
-                       << "' has " << prims.size() << " primitives. "
-                       << "ExpandedIndices registration only supports single-primitive meshes. "
-                       << "Triangle filtering may not work correctly for this mesh." << io::endl;
+    if (const auto pickingRegistry = asset->getPickingRegistry()) {
+        pickingRegistry->commitRegistrations(
+            /* gltfMeshes */ gltf->meshes,
+            /* meshCacheSize */ asset->mMeshCache.size(),
+            /* getPrimsSize */
+            [asset](const size_t meshIndex) -> size_t {
+                return asset->mMeshCache[meshIndex].size();
+            },
+            /* getExpandedIndices */
+            [asset](const size_t meshIndex, const size_t primIndex) -> std::vector<uint32_t>& {
+                return asset->mMeshCache[meshIndex][primIndex].expandedIndices;
             }
-
-            // For simplicity, we only handle single-primitive meshes for now
-            // Multi-primitive meshes would need more complex index concatenation
-            // When we merge meshes using gltfpack, it creates separate mesh for each primitive,
-            // so this is not a problem in practice.
-            // https://github.com/Fieldwire/meshoptimizer/blob/34ea6b0f1041794b37fd33a512999c44a3704470/gltf/parsegltf.cpp#L197
-            if (prims.size() == 1 && !prims[0].expandedIndices.empty()) {
-                asset->mPickingRegistry.registerExpandedIndices(entity,
-                    prims[0].expandedIndices.data(),
-                    prims[0].expandedIndices.size());
-            }
-        }
+        );
     }
-    asset->mPendingMeshRegistrations.clear();
-
-    // Clear expandedIndices from all primitives in mMeshCache to save memory
-    // Now that all entities have been registered, we can safely free this temporary data
-    for (auto& primList : asset->mMeshCache) {
-        for (auto& prim : primList) {
-            if (!prim.expandedIndices.empty()) {
-                prim.expandedIndices.clear();
-                prim.expandedIndices.shrink_to_fit();
-            }
-        }
-    }
-
-    // Log memory usage of PickingRegistry after all entities are registered
-    asset->mPickingRegistry.logMemoryUsage();
 
     createSkins(gltf, pImpl->mNormalizeSkinningWeights, asset->mSkins);
 

@@ -272,6 +272,7 @@ struct FAssetLoader : public AssetLoader {
                     << "Extend asset loading is not supported on this platform";
             mLoaderExtended = std::make_unique<AssetLoaderExtended>(
                     *config.ext, config.engine, mMaterials);
+            mTrianglePickingEnabled = config.ext->trianglePickingEnabled;
         }
     }
 
@@ -359,6 +360,9 @@ public:
 
 public:
     std::unique_ptr<AssetLoaderExtended> mLoaderExtended;
+
+private:
+    bool mTrianglePickingEnabled = false;
 };
 
 FILAMENT_DOWNCAST(AssetLoader)
@@ -489,7 +493,8 @@ FFilamentAsset* FAssetLoader::createRootAsset(const cgltf_data* srcAsset) {
 
     mDummyBufferObject = nullptr;
     FFilamentAsset* fAsset = new FFilamentAsset(&mEngine, mNameManager, &mEntityManager,
-            &mNodeManager, &mTrsTransformManager, srcAsset, (bool) mLoaderExtended);
+            &mNodeManager, &mTrsTransformManager, srcAsset, (bool) mLoaderExtended,
+            mTrianglePickingEnabled);
 
     // It is not an error for a glTF file to have zero scenes.
     fAsset->mScenes.clear();
@@ -923,11 +928,8 @@ void FAssetLoader::createRenderable(const cgltf_node* node, Entity entity, const
         mRenderableManager.setMorphWeights(renderable, weights.data(), size);
     }
 
-    // Defer mesh registration for picking until ResourceLoader has loaded cgltf buffers
-    // At this point, buffer->data is NULL, so we can't read vertex positions yet
-    // Store the entity-mesh pair to be processed later in ResourceLoader::loadResources()
-    if (node->mesh) {
-        fAsset->mPendingMeshRegistrations.emplace_back(entity, node->mesh);
+    if (const auto pickingRegistry = fAsset->getPickingRegistry()) {
+        pickingRegistry->enqueueMesh(entity, node->mesh);
     }
 }
 
