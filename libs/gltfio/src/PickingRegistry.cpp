@@ -170,6 +170,42 @@ bool PickingRegistry::registerMesh(const Entity entity, const cgltf_mesh* mesh) 
     return true;
 }
 
+bool PickingRegistry::registerExpandedIndices(const Entity entity,
+                                              const uint32_t* expandedIndices, size_t indexCount) {
+    auto it = mMeshes.find(entity);
+    if (it == mMeshes.end()) {
+        slog.w << "PickingRegistry: Cannot register expanded indices for unknown entity " << entity.getId() << io::endl;
+        return false;
+    }
+
+    MeshData& meshData = it->second;
+
+    // registerMesh() must be called first — it populates meshData.indices.
+    // If indices is empty, registerMesh() was either not called or produced no geometry.
+    if (meshData.indices.empty()) {
+        slog.w << "PickingRegistry::registerExpandedIndices: entity " << entity.getId()
+               << " has no indices. registerMesh() must be called before registerExpandedIndices()."
+               << io::endl;
+        return false;
+    }
+
+    // Validate that the expanded index count matches the original index count.
+    // If these diverge, triangle filtering will be inconsistent because both operate
+    // on the same index-slot ranges derived from meshData.indices.
+    if (indexCount != meshData.indices.size()) {
+        slog.w << "PickingRegistry::registerExpandedIndices: size mismatch for entity "
+               << entity.getId()
+               << ": expected " << meshData.indices.size()
+               << " (from registerMesh) but got " << indexCount
+               << ". Expanded indices not registered." << io::endl;
+        return false;
+    }
+
+    meshData.expandedIndices.assign(expandedIndices, expandedIndices + indexCount);
+
+    return true;
+}
+
 // ============================================================================
 // BVH Construction
 // ============================================================================
@@ -319,4 +355,55 @@ bool PickingRegistry::computeScreenRay(View* view, int2 position,
 void PickingRegistry::clear() {
     mMeshes.clear();
 }
+
+void PickingRegistry::logMemoryUsage() const {
+#ifndef NDEBUG
+    if (mMeshes.empty()) {
+        slog.i << "PickingRegistry: No entities registered" << io::endl;
+        return;
+    }
+
+    size_t totalOriginalIndicesBytes = 0;
+    size_t totalExpandedIndicesBytes = 0;
+    size_t entitiesWithExpandedIndices = 0;
+
+    for (const auto& [entity, meshData] : mMeshes) {
+        // Calculate memory for original indices
+        size_t originalBytes = meshData.indices.size() * sizeof(uint32_t);
+        totalOriginalIndicesBytes += originalBytes;
+
+        // Calculate memory for expanded indices (if present)
+        if (!meshData.expandedIndices.empty()) {
+            size_t expandedBytes = meshData.expandedIndices.size() * sizeof(uint32_t);
+            totalExpandedIndicesBytes += expandedBytes;
+            entitiesWithExpandedIndices++;
+        }
+    }
+
+    // Convert to KB and MB for readability
+    double totalOriginalKB = totalOriginalIndicesBytes / 1024.0;
+    double totalOriginalMB = totalOriginalKB / 1024.0;
+    double totalExpandedKB = totalExpandedIndicesBytes / 1024.0;
+    double totalExpandedMB = totalExpandedKB / 1024.0;
+    double totalBytes = totalOriginalIndicesBytes + totalExpandedIndicesBytes;
+    double totalKB = totalBytes / 1024.0;
+    double totalMB = totalKB / 1024.0;
+
+    slog.i << "========================================" << io::endl;
+    slog.i << "PickingRegistry Memory Usage Summary" << io::endl;
+    slog.i << "========================================" << io::endl;
+    slog.i << "Total entities: " << mMeshes.size() << io::endl;
+    slog.i << "Entities with expanded indices: " << entitiesWithExpandedIndices << io::endl;
+    slog.i << "----------------------------------------" << io::endl;
+    slog.i << "Original indices: " << totalOriginalIndicesBytes << " bytes "
+           << "(" << totalOriginalKB << " KB, " << totalOriginalMB << " MB)" << io::endl;
+    slog.i << "Expanded indices: " << totalExpandedIndicesBytes << " bytes "
+           << "(" << totalExpandedKB << " KB, " << totalExpandedMB << " MB)" << io::endl;
+    slog.i << "----------------------------------------" << io::endl;
+    slog.i << "TOTAL: " << totalBytes << " bytes "
+           << "(" << totalKB << " KB, " << totalMB << " MB)" << io::endl;
+    slog.i << "========================================" << io::endl;
+#endif
+}
+
 } // namespace filament::gltfio

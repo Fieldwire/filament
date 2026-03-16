@@ -515,3 +515,13 @@ Java_com_google_android_filament_RenderableManager_nGetLightChannel(JNIEnv*, jcl
     RenderableManager const *rm = (RenderableManager const *) nativeRenderableManager;
     return rm->getLightChannel((RenderableManager::Instance) i, channel);
 }
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_google_android_filament_RenderableManager_nSwapIndexBufferAt(JNIEnv*, jclass,
+        jlong nativeRenderableManager, jint i, jint primitiveIndex, jlong nativeIndexBuffer,
+        jint offset, jint count) {
+    RenderableManager* rm = (RenderableManager*) nativeRenderableManager;
+    IndexBuffer* indexBuffer = (IndexBuffer*) nativeIndexBuffer;
+    rm->swapIndexBufferAt((RenderableManager::Instance) i, (size_t) primitiveIndex,
+            indexBuffer, (size_t) offset, (size_t) count);
+}

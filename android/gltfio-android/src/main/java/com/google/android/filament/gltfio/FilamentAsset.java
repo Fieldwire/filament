@@ -343,16 +343,10 @@ public class FilamentAsset {
      * </pre>
      */
     public static class MeshData {
-        /** Number of vertex positions (each position is 3 floats: x, y, z) */
-        public final int positionCount;
-
-        /** Number of indices (every 3 indices form a triangle) */
-        public final int indexCount;
-
         /**
          * Direct ByteBuffer containing positions as floats (x, y, z per vertex).
          * Read as FloatBuffer: positions.order(ByteOrder.nativeOrder()).asFloatBuffer()
-         * Total bytes = positionCount * 12 (3 floats * 4 bytes)
+         * Each position is 12 bytes (3 floats * 4 bytes)
          */
         @Nullable
         public final java.nio.ByteBuffer positions;
@@ -360,46 +354,63 @@ public class FilamentAsset {
         /**
          * Direct ByteBuffer containing indices as uint32.
          * Read as IntBuffer: indices.order(ByteOrder.nativeOrder()).asIntBuffer()
-         * Total bytes = indexCount * 4
+         * Each index is 4 bytes
          */
         @Nullable
         public final java.nio.ByteBuffer indices;
 
-        MeshData(int positionCount, int indexCount,
-                 java.nio.ByteBuffer positions, java.nio.ByteBuffer indices) {
-            this.positionCount = positionCount;
-            this.indexCount = indexCount;
+        /**
+         * Direct ByteBuffer containing expanded indices as uint32.
+         * Read as IntBuffer: expandedIndices.order(ByteOrder.nativeOrder()).asIntBuffer()
+         * Each index is 4 bytes
+         * This is useful for rendering operations where vertex sharing is not needed.
+         */
+        @Nullable
+        public final java.nio.ByteBuffer expandedIndices;
+
+        MeshData(java.nio.ByteBuffer positions,
+                 java.nio.ByteBuffer indices,
+                 java.nio.ByteBuffer expandedIndices) {
             this.positions = positions;
             this.indices = indices;
+            this.expandedIndices = expandedIndices;
         }
     }
 
     /**
-     * Gets mesh data (positions and indices) for an entity.
+     * Gets mesh data (positions, indices, and expanded indices) for an entity.
      *
-     * <p>The returned ByteBuffers directly reference native C++ memory, avoiding any copying.
-     * This is the most memory-efficient way to access mesh geometry data.</p>
+     * <p>The returned {@link MeshData} contains three direct {@link java.nio.ByteBuffer}s that
+     * reference native C++ memory owned by the {@code PickingRegistry} — no copy is made.</p>
      *
-     * <p><b>IMPORTANT:</b> The buffers are only valid while the FilamentAsset exists.
+     * <ul>
+     *   <li><b>positions</b> — float3 per vertex (x, y, z), 12 bytes each.
+     *       Vertex count = {@code positions.capacity() / 12}.</li>
+     *   <li><b>indices</b> — uint32 per index slot, 4 bytes each, 3 slots per triangle.
+     *       Triangle count = {@code indices.capacity() / 4 / 3}.</li>
+     *   <li><b>expandedIndices</b> — uint32, same layout as indices but remapped to the
+     *       expanded (de-duplicated) vertex buffer used by the GPU renderable. Present only
+     *       when the asset was loaded via {@code AssetLoaderExtended}; may be null otherwise.</li>
+     * </ul>
+     *
+     * <p><b>IMPORTANT:</b> The buffers are only valid while the {@link FilamentAsset} exists.
      * Do not cache or use them after the asset is destroyed.</p>
      *
      * <p>Example usage:</p>
      * <pre>
      * MeshData mesh = asset.getMeshData(entityId);
-     * if (mesh != null && mesh.positions != null) {
+     * if (mesh != null && mesh.positions != null && mesh.indices != null) {
      *     FloatBuffer positions = mesh.positions
      *         .order(ByteOrder.nativeOrder())
      *         .asFloatBuffer();
-     *     for (int i = 0; i < mesh.positionCount; i++) {
-     *         float x = positions.get(i * 3);
-     *         float y = positions.get(i * 3 + 1);
-     *         float z = positions.get(i * 3 + 2);
-     *     }
+     *     int vertexCount = mesh.positions.capacity() / 12; // 3 floats * 4 bytes
      *
      *     IntBuffer indices = mesh.indices
      *         .order(ByteOrder.nativeOrder())
      *         .asIntBuffer();
-     *     for (int i = 0; i < mesh.indexCount / 3; i++) {
+     *     int triangleCount = mesh.indices.capacity() / 4 / 3; // uint32, 3 per triangle
+     *
+     *     for (int i = 0; i < triangleCount; i++) {
      *         int i0 = indices.get(i * 3);
      *         int i1 = indices.get(i * 3 + 1);
      *         int i2 = indices.get(i * 3 + 2);
@@ -408,7 +419,9 @@ public class FilamentAsset {
      * </pre>
      *
      * @param entityId The entity to get mesh data for
-     * @return MeshData containing positions and indices, or null if not found
+     * @return {@link MeshData} containing positions, indices, and expandedIndices,
+     *         or null if the entity is not registered in the PickingRegistry or
+     *         any buffer size exceeds {@link Integer#MAX_VALUE}
      */
     @Nullable
     public MeshData getMeshData(@Entity int entityId) {
@@ -417,13 +430,45 @@ public class FilamentAsset {
             return null;
         }
 
-        int positionCount = (int) info[0];
-        int indexCount = (int) info[1];
+        // info: [positionsPtr, positionsSize, indicesPtr, indicesSize, expandedIndicesPtr, expandedIndicesSize]
+        long positionsPtr = info[0];
+        long positionsSize = info[1];
+        long indicesPtr = info[2];
+        long indicesSize = info[3];
+        long expandedIndicesPtr = info[4];
+        long expandedIndicesSize = info[5];
 
-        java.nio.ByteBuffer positions = nGetMeshPositionsBuffer(mNativeObject, entityId);
-        java.nio.ByteBuffer indices = nGetMeshIndicesBuffer(mNativeObject, entityId);
+        // Guard against silent truncation: ByteBuffer capacity is int-sized (max 2,147,483,647 bytes).
+        // Fail fast with null rather than producing a ByteBuffer with a truncated capacity
+        // that silently reads garbage beyond the true end of the data.
+        //   positions:        max ~178M vertices     (Integer.MAX_VALUE / 12 bytes per float3)
+        //   indices:          max ~178M triangles    (Integer.MAX_VALUE / 4 bytes per uint32 / 3 indices per triangle)
+        //   expandedIndices:  max ~178M triangles    (same as indices)
+        if (positionsSize > Integer.MAX_VALUE) {
+            android.util.Log.e("FilamentAsset",
+                    "getMeshData: positionsSize " + positionsSize + " exceeds Integer.MAX_VALUE for entity " + entityId);
+            return null;
+        }
+        if (indicesSize > Integer.MAX_VALUE) {
+            android.util.Log.e("FilamentAsset",
+                    "getMeshData: indicesSize " + indicesSize + " exceeds Integer.MAX_VALUE for entity " + entityId);
+            return null;
+        }
+        if (expandedIndicesSize > Integer.MAX_VALUE) {
+            android.util.Log.e("FilamentAsset",
+                    "getMeshData: expandedIndicesSize " + expandedIndicesSize + " exceeds Integer.MAX_VALUE for entity " + entityId);
+            return null;
+        }
 
-        return new MeshData(positionCount, indexCount, positions, indices);
+        // Safe to cast to int now — all sizes verified above to fit within Integer.MAX_VALUE.
+        java.nio.ByteBuffer positions = positionsPtr != 0 && positionsSize > 0
+            ? nNewDirectByteBuffer(positionsPtr, (int) positionsSize) : null;
+        java.nio.ByteBuffer indices = indicesPtr != 0 && indicesSize > 0
+            ? nNewDirectByteBuffer(indicesPtr, (int) indicesSize) : null;
+        java.nio.ByteBuffer expandedIndices = expandedIndicesPtr != 0 && expandedIndicesSize > 0
+            ? nNewDirectByteBuffer(expandedIndicesPtr, (int) expandedIndicesSize) : null;
+
+        return new MeshData(positions, indices, expandedIndices);
     }
 
     void clearNativeObject() {
@@ -473,6 +518,8 @@ public class FilamentAsset {
     private static native long nGetPickingRegistry(long nativeAsset);
 
     private static native long[] nGetMeshDataInfo(long nativeAsset, int entityId);
-    private static native java.nio.ByteBuffer nGetMeshPositionsBuffer(long nativeAsset, int entityId);
-    private static native java.nio.ByteBuffer nGetMeshIndicesBuffer(long nativeAsset, int entityId);
+
+    // Creates a direct ByteBuffer from a native pointer.
+    // capacity is int — callers must verify the size fits within Integer.MAX_VALUE before calling.
+    private static native java.nio.ByteBuffer nNewDirectByteBuffer(long address, int capacity);
 }

@@ -902,6 +902,29 @@ public class RenderableManager {
                 0, indices.getIndexCount());
     }
 
+    /**
+     * Swaps the {@link IndexBuffer} for the given primitive without touching the
+     * {@link VertexBuffer} or any other primitive state.
+     *
+     * <p>Use this to efficiently hide or filter triangles by supplying a pre-built index buffer
+     * that omits the unwanted indices, while reusing the existing vertex buffer as-is.</p>
+     *
+     * @param i              the renderable instance (from {@link #getInstance})
+     * @param primitiveIndex the primitive whose index buffer should be replaced
+     * @param indices        the new {@link IndexBuffer} to bind; must remain valid for the
+     *                       lifetime of this renderable or until the next swap/setGeometryAt call
+     * @param offset         offset into {@code indices}, in indices (not bytes)
+     * @param count          number of indices to draw starting at {@code offset}
+     *
+     * @see #setGeometryAt
+     */
+    public void swapIndexBufferAt(@EntityInstance int i, @IntRange(from = 0) int primitiveIndex,
+            @NonNull IndexBuffer indices, @IntRange(from = 0) int offset,
+            @IntRange(from = 0) int count) {
+        nSwapIndexBufferAt(mNativeObject, i, primitiveIndex,
+                indices.getNativeObject(), offset, count);
+    }
+
      /**
      * Changes the drawing order for blended primitives. The drawing order is either global or
      * local (default) to this Renderable. In either case, the Renderable priority takes precedence.
@@ -1017,4 +1040,6 @@ public class RenderableManager {
     private static native void nSetBlendOrderAt(long nativeRenderableManager, int i, int primitiveIndex, int blendOrder);
     private static native void nSetGlobalBlendOrderEnabledAt(long nativeRenderableManager, int i, int primitiveIndex, boolean enabled);
     private static native int nGetEnabledAttributesAt(long nativeRenderableManager, int i, int primitiveIndex);
+    private static native void nSwapIndexBufferAt(long nativeRenderableManager, int i,
+            int primitiveIndex, long nativeIndexBuffer, int offset, int count);
 }

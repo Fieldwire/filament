@@ -705,6 +705,19 @@ void FAssetLoader::createPrimitives(const cgltf_node* node, const char* name,
                     if (outputPrim.indices) {
                         fAsset->mIndexBuffers.push_back(outputPrim.indices);
                     }
+
+                    // Capture expanded indices from the slots for later registration with PickingRegistry
+                    // NOTE: expandedIndices is identical to the data that will be uploaded to outputPrim.indices
+                    // We store a CPU-side copy because slot.data will be freed after GPU upload,
+                    // but PickingRegistry needs CPU-side indices for proper triangle filtering
+                    for (const auto& slot : resourceInfo.slots) {
+                        if (slot.indices == outputPrim.indices && slot.data) {
+                            const uint32_t* expandedIndicesData = static_cast<const uint32_t*>(slot.data);
+                            size_t indexCount = slot.sizeInBytes / sizeof(uint32_t);
+                            outputPrim.expandedIndices.assign(expandedIndicesData, expandedIndicesData + indexCount);
+                            break;
+                        }
+                    }
                 }
             } else {
                 // Create a Filament VertexBuffer and IndexBuffer for this prim if we haven't

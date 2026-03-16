@@ -192,4 +192,10 @@ bool RenderableManager::getFogEnabled(RenderableManager::Instance instance) cons
     return downcast(this)->getFogEnabled(instance);
 }
 
+void RenderableManager::swapIndexBufferAt(Instance instance, size_t primitiveIndex,
+        IndexBuffer* indices, size_t offset, size_t count) noexcept {
+    downcast(this)->swapIndexBufferAt(instance, 0, primitiveIndex,
+            downcast(indices), offset, count);
+}
+
 } // namespace filament
