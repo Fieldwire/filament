@@ -18,9 +18,11 @@
 #define TNT_FILAMENT_DRIVER_METALBUFFER_H
 
 #include "MetalContext.h"
-#include "MetalPlatform.h"
+#include "MetalFlags.h"
+#include "MetalUtils.h"
 
 #include <backend/DriverEnums.h>
+#include <backend/platforms/PlatformMetal.h>
 
 #include <Metal/Metal.h>
 
@@ -54,12 +56,12 @@ public:
         }
     }
 
-    static void setPlatform(MetalPlatform* p) { platform = p; }
+    static void setPlatform(PlatformMetal* p) { platform = p; }
 
 private:
     typedef std::chrono::steady_clock clock_t;
 
-    static MetalPlatform* platform;
+    static PlatformMetal* platform;
 
     std::chrono::time_point<clock_t> mBeginning;
     const char* mName;
@@ -73,10 +75,11 @@ public:
     enum class Type {
         NONE = 0,
         GENERIC = 1,
-        RING = 2,
+        RING = 2,       // deprecated
         STAGING = 3,
+        DESCRIPTOR_SET = 4,
     };
-    static constexpr size_t TypeCount = 3;
+    static constexpr size_t TypeCount = 4;
 
     static constexpr auto toIndex(Type t) {
         assert_invariant(t != Type::NONE);
@@ -88,6 +91,8 @@ public:
                 return 1;
             case Type::STAGING:
                 return 2;
+            case Type::DESCRIPTOR_SET:
+                return 3;
         }
     }
 
@@ -138,7 +143,7 @@ public:
         assert_invariant(type != Type::NONE);
         return aliveBuffers[toIndex(type)];
     }
-    static void setPlatform(MetalPlatform* p) { platform = p; }
+    static void setPlatform(PlatformMetal* p) { platform = p; }
 
 private:
     void swap(TrackedMetalBuffer& other) noexcept {
@@ -149,7 +154,7 @@ private:
     id<MTLBuffer> mBuffer;
     Type mType = Type::NONE;
 
-    static MetalPlatform* platform;
+    static PlatformMetal* platform;
     static std::array<uint64_t, TypeCount> aliveBuffers;
 };
 
@@ -160,6 +165,8 @@ public:
          size_t size, bool forceGpuBuffer = false);
     ~MetalBuffer();
 
+    [[nodiscard]] bool wasAllocationSuccessful() const noexcept { return mBuffer; }
+
     MetalBuffer(const MetalBuffer& rhs) = delete;
     MetalBuffer& operator=(const MetalBuffer& rhs) = delete;
 
@@ -169,20 +176,29 @@ public:
      * Update the buffer with data inside src. Potentially allocates a new buffer allocation to hold
      * the bytes which will be released when the current frame is finished.
      */
-    void copyIntoBuffer(void* src, size_t size, size_t byteOffset);
-    void copyIntoBufferUnsynchronized(void* src, size_t size, size_t byteOffset);
+    using TagResolver = utils::Invocable<const char*(void)>;
+    void copyIntoBuffer(void* src, size_t size, size_t byteOffset, TagResolver&& getHandleTag);
+    void copyIntoBufferUnsynchronized(
+            void* src, size_t size, size_t byteOffset, TagResolver&& getHandleTag);
 
     /**
      * Denotes that this buffer is used for a draw call ensuring that its allocation remains valid
      * until the end of the current frame.
      *
-     * @return The MTLBuffer representing the current state of the buffer to bind, or nil if there
-     * is no device allocation.
+     * @return The MTLBuffer representing the current state of the buffer to bind, it never returns
+     * nil.
      *
      */
-    id<MTLBuffer> getGpuBufferForDraw(id<MTLCommandBuffer> cmdBuffer) noexcept;
+    id<MTLBuffer> getGpuBufferForDraw() noexcept;
 
-    void* getCpuBuffer() const noexcept { return mCpuBuffer; }
+    void setLabel(const utils::ImmutableCString& label) {
+#if FILAMENT_METAL_DEBUG_LABELS
+        if (label.empty()) {
+            return;
+        }
+        mBuffer.get().label = @(label.c_str_safe());
+#endif
+    }
 
     enum Stage : uint8_t {
         VERTEX      = 1u << 0u,
@@ -209,13 +225,14 @@ private:
         BUMP_ALLOCATOR,
     };
 
-    void uploadWithPoolBuffer(void* src, size_t size, size_t byteOffset) const;
-    void uploadWithBumpAllocator(void* src, size_t size, size_t byteOffset) const;
+    void uploadWithPoolBuffer(
+            void* src, size_t size, size_t byteOffset, TagResolver&& getHandleTag) const;
+    void uploadWithBumpAllocator(
+            void* src, size_t size, size_t byteOffset, TagResolver&& getHandleTag) const;
 
     UploadStrategy mUploadStrategy;
     TrackedMetalBuffer mBuffer;
     size_t mBufferSize = 0;
-    void* mCpuBuffer = nullptr;
     MetalContext& mContext;
 };
 
@@ -241,18 +258,8 @@ public:
     // In practice, MetalRingBuffer is used for argument buffers, which are kept in the constant
     // address space. Constant buffers have specific alignment requirements when specifying an
     // offset.
-#if defined(IOS)
-#if TARGET_OS_SIMULATOR
-    // The iOS simulator has differing alignment requirements.
-    static constexpr auto METAL_CONSTANT_BUFFER_OFFSET_ALIGNMENT = 256;
-#else
-    static constexpr auto METAL_CONSTANT_BUFFER_OFFSET_ALIGNMENT = 4;
-#endif  // TARGET_OS_SIMULATOR
-#else
-    static constexpr auto METAL_CONSTANT_BUFFER_OFFSET_ALIGNMENT = 32;
-#endif
     static inline auto computeSlotSize(MTLSizeAndAlign layout) {
-         return align(align(layout.size, layout.align), METAL_CONSTANT_BUFFER_OFFSET_ALIGNMENT);
+         return align(align(layout.size, layout.align), getUniformBufferOffsetAlignment());
     }
 
     MetalRingBuffer(id<MTLDevice> device, MTLResourceOptions options, MTLSizeAndAlign layout,

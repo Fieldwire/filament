@@ -41,11 +41,11 @@ public:
     FRenderPrimitive() noexcept = default;
 
     void init(HwRenderPrimitiveFactory& factory, backend::DriverApi& driver,
-            const RenderableManager::Builder::Entry& entry) noexcept;
+            FRenderableManager::Entry const& entry) noexcept;
 
     void set(HwRenderPrimitiveFactory& factory, backend::DriverApi& driver,
             RenderableManager::PrimitiveType type,
-            FVertexBuffer* vertexBuffer, FIndexBuffer* indexBuffer, size_t offset,
+            FVertexBuffer const* vertexBuffer, FIndexBuffer const* indexBuffer, size_t offset,
             size_t count) noexcept;
 
     // frees driver resources, object becomes invalid
@@ -54,7 +54,7 @@ public:
     const FMaterialInstance* getMaterialInstance() const noexcept { return mMaterialInstance; }
     backend::RenderPrimitiveHandle getHwHandle() const noexcept { return mHandle; }
     backend::VertexBufferInfoHandle getVertexBufferInfoHandle() const { return mVertexBufferInfoHandle; }
-    FVertexBuffer* getVertexBuffer() const noexcept { return mVertexBuffer; }
+    const FVertexBuffer* getVertexBuffer() const noexcept { return mVertexBuffer; }
     uint32_t getIndexOffset() const noexcept { return mIndexOffset; }
     uint32_t getIndexCount() const noexcept { return mIndexCount; }
     uint32_t getMorphingBufferOffset() const noexcept { return mMorphingBufferOffset; }
@@ -66,29 +66,28 @@ public:
 
     void setMaterialInstance(FMaterialInstance const* mi) noexcept { mMaterialInstance = mi; }
 
-    void setBlendOrder(uint16_t order) noexcept {
+    void setBlendOrder(uint16_t const order) noexcept {
         mBlendOrder = static_cast<uint16_t>(order & 0x7FFF);
     }
 
-    void setGlobalBlendOrderEnabled(bool enabled) noexcept {
+    void setGlobalBlendOrderEnabled(bool const enabled) noexcept {
         mGlobalBlendOrderEnabled = enabled;
     }
 
-    void setMorphingBufferOffset(uint32_t offset) noexcept {
+    void setMorphingBufferOffset(uint32_t const offset) noexcept {
         mMorphingBufferOffset = offset;
     }
 
 private:
     // These first fields are dereferences from PrimitiveInfo, keep them together
-    struct {
-        FMaterialInstance const* mMaterialInstance = nullptr;
-        backend::Handle<backend::HwRenderPrimitive> mHandle = {};
-        backend::Handle<backend::HwVertexBufferInfo> mVertexBufferInfoHandle = {};
-        FVertexBuffer* mVertexBuffer = nullptr;
-        uint32_t mIndexOffset = 0;
-        uint32_t mIndexCount = 0;
-        uint32_t mMorphingBufferOffset = 0;
-    };
+    FMaterialInstance const* mMaterialInstance = nullptr;
+    backend::Handle<backend::HwRenderPrimitive> mHandle = {};
+    backend::Handle<backend::HwVertexBufferInfo> mVertexBufferInfoHandle = {};
+    const FVertexBuffer* mVertexBuffer = nullptr;
+    uint32_t mIndexOffset = 0;
+    uint32_t mIndexCount = 0;
+    uint32_t mMorphingBufferOffset = 0;
+    // End PrimitiveInfo fields.
 
     AttributeBitset mEnabledAttributes = {};
     uint16_t mBlendOrder = 0;

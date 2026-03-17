@@ -16,6 +16,7 @@
 
 #include "details/Texture.h"
 
+#include "details/AsyncHelpers.h"
 #include "details/Engine.h"
 #include "details/Stream.h"
 
@@ -28,18 +29,16 @@
 #include <backend/DriverEnums.h>
 #include <backend/Handle.h>
 
-#include <ibl/Cubemap.h>
-#include <ibl/CubemapIBL.h>
-#include <ibl/CubemapUtils.h>
-#include <ibl/Image.h>
-
 #include <math/half.h>
 #include <math/scalar.h>
 #include <math/vec3.h>
 
 #include <utils/Allocator.h>
 #include <utils/algorithm.h>
+#include <utils/BitmaskEnum.h>
 #include <utils/compiler.h>
+#include <utils/CString.h>
+#include <utils/StaticString.h>
 #include <utils/debug.h>
 #include <utils/FixedCapacityVector.h>
 #include <utils/Panic.h>
@@ -61,7 +60,7 @@ using namespace math;
 
 // this is a hack to be able to create a std::function<> with a non-copyable closure
 template<class F>
-auto make_copyable_function(F&& f) {
+static auto make_copyable_function(F&& f) {
     using dF = std::decay_t<F>;
     auto spf = std::make_shared<dF>(std::forward<F>(f));
     return [spf](auto&& ... args) -> decltype(auto) {
@@ -75,74 +74,124 @@ struct Texture::BuilderDetails {
     uint32_t mHeight = 1;
     uint32_t mDepth = 1;
     uint8_t mLevels = 1;
+    uint8_t mSamples = 1;
     Sampler mTarget = Sampler::SAMPLER_2D;
     InternalFormat mFormat = InternalFormat::RGBA8;
     Usage mUsage = Usage::NONE;
+    bool mHasBlitSrc = false;
     bool mTextureIsSwizzled = false;
+    bool mExternal = false;
+    bool mAsynchronous = false;
     std::array<Swizzle, 4> mSwizzle = {
            Swizzle::CHANNEL_0, Swizzle::CHANNEL_1,
            Swizzle::CHANNEL_2, Swizzle::CHANNEL_3 };
+    CallbackHandler* mAsyncCreationHandler = nullptr;
+    std::function<void(Texture* UTILS_NONNULL, void* UTILS_NULLABLE)> mAsyncCreationCallback;
+    void* mAsyncCreationUserData = nullptr;
 };
 
 using BuilderType = Texture;
 BuilderType::Builder::Builder() noexcept = default;
 BuilderType::Builder::~Builder() noexcept = default;
-BuilderType::Builder::Builder(BuilderType::Builder const& rhs) noexcept = default;
-BuilderType::Builder::Builder(BuilderType::Builder&& rhs) noexcept = default;
-BuilderType::Builder& BuilderType::Builder::operator=(BuilderType::Builder const& rhs) noexcept = default;
-BuilderType::Builder& BuilderType::Builder::operator=(BuilderType::Builder&& rhs) noexcept = default;
+BuilderType::Builder::Builder(Builder const& rhs) noexcept = default;
+BuilderType::Builder::Builder(Builder&& rhs) noexcept = default;
+BuilderType::Builder& BuilderType::Builder::operator=(Builder const& rhs) noexcept = default;
+BuilderType::Builder& BuilderType::Builder::operator=(Builder&& rhs) noexcept = default;
 
 
-Texture::Builder& Texture::Builder::width(uint32_t width) noexcept {
+Texture::Builder& Texture::Builder::width(uint32_t const width) noexcept {
     mImpl->mWidth = width;
     return *this;
 }
 
-Texture::Builder& Texture::Builder::height(uint32_t height) noexcept {
+Texture::Builder& Texture::Builder::height(uint32_t const height) noexcept {
     mImpl->mHeight = height;
     return *this;
 }
 
-Texture::Builder& Texture::Builder::depth(uint32_t depth) noexcept {
+Texture::Builder& Texture::Builder::depth(uint32_t const depth) noexcept {
     mImpl->mDepth = depth;
     return *this;
 }
 
-Texture::Builder& Texture::Builder::levels(uint8_t levels) noexcept {
+Texture::Builder& Texture::Builder::levels(uint8_t const levels) noexcept {
     mImpl->mLevels = std::max(uint8_t(1), levels);
     return *this;
 }
 
-Texture::Builder& Texture::Builder::sampler(Texture::Sampler target) noexcept {
+Texture::Builder& Texture::Builder::samples(uint8_t const samples) noexcept {
+    mImpl->mSamples = std::max(uint8_t(1), samples);
+    return *this;
+}
+
+Texture::Builder& Texture::Builder::sampler(Sampler const target) noexcept {
     mImpl->mTarget = target;
     return *this;
 }
 
-Texture::Builder& Texture::Builder::format(Texture::InternalFormat format) noexcept {
+Texture::Builder& Texture::Builder::format(InternalFormat const format) noexcept {
     mImpl->mFormat = format;
     return *this;
 }
 
-Texture::Builder& Texture::Builder::usage(Texture::Usage usage) noexcept {
-    mImpl->mUsage = Texture::Usage(usage);
+Texture::Builder& Texture::Builder::usage(Usage const usage) noexcept {
+    mImpl->mUsage = Usage(usage);
     return *this;
 }
 
-Texture::Builder& Texture::Builder::import(intptr_t id) noexcept {
+Texture::Builder& Texture::Builder::import(intptr_t const id) noexcept {
     assert_invariant(id); // imported id can't be zero
     mImpl->mImportedId = id;
     return *this;
 }
 
-Texture::Builder& Texture::Builder::swizzle(Swizzle r, Swizzle g, Swizzle b, Swizzle a) noexcept {
+Texture::Builder& Texture::Builder::external() noexcept {
+    mImpl->mExternal = true;
+    return *this;
+}
+
+Texture::Builder& Texture::Builder::swizzle(Swizzle const r, Swizzle const g, Swizzle const b, Swizzle const a) noexcept {
     mImpl->mTextureIsSwizzled = true;
     mImpl->mSwizzle = { r, g, b, a };
     return *this;
 }
 
+Texture::Builder& Texture::Builder::name(const char* name, size_t const len) noexcept {
+    return BuilderNameMixin::name(name, len);
+}
+
+Texture::Builder& Texture::Builder::name(StaticString const& name) noexcept {
+    return BuilderNameMixin::name(name);
+}
+
+Texture::Builder& Texture::Builder::async(
+        CallbackHandler* handler,
+        AsyncCompletionCallback callback,
+        void* user) noexcept {
+    mImpl->mAsynchronous = true;
+    mImpl->mAsyncCreationHandler = handler;
+    mImpl->mAsyncCreationCallback = std::move(callback);
+    mImpl->mAsyncCreationUserData = user;
+    return *this;
+}
+
 Texture* Texture::Builder::build(Engine& engine) {
-    FILAMENT_CHECK_PRECONDITION(Texture::isTextureFormatSupported(engine, mImpl->mFormat))
-            << "Texture format " << uint16_t(mImpl->mFormat) << " not supported on this platform";
+    if (mImpl->mTarget != SamplerType::SAMPLER_EXTERNAL) {
+        FILAMENT_CHECK_PRECONDITION(Texture::isTextureFormatSupported(engine, mImpl->mFormat))
+                << "Texture format " << uint16_t(mImpl->mFormat)
+                << " not supported on this platform, texture name="
+                << getNameOrDefault().c_str_safe();
+
+        FILAMENT_CHECK_PRECONDITION(mImpl->mWidth > 0 && mImpl->mHeight > 0)
+                << "Texture has invalid dimensions: (" << mImpl->mWidth << ", " << mImpl->mHeight
+                << "), texture name=" << getNameOrDefault().c_str_safe();
+    }
+
+    if (mImpl->mSamples > 1) {
+        FILAMENT_CHECK_PRECONDITION(any(mImpl->mUsage & Texture::Usage::SAMPLEABLE))
+                << "Multisample (" << unsigned(mImpl->mSamples)
+                << ") texture is not sampleable, texture name=" << getNameOrDefault().c_str_safe();
+    }
 
     const bool isProtectedTexturesSupported =
             downcast(engine).getDriverApi().isProtectedTexturesSupported();
@@ -152,45 +201,21 @@ Texture* Texture::Builder::build(Engine& engine) {
             (isProtectedTexturesSupported && useProtectedMemory) || !useProtectedMemory)
             << "Texture is PROTECTED but protected textures are not supported";
 
-    uint8_t maxLevelCount;
-    switch (mImpl->mTarget) {
-        case SamplerType::SAMPLER_2D:
-        case SamplerType::SAMPLER_2D_ARRAY:
-        case SamplerType::SAMPLER_CUBEMAP:
-        case SamplerType::SAMPLER_EXTERNAL:
-        case SamplerType::SAMPLER_CUBEMAP_ARRAY:
-            maxLevelCount = FTexture::maxLevelCount(mImpl->mWidth, mImpl->mHeight);
-            break;
-        case SamplerType::SAMPLER_3D:
-            maxLevelCount = FTexture::maxLevelCount(std::max(
-                    { mImpl->mWidth, mImpl->mHeight, mImpl->mDepth }));
-            break;
-    }
-    mImpl->mLevels = std::min(mImpl->mLevels, maxLevelCount);
+    size_t const maxTextureDimension = getMaxTextureSize(engine, mImpl->mTarget);
+    size_t const maxTextureDepth = (mImpl->mTarget == Sampler::SAMPLER_2D_ARRAY ||
+                                    mImpl->mTarget == Sampler::SAMPLER_CUBEMAP_ARRAY)
+                                       ? getMaxArrayTextureLayers(engine)
+                                       : maxTextureDimension;
 
-    if (mImpl->mUsage == TextureUsage::NONE) {
-        mImpl->mUsage = TextureUsage::DEFAULT;
-        if (mImpl->mLevels > 1 &&
-            (mImpl->mWidth > 1 || mImpl->mHeight > 1) &&
-            mImpl->mTarget != SamplerType::SAMPLER_EXTERNAL) {
-            const bool formatMipmappable =
-                    downcast(engine).getDriverApi().isTextureFormatMipmappable(mImpl->mFormat);
-            if (formatMipmappable) {
-                // by default mipmappable textures have the BLIT usage bits set
-                mImpl->mUsage |= TextureUsage::BLIT_SRC | TextureUsage::BLIT_DST;
-            }
-        }
-    }
+    FILAMENT_CHECK_PRECONDITION(
+            mImpl->mWidth <= maxTextureDimension &&
+            mImpl->mHeight <= maxTextureDimension &&
+            mImpl->mDepth <= maxTextureDepth) << "Texture dimensions out of range: "
+                    << "width= " << mImpl->mWidth << " (>" << maxTextureDimension << ")"
+                    <<", height= " << mImpl->mHeight << " (>" << maxTextureDimension << ")"
+                    << ", depth= " << mImpl->mDepth << " (>" << maxTextureDepth << ")";
 
-    const bool sampleable = bool(mImpl->mUsage & TextureUsage::SAMPLEABLE);
-    const bool swizzled = mImpl->mTextureIsSwizzled;
-    const bool imported = mImpl->mImportedId;
-
-    #if defined(__EMSCRIPTEN__)
-    FILAMENT_CHECK_PRECONDITION(!swizzled) << "WebGL does not support texture swizzling.";
-    #endif
-
-    auto validateSamplerType = [&engine = downcast(engine)](SamplerType sampler) -> bool {
+    const auto validateSamplerType = [&engine = downcast(engine)](SamplerType const sampler) -> bool {
         switch (sampler) {
             case SamplerType::SAMPLER_2D:
             case SamplerType::SAMPLER_CUBEMAP:
@@ -202,11 +227,78 @@ Texture* Texture::Builder::build(Engine& engine) {
             case SamplerType::SAMPLER_CUBEMAP_ARRAY:
                 return engine.hasFeatureLevel(FeatureLevel::FEATURE_LEVEL_2);
         }
+        return false;
     };
 
+    // Validate sampler before any further interaction with it.
     FILAMENT_CHECK_PRECONDITION(validateSamplerType(mImpl->mTarget))
             << "SamplerType " << uint8_t(mImpl->mTarget) << " not support at feature level "
             << uint8_t(engine.getActiveFeatureLevel());
+
+    // SAMPLER_EXTERNAL implies external textures.
+    if (mImpl->mTarget == SamplerType::SAMPLER_EXTERNAL) {
+        mImpl->mExternal = true;
+    }
+
+    uint8_t maxLevelCount;
+    switch (mImpl->mTarget) {
+        case SamplerType::SAMPLER_2D:
+        case SamplerType::SAMPLER_2D_ARRAY:
+        case SamplerType::SAMPLER_CUBEMAP:
+        case SamplerType::SAMPLER_CUBEMAP_ARRAY:
+            maxLevelCount = FTexture::maxLevelCount(mImpl->mWidth, mImpl->mHeight);
+            break;
+        case SamplerType::SAMPLER_3D:
+            maxLevelCount = FTexture::maxLevelCount(std::max(
+                    { mImpl->mWidth, mImpl->mHeight, mImpl->mDepth }));
+            break;
+        case SamplerType::SAMPLER_EXTERNAL:
+            // external samplers can't mipmap
+            maxLevelCount = 1;
+            break;
+    }
+    mImpl->mLevels = std::min(mImpl->mLevels, maxLevelCount);
+
+    if (mImpl->mUsage == TextureUsage::NONE) {
+        mImpl->mUsage = TextureUsage::DEFAULT;
+        if (mImpl->mExternal) {
+            // external textures can't be uploadable
+            mImpl->mUsage = TextureUsage::SAMPLEABLE;
+        }
+    }
+
+    auto const& featureFlags = downcast(engine).features.engine.debug;
+
+    bool const formatGenMipmappable =
+            downcast(engine).getDriverApi().isTextureFormatMipmappable(mImpl->mFormat);
+    // TODO: This exists for backwards compatibility, but should remove when safe.
+    if (!featureFlags.assert_texture_can_generate_mipmap &&
+            // Guess whether GEN_MIPMAPPABLE should be added or not based the following criteria.
+            (formatGenMipmappable &&
+                    mImpl->mLevels > 1 &&
+                    (mImpl->mWidth > 1 || mImpl->mHeight > 1) &&
+                    !mImpl->mExternal)) {
+        mImpl->mUsage |= TextureUsage::GEN_MIPMAPPABLE;
+    }
+
+    // TODO: remove in a future filament release.
+    // Clients might not have known that textures that are read need to have BLIT_SRC as usages. For
+    // now, we workaround the issue by making sure any color attachment can be the source of a copy
+    // for readPixels().
+    mImpl->mHasBlitSrc = any(mImpl->mUsage & TextureUsage::BLIT_SRC);
+    if (!mImpl->mHasBlitSrc && any(mImpl->mUsage & TextureUsage::COLOR_ATTACHMENT)) {
+        mImpl->mUsage |= TextureUsage::BLIT_SRC;
+    }
+
+    const bool sampleable = bool(mImpl->mUsage & TextureUsage::SAMPLEABLE);
+    const bool swizzled = mImpl->mTextureIsSwizzled;
+    const bool imported = mImpl->mImportedId;
+    const bool external = mImpl->mExternal;
+    const bool asynchronous = mImpl->mAsynchronous;
+
+    #if defined(__EMSCRIPTEN__)
+    FILAMENT_CHECK_PRECONDITION(!swizzled) << "WebGL does not support texture swizzling.";
+    #endif
 
     FILAMENT_CHECK_PRECONDITION((swizzled && sampleable) || !swizzled)
             << "Swizzled texture must be SAMPLEABLE";
@@ -214,13 +306,22 @@ Texture* Texture::Builder::build(Engine& engine) {
     FILAMENT_CHECK_PRECONDITION((imported && sampleable) || !imported)
             << "Imported texture must be SAMPLEABLE";
 
+    FILAMENT_CHECK_PRECONDITION(!(external && asynchronous))
+            << "Asynchronous operation is not supported for external texture";
+
+    FILAMENT_CHECK_PRECONDITION(!asynchronous || engine.isAsynchronousModeEnabled())
+            << "Engine not configured for async operations";
+
     return downcast(engine).createTexture(*this);
 }
 
 // ------------------------------------------------------------------------------------------------
 
-FTexture::FTexture(FEngine& engine, const Builder& builder) {
+FTexture::FTexture(FEngine& engine, const Builder& builder)
+    : mHasBlitSrc(false),
+      mExternal(false) {
     FEngine::DriverApi& driver = engine.getDriverApi();
+    mDriver = &driver; // this is unfortunately needed for getHwHandleForSampling()
     mWidth  = static_cast<uint32_t>(builder->mWidth);
     mHeight = static_cast<uint32_t>(builder->mHeight);
     mDepth  = static_cast<uint32_t>(builder->mDepth);
@@ -228,49 +329,111 @@ FTexture::FTexture(FEngine& engine, const Builder& builder) {
     mUsage = builder->mUsage;
     mTarget = builder->mTarget;
     mLevelCount = builder->mLevels;
+    mSampleCount = builder->mSamples;
+    mSwizzle = builder->mSwizzle;
+    mTextureIsSwizzled = builder->mTextureIsSwizzled;
+    mHasBlitSrc = builder->mHasBlitSrc;
+    mExternal = builder->mExternal;
+    mTextureType = backend::getTextureType(mFormat);
 
-    if (UTILS_LIKELY(builder->mImportedId == 0)) {
-        if (UTILS_LIKELY(!builder->mTextureIsSwizzled)) {
-            mHandle = driver.createTexture(
-                    mTarget, mLevelCount, mFormat, mSampleCount, mWidth, mHeight, mDepth, mUsage);
-        } else {
-            mHandle = driver.createTextureSwizzled(
+    bool const isImported = builder->mImportedId != 0;
+    if (mExternal && !isImported) {
+        // mHandle and mHandleForSampling will be created in setExternalImage()
+        // If this Texture is used for sampling before setExternalImage() is called,
+        // we'll lazily create a 1x1 placeholder texture.
+        mCreationComplete.store(true, std::memory_order_relaxed);
+        return;
+    }
+
+    ImmutableCString tag{ !builder.getName().empty() ? builder.getName() : "FTexture" };
+
+    if (builder->mAsynchronous) {
+        // Copy the callback instead of moving it because moving would leave the builder with an
+        // empty completion callback. If the builder were emptied, users would need to call `async`
+        // again to reuse the builder for an additional new object.
+        auto copiedCompletionCallback = builder->mAsyncCreationCallback;
+
+        using TextureCountdownCallbackHandler = CountdownCallbackHandler<Texture>;
+        auto* cdHandler = TextureCountdownCallbackHandler::make(
+                /* handler */ builder->mAsyncCreationHandler,
+                /* userCallback */ std::move(copiedCompletionCallback),
+                /* userParam1 */ this,
+                /* userParam2 */ builder->mAsyncCreationUserData,
+                /* onCountdownComplete */ [this]() {
+                    // `std::memory_order_relaxed` should be sufficient because no other variables
+                    // need to be visible to other threads in a strict sequence.
+                    mCreationComplete.store(true, std::memory_order_relaxed);
+                },
+                /* driver */ &engine.getDriver());
+
+        if (UTILS_LIKELY(!isImported)) {
+            mHandle = driver.createTextureAsync(
                     mTarget, mLevelCount, mFormat, mSampleCount, mWidth, mHeight, mDepth, mUsage,
-                    builder->mSwizzle[0], builder->mSwizzle[1], builder->mSwizzle[2],
-                    builder->mSwizzle[3]);
+                    cdHandler, &TextureCountdownCallbackHandler::countdownCallback, cdHandler, std::move(tag));
+            cdHandler->increaseCountdown();
+        } else {
+            mHandle = driver.importTextureAsync(builder->mImportedId,
+                    mTarget, mLevelCount, mFormat, mSampleCount, mWidth, mHeight, mDepth, mUsage,
+                    cdHandler, &TextureCountdownCallbackHandler::countdownCallback, cdHandler, std::move(tag));
+            cdHandler->increaseCountdown();
+        }
+
+        if (UTILS_UNLIKELY(builder->mTextureIsSwizzled)) {
+            auto const& s = builder->mSwizzle;
+            auto swizzleView = driver.createTextureViewSwizzleAsync(mHandle, s[0], s[1], s[2], s[3],
+                    cdHandler, &TextureCountdownCallbackHandler::countdownCallback, cdHandler);
+            cdHandler->increaseCountdown();
+            driver.destroyTexture(mHandle);
+            mHandle = swizzleView;
         }
     } else {
-        mHandle = driver.importTexture(builder->mImportedId,
-                mTarget, mLevelCount, mFormat, mSampleCount, mWidth, mHeight, mDepth, mUsage);
+        if (UTILS_LIKELY(!isImported)) {
+            mHandle = driver.createTexture(
+                    mTarget, mLevelCount, mFormat, mSampleCount, mWidth, mHeight, mDepth, mUsage,
+                    std::move(tag));
+        } else {
+            mHandle = driver.importTexture(builder->mImportedId,
+                    mTarget, mLevelCount, mFormat, mSampleCount, mWidth, mHeight, mDepth, mUsage,
+                    std::move(tag));
+        }
+
+        if (UTILS_UNLIKELY(builder->mTextureIsSwizzled)) {
+            auto const& s = builder->mSwizzle;
+            auto swizzleView = driver.createTextureViewSwizzle(mHandle, s[0], s[1], s[2], s[3]);
+            driver.destroyTexture(mHandle);
+            mHandle = swizzleView;
+        }
+
+        // In regular (non-asynchronous) mode, we know creation is complete as soon as all
+        // creation-relevant API calls are recorded into the command stream, because subsequent API
+        // calls will always be invoked after that (even including asynchronous version of APIs).
+        mCreationComplete.store(true, std::memory_order_relaxed);
     }
-    if (auto name = builder.getName(); !name.empty()) {
-        driver.setDebugTag(mHandle.getId(), std::move(name));
-    }
+
+    mHandleForSampling = mHandle;
 }
 
 // frees driver resources, object becomes invalid
 void FTexture::terminate(FEngine& engine) {
-    FEngine::DriverApi& driver = engine.getDriverApi();
-    driver.destroyTexture(mHandle);
+    setHandles({});
 }
 
-size_t FTexture::getWidth(size_t level) const noexcept {
+size_t FTexture::getWidth(size_t const level) const noexcept {
     return valueForLevel(level, mWidth);
 }
 
-size_t FTexture::getHeight(size_t level) const noexcept {
+size_t FTexture::getHeight(size_t const level) const noexcept {
     return valueForLevel(level, mHeight);
 }
 
-size_t FTexture::getDepth(size_t level) const noexcept {
+size_t FTexture::getDepth(size_t const level) const noexcept {
     return valueForLevel(level, mDepth);
 }
 
-void FTexture::setImage(FEngine& engine, size_t level,
-        uint32_t xoffset, uint32_t yoffset, uint32_t zoffset,
-        uint32_t width, uint32_t height, uint32_t depth,
-        FTexture::PixelBufferDescriptor&& p) const {
-
+void FTexture::setImageCommon(FEngine& engine, size_t const level,
+        uint32_t const xoffset, uint32_t const yoffset, uint32_t const zoffset,
+        uint32_t const width, uint32_t const height, uint32_t const depth,
+        const PixelBufferDescriptor& p) const {
     if (UTILS_UNLIKELY(!engine.hasFeatureLevel(FeatureLevel::FEATURE_LEVEL_1))) {
         FILAMENT_CHECK_PRECONDITION(p.stride == 0 || p.stride == width)
                 << "PixelBufferDescriptor stride must be 0 (or width) at FEATURE_LEVEL_0";
@@ -291,11 +454,15 @@ void FTexture::setImage(FEngine& engine, size_t level,
             << "level=" << unsigned(level) << " is >= to levelCount=" << unsigned(mLevelCount)
             << ".";
 
-    FILAMENT_CHECK_PRECONDITION(mTarget != SamplerType::SAMPLER_EXTERNAL)
-            << "Texture SamplerType::SAMPLER_EXTERNAL not supported for this operation.";
+    FILAMENT_CHECK_PRECONDITION(!mExternal)
+            << "External Texture not supported for this operation.";
 
-    FILAMENT_CHECK_PRECONDITION(mSampleCount <= 1) << "Operation not supported with multisample ("
-                                                   << unsigned(mSampleCount) << ") texture.";
+    FILAMENT_CHECK_PRECONDITION(any(mUsage & Texture::Usage::UPLOADABLE))
+            << "Texture is not uploadable.";
+
+    FILAMENT_CHECK_PRECONDITION(mSampleCount <= 1)
+            << "Operation not supported with multisample ("
+            << unsigned(mSampleCount) << ") texture.";
 
     FILAMENT_CHECK_PRECONDITION(xoffset + width <= valueForLevel(level, mWidth))
             << "xoffset (" << unsigned(xoffset) << ") + width (" << unsigned(width)
@@ -309,7 +476,7 @@ void FTexture::setImage(FEngine& engine, size_t level,
 
     FILAMENT_CHECK_PRECONDITION(p.buffer) << "Data buffer is nullptr.";
 
-    uint32_t effectiveTextureDepthOrLayers;
+    uint32_t effectiveTextureDepthOrLayers = 0;
     switch (mTarget) {
         case SamplerType::SAMPLER_EXTERNAL:
             // can't happen by construction, fallthrough...
@@ -336,29 +503,71 @@ void FTexture::setImage(FEngine& engine, size_t level,
             << ") > texture depth (" << effectiveTextureDepthOrLayers << ") at level ("
             << unsigned(level) << ")";
 
-    using PBD = PixelBufferDescriptor;
-    size_t const stride = p.stride ? p.stride : width;
-    size_t const bpp = PBD::computeDataSize(p.format, p.type, 1, 1, 1);
-    size_t const bpr = PBD::computeDataSize(p.format, p.type, stride, 1, p.alignment);
-    size_t const bpl = bpr * height; // TODO: PBD should have a "layer stride"
-    // TODO: PBD should have a p.depth (# layers to skip)
-    FILAMENT_CHECK_PRECONDITION(bpp * p.left + bpr * p.top + bpl * (0 + depth) <= p.size)
-            << "buffer overflow: (size=" << size_t(p.size) << ", stride=" << size_t(p.stride)
-            << ", left=" << unsigned(p.left) << ", top=" << unsigned(p.top)
-            << ") smaller than specified region "
-               "{{"
-            << unsigned(xoffset) << "," << unsigned(yoffset) << "," << unsigned(zoffset) << "},{"
-            << unsigned(width) << "," << unsigned(height) << "," << unsigned(depth) << ")}}";
+    if (UTILS_UNLIKELY(!width || !height || !depth)) {
+        // The operation is a no-op, return immediately. The PixelBufferDescriptor callback
+        // should be called automatically when the object is destroyed.
+        // The precondition check below assumes width, height, depth non null.
+        return;
+    }
 
-    engine.getDriverApi().update3DImage(mHandle,
-            uint8_t(level), xoffset, yoffset, zoffset, width, height, depth, std::move(p));
+    if (p.type != PixelDataType::COMPRESSED) {
+        using PBD = PixelBufferDescriptor;
+        size_t const stride = p.stride ? p.stride : width;
+        size_t const bpp = PBD::computeDataSize(p.format, p.type, 1, 1, 1);
+        size_t const bpr = PBD::computeDataSize(p.format, p.type, stride, 1, p.alignment);
+        size_t const bpl = bpr * height; // TODO: PBD should have a "layer stride"
+        // TODO: PBD should have a p.depth (# layers to skip)
+
+        /* Calculates the byte offset of the last pixel in a 3D sub-region. */
+        auto const calculateLastPixelOffset = [bpp, bpr, bpl](
+                size_t xoff, size_t yoff, size_t zoff,
+                size_t width, size_t height, size_t depth) {
+            // The 0-indexed coordinates of the last pixel are:
+            // x = xoff + width - 1
+            // y = yoff + height - 1
+            // z = zoff + depth - 1
+            // The offset is calculated as: (z * bpl) + (y * bpr) + (x * bpp)
+            return ((zoff + depth  - 1) * bpl) +
+                   ((yoff + height - 1) * bpr) +
+                   ((xoff + width  - 1) * bpp);
+        };
+
+        size_t const lastPixelOffset = calculateLastPixelOffset(
+                p.left, p.top, 0, width, height, depth);
+
+        // make sure the whole last pixel is in the buffer
+        FILAMENT_CHECK_PRECONDITION(lastPixelOffset + bpp <= p.size)
+                << "buffer overflow: (size=" << size_t(p.size) << ", stride=" << size_t(p.stride)
+                << ", left=" << unsigned(p.left) << ", top=" << unsigned(p.top)
+                << ") smaller than specified region "
+                   "{{"
+                << unsigned(xoffset) << "," << unsigned(yoffset) << "," << unsigned(zoffset) << "},{"
+                << unsigned(width) << "," << unsigned(height) << "," << unsigned(depth) << ")}}";
+    }
+}
+
+void FTexture::setImage(FEngine& engine, size_t const level,
+        uint32_t const xoffset, uint32_t const yoffset, uint32_t const zoffset,
+        uint32_t const width, uint32_t const height, uint32_t const depth,
+        PixelBufferDescriptor&& p) const {
+
+    FILAMENT_CHECK_PRECONDITION(isCreationComplete())
+            << "Texture is not created yet. It may be in the process of asynchronous loading";
+
+    setImageCommon(engine, level, xoffset, yoffset, zoffset, width, height, depth, p);
+
+    engine.getDriverApi().update3DImage(mHandle, uint8_t(level), xoffset, yoffset, zoffset, width,
+            height, depth, std::move(p));
+
+    // this method shouldn't have been const
+    const_cast<FTexture*>(this)->updateLodRange(level);
 }
 
 // deprecated
-void FTexture::setImage(FEngine& engine, size_t level,
-        Texture::PixelBufferDescriptor&& buffer, const FaceOffsets& faceOffsets) const {
+void FTexture::setImage(FEngine& engine, size_t const level,
+        PixelBufferDescriptor&& buffer, const FaceOffsets& faceOffsets) const {
 
-    auto validateTarget = [](SamplerType sampler) -> bool {
+    auto validateTarget = [](SamplerType const sampler) -> bool {
         switch (sampler) {
             case SamplerType::SAMPLER_CUBEMAP:
                 return true;
@@ -369,6 +578,7 @@ void FTexture::setImage(FEngine& engine, size_t level,
             case SamplerType::SAMPLER_EXTERNAL:
                 return false;
         }
+        return false;
     };
 
     // this should have been validated already
@@ -418,43 +628,133 @@ void FTexture::setImage(FEngine& engine, size_t level,
         engine.getDriverApi().queueCommand(
                 make_copyable_function([buffer = std::move(buffer)]() {}));
     }
+
+    // this method shouldn't been const
+    const_cast<FTexture*>(this)->updateLodRange(level);
+}
+
+AsyncCallId FTexture::setImageAsync(FEngine& engine, size_t const level,
+        uint32_t const xoffset, uint32_t const yoffset, uint32_t const zoffset,
+        uint32_t const width, uint32_t const height, uint32_t const depth,
+        PixelBufferDescriptor&& p, CallbackHandler* handler, AsyncCompletionCallback callback,
+        void* user) const {
+
+    // We skip the isCreationComplete() check for asynchronous APIs because they are designed to
+    // function correctly regardless of whether the object's creation process is fully complete.
+
+    setImageCommon(engine, level, xoffset, yoffset, zoffset, width, height, depth, p);
+
+    using TextureCallbackAdapter = CallbackAdapter<Texture>;
+    auto* const cbWrapper = TextureCallbackAdapter::make(std::move(callback), this, user);
+    AsyncCallId id = engine.getDriverApi().update3DImageAsync(mHandle, uint8_t(level),
+            xoffset, yoffset, zoffset, width, height, depth, std::move(p), handler,
+            &TextureCallbackAdapter::func, cbWrapper);
+
+    // this method shouldn't have been const
+    const_cast<FTexture*>(this)->updateLodRange(level);
+
+    return id;
+}
+
+void FTexture::setExternalImage(FEngine& engine, ExternalImageHandleRef image) noexcept {
+    FILAMENT_CHECK_PRECONDITION(mExternal) << "The texture must be external.";
+    FILAMENT_CHECK_PRECONDITION(isCreationComplete())
+            << "Texture is not created yet. It may be in the process of asynchronous loading";
+
+    // The call to setupExternalImage2 is synchronous, and allows the driver to take ownership of the
+    // external image on this thread, if necessary.
+    auto& api = engine.getDriverApi();
+    api.setupExternalImage2(image);
+
+    auto texture = api.createTextureExternalImage2(mTarget, mFormat, mWidth, mHeight, mUsage, image);
+
+    if (mTextureIsSwizzled) {
+        auto const& s = mSwizzle;
+        auto swizzleView = api.createTextureViewSwizzle(texture, s[0], s[1], s[2], s[3]);
+        api.destroyTexture(texture);
+        texture = swizzleView;
+    }
+
+    setHandles(texture);
 }
 
 void FTexture::setExternalImage(FEngine& engine, void* image) noexcept {
-    if (mTarget == Sampler::SAMPLER_EXTERNAL) {
-        // The call to setupExternalImage is synchronous, and allows the driver to take ownership of
-        // the external image on this thread, if necessary.
-        engine.getDriverApi().setupExternalImage(image);
-        engine.getDriverApi().setExternalImage(mHandle, image);
+    FILAMENT_CHECK_PRECONDITION(mExternal) << "The texture must be external.";
+    FILAMENT_CHECK_PRECONDITION(isCreationComplete())
+            << "Texture is not created yet. It may be in the process of asynchronous loading";
+
+    // The call to setupExternalImage is synchronous, and allows the driver to take ownership of the
+    // external image on this thread, if necessary.
+    auto& api = engine.getDriverApi();
+    api.setupExternalImage(image);
+
+    auto texture = api.createTextureExternalImage(mTarget, mFormat, mWidth, mHeight, mUsage, image);
+
+    if (mTextureIsSwizzled) {
+        auto const& s = mSwizzle;
+        auto swizzleView = api.createTextureViewSwizzle(texture, s[0], s[1], s[2], s[3]);
+        api.destroyTexture(texture);
+        texture = swizzleView;
     }
+
+    setHandles(texture);
 }
 
-void FTexture::setExternalImage(FEngine& engine, void* image, size_t plane) noexcept {
-    if (mTarget == Sampler::SAMPLER_EXTERNAL) {
-        // The call to setupExternalImage is synchronous, and allows the driver to take ownership of
-        // the external image on this thread, if necessary.
-        engine.getDriverApi().setupExternalImage(image);
-        engine.getDriverApi().setExternalImagePlane(mHandle, image, plane);
+void FTexture::setExternalImage(FEngine& engine, void* image, size_t const plane) noexcept {
+    FILAMENT_CHECK_PRECONDITION(mExternal) << "The texture must be external.";
+    FILAMENT_CHECK_PRECONDITION(isCreationComplete())
+            << "Texture is not created yet. It may be in the process of asynchronous loading";
+
+    // The call to setupExternalImage is synchronous, and allows the driver to take ownership of
+    // the external image on this thread, if necessary.
+    auto& api = engine.getDriverApi();
+    api.setupExternalImage(image);
+
+    auto texture =
+            api.createTextureExternalImagePlane(mFormat, mWidth, mHeight, mUsage, image, plane);
+
+    if (mTextureIsSwizzled) {
+        auto const& s = mSwizzle;
+        auto swizzleView = api.createTextureViewSwizzle(texture, s[0], s[1], s[2], s[3]);
+        api.destroyTexture(texture);
+        texture = swizzleView;
     }
+
+    setHandles(texture);
 }
 
 void FTexture::setExternalStream(FEngine& engine, FStream* stream) noexcept {
-    if (stream) {
-        FILAMENT_CHECK_PRECONDITION(mTarget == Sampler::SAMPLER_EXTERNAL)
-                << "Texture target must be SAMPLER_EXTERNAL";
+    FILAMENT_CHECK_PRECONDITION(mExternal) << "The texture must be external.";
+    FILAMENT_CHECK_PRECONDITION(isCreationComplete())
+            << "Texture is not created yet. It may be in the process of asynchronous loading";
 
+    auto& api = engine.getDriverApi();
+    auto texture = api.createTexture(
+            mTarget, mLevelCount, mFormat, mSampleCount, mWidth, mHeight, mDepth, mUsage);
+
+    if (mTextureIsSwizzled) {
+        auto const& s = mSwizzle;
+        auto swizzleView = api.createTextureViewSwizzle(texture, s[0], s[1], s[2], s[3]);
+        api.destroyTexture(texture);
+        texture = swizzleView;
+    }
+
+    setHandles(texture);
+
+    if (stream) {
         mStream = stream;
-        engine.getDriverApi().setExternalStream(mHandle, stream->getHandle());
+        api.setExternalStream(mHandle, stream->getHandle());
     } else {
         mStream = nullptr;
-        engine.getDriverApi().setExternalStream(mHandle, backend::Handle<backend::HwStream>());
+        api.setExternalStream(mHandle, backend::Handle<HwStream>());
     }
 }
 
 void FTexture::generateMipmaps(FEngine& engine) const noexcept {
-    FILAMENT_CHECK_PRECONDITION(mTarget != SamplerType::SAMPLER_EXTERNAL)
+    FILAMENT_CHECK_PRECONDITION(!mExternal)
             << "External Textures are not mipmappable.";
-
+    FILAMENT_CHECK_PRECONDITION(isCreationComplete())
+            << "Texture is not created yet. It may be in the process of asynchronous loading";
     FILAMENT_CHECK_PRECONDITION(mTarget != SamplerType::SAMPLER_3D)
             << "3D Textures are not mipmappable.";
 
@@ -462,15 +762,118 @@ void FTexture::generateMipmaps(FEngine& engine) const noexcept {
     FILAMENT_CHECK_PRECONDITION(formatMipmappable)
             << "Texture format " << (unsigned)mFormat << " is not mipmappable.";
 
+    auto const& featureFlags = downcast(engine).features.engine.debug;
+    FILAMENT_FLAG_GUARDED_CHECK_PRECONDITION(any(mUsage & TextureUsage::GEN_MIPMAPPABLE),
+            featureFlags.assert_texture_can_generate_mipmap)
+            << "Texture usage does not have GEN_MIPMAPPABLE set";
+
     if (mLevelCount < 2 || (mWidth == 1 && mHeight == 1)) {
         return;
     }
 
     engine.getDriverApi().generateMipmaps(mHandle);
+    // this method shouldn't have been const
+    const_cast<FTexture*>(this)->updateLodRange(0, mLevelCount);
 }
 
-bool FTexture::isTextureFormatSupported(FEngine& engine, InternalFormat format) noexcept {
+bool FTexture::textureHandleCanMutate() const noexcept {
+    return (any(mUsage & Usage::SAMPLEABLE) && mLevelCount > 1) || mExternal;
+}
+
+void FTexture::updateLodRange(uint8_t const baseLevel, uint8_t const levelCount) noexcept {
+    if (any(mUsage & Usage::SAMPLEABLE) && mLevelCount > 1) {
+        auto& range = mLodRange;
+        uint8_t const last = int8_t(baseLevel + levelCount);
+        if (range.first > baseLevel || range.last < last) {
+            if (range.empty()) {
+                range = { baseLevel, last };
+            } else {
+                range.first = std::min(range.first, baseLevel);
+                range.last = std::max(range.last, last);
+            }
+            // We defer the creation of the texture view to getHwHandleForSampling() because it
+            // is a common case that by then, the view won't be needed. Creating the first view on a
+            // texture has a backend cost.
+        }
+    }
+}
+
+void FTexture::setHandles(Handle<HwTexture> handle) noexcept {
+    assert_invariant(!mHandle || mHandleForSampling);
+    if (mHandle) {
+        mDriver->destroyTexture(mHandle);
+    }
+    if (mHandleForSampling != mHandle) {
+        mDriver->destroyTexture(mHandleForSampling);
+    }
+    mHandle = handle;
+    mHandleForSampling = handle;
+}
+
+Handle<HwTexture> FTexture::setHandleForSampling(
+        Handle<HwTexture> handle) const noexcept {
+    assert_invariant(!mHandle || mHandleForSampling);
+    if (mHandleForSampling && mHandleForSampling != mHandle) {
+        mDriver->destroyTexture(mHandleForSampling);
+    }
+    return mHandleForSampling = handle;
+}
+
+Handle<HwTexture> FTexture::createPlaceholderTexture(
+        DriverApi& driver) noexcept {
+    auto handle = driver.createTexture(
+            Sampler::SAMPLER_2D, 1, InternalFormat::RGBA8, 1, 1, 1, 1, Usage::DEFAULT);
+    static uint8_t pixels[4] = { 0, 0, 0, 0 };
+    driver.update3DImage(handle, 0, 0, 0, 0, 1, 1, 1,
+            { (char*)&pixels[0], sizeof(pixels),
+                    PixelBufferDescriptor::PixelDataFormat::RGBA,
+                    PixelBufferDescriptor::PixelDataType::UBYTE });
+    return handle;
+}
+
+backend::Handle<backend::HwTexture> FTexture::getHwHandle() const noexcept {
+    FILAMENT_CHECK_PRECONDITION(isCreationComplete())
+            << "Texture is not created yet. It may be in the process of asynchronous loading";
+
+    return mHandle;
+}
+
+Handle<HwTexture> FTexture::getHwHandleForSampling() const noexcept {
+    FILAMENT_CHECK_PRECONDITION(isCreationComplete())
+            << "Texture is not created yet. It may be in the process of asynchronous loading";
+
+    if (UTILS_UNLIKELY(mExternal && !mHandleForSampling)) {
+        return setHandleForSampling(createPlaceholderTexture(*mDriver));
+    }
+    auto const& range = mLodRange;
+    auto& activeRange = mActiveLodRange;
+    bool const lodRangeChanged = activeRange.first != range.first || activeRange.last != range.last;
+    if (UTILS_UNLIKELY(lodRangeChanged)) {
+        activeRange = range;
+        if (range.empty() || hasAllLods(range)) {
+            std::ignore = setHandleForSampling(mHandle);
+        } else {
+            std::ignore = setHandleForSampling(mDriver->createTextureView(
+                mHandle, range.first, range.size()));
+        }
+    }
+    return mHandleForSampling;
+}
+
+void FTexture::updateLodRange(uint8_t const level) noexcept {
+    updateLodRange(level, 1);
+}
+
+bool FTexture::isTextureFormatSupported(FEngine& engine, InternalFormat const format) noexcept {
     return engine.getDriverApi().isTextureFormatSupported(format);
+}
+
+bool FTexture::isTextureFormatMipmappable(FEngine& engine, InternalFormat const format) noexcept {
+    return engine.getDriverApi().isTextureFormatMipmappable(format);
+}
+
+bool FTexture::isTextureFormatCompressed(InternalFormat const format) noexcept {
+    return isCompressedFormat(format);
 }
 
 bool FTexture::isProtectedTexturesSupported(FEngine& engine) noexcept {
@@ -481,197 +884,29 @@ bool FTexture::isTextureSwizzleSupported(FEngine& engine) noexcept {
     return engine.getDriverApi().isTextureSwizzleSupported();
 }
 
-size_t FTexture::computeTextureDataSize(Texture::Format format, Texture::Type type,
-        size_t stride, size_t height, size_t alignment) noexcept {
+size_t FTexture::getMaxTextureSize(FEngine& engine, Sampler type) noexcept {
+    return engine.getDriverApi().getMaxTextureSize(type);
+}
+
+size_t FTexture::getMaxArrayTextureLayers(FEngine& engine) noexcept {
+    return engine.getDriverApi().getMaxArrayTextureLayers();
+}
+
+size_t FTexture::computeTextureDataSize(Format const format, Type const type,
+        size_t const stride, size_t const height, size_t const alignment) noexcept {
     return PixelBufferDescriptor::computeDataSize(format, type, stride, height, alignment);
 }
 
-size_t FTexture::getFormatSize(InternalFormat format) noexcept {
+size_t FTexture::getFormatSize(InternalFormat const format) noexcept {
     return backend::getFormatSize(format);
 }
 
-
-void FTexture::generatePrefilterMipmap(FEngine& engine,
-        PixelBufferDescriptor&& buffer, const FaceOffsets& faceOffsets,
-        PrefilterOptions const* options) {
-    using namespace ibl;
-    using namespace backend;
-    using namespace math;
-
-    const size_t size = getWidth();
-    const size_t stride = buffer.stride ? buffer.stride : size;
-
-    /* validate input data */
-
-    FILAMENT_CHECK_PRECONDITION(
-            buffer.format == PixelDataFormat::RGB || buffer.format == PixelDataFormat::RGBA)
-            << "input data format must be RGB or RGBA";
-
-    FILAMENT_CHECK_PRECONDITION(buffer.type == PixelDataType::FLOAT ||
-            buffer.type == PixelDataType::HALF ||
-            buffer.type == PixelDataType::UINT_10F_11F_11F_REV)
-            << "input data type must be FLOAT, HALF or UINT_10F_11F_11F_REV";
-
-    /* validate texture */
-
-    FILAMENT_CHECK_PRECONDITION(!(size & (size - 1)))
-            << "input data cubemap dimensions must be a power-of-two";
-
-    FILAMENT_CHECK_PRECONDITION(!isCompressed()) << "reflections texture cannot be compressed";
-
-    PrefilterOptions const defaultOptions;
-    options = options ? options : &defaultOptions;
-
-    JobSystem& js = engine.getJobSystem();
-    FEngine::DriverApi& driver = engine.getDriverApi();
-
-    auto generateMipmaps = [](JobSystem& js,
-            FixedCapacityVector<Cubemap>& levels, FixedCapacityVector<Image>& images) {
-        Image temp;
-        const Cubemap& base(levels[0]);
-        size_t dim = base.getDimensions();
-        size_t mipLevel = 0;
-        while (dim > 1) {
-            dim >>= 1u;
-            Cubemap dst = CubemapUtils::create(temp, dim);
-            const Cubemap& src(levels[mipLevel++]);
-            CubemapUtils::downsampleCubemapLevelBoxFilter(js, dst, src);
-            dst.makeSeamless();
-            images.push_back(std::move(temp));
-            levels.push_back(std::move(dst));
-        }
-    };
-
-
-    /*
-     * Create a Cubemap data structure
-     */
-
-    size_t bytesPerPixel = 0;
-
-    switch (buffer.format) {
-        case PixelDataFormat::RGB:
-            bytesPerPixel = 3;
-            break;
-        case PixelDataFormat::RGBA:
-            bytesPerPixel = 4;
-            break;
-        default:
-            // this cannot happen due to the checks above
-            break;
-    }
-
-    switch (buffer.type) { // NOLINT
-        case PixelDataType::FLOAT:
-            bytesPerPixel *= 4;
-            break;
-        case PixelDataType::HALF:
-            bytesPerPixel *= 2;
-            break;
-        default:
-            // this cannot happen due to the checks above
-            break;
-    }
-    assert_invariant(bytesPerPixel);
-
-    Image temp;
-    Cubemap cml = CubemapUtils::create(temp, size);
-    for (size_t j = 0; j < 6; j++) {
-        Cubemap::Face const face = (Cubemap::Face)j;
-        Image const& image = cml.getImageForFace(face);
-        for (size_t y = 0; y < size; y++) {
-            Cubemap::Texel* out = (Cubemap::Texel*)image.getPixelRef(0, y);
-            if (buffer.type == PixelDataType::FLOAT) {
-                float3 const* src = pointermath::add((float3 const*)buffer.buffer, faceOffsets[j]);
-                src = pointermath::add(src, y * stride * bytesPerPixel);
-                for (size_t x = 0; x < size; x++, out++) {
-                    Cubemap::writeAt(out, *src);
-                    src = pointermath::add(src, bytesPerPixel);
-                }
-            } else if (buffer.type == PixelDataType::HALF) {
-                half3 const* src = pointermath::add((half3 const*)buffer.buffer, faceOffsets[j]);
-                src = pointermath::add(src, y * stride * bytesPerPixel);
-                for (size_t x = 0; x < size; x++, out++) {
-                    Cubemap::writeAt(out, *src);
-                    src = pointermath::add(src, bytesPerPixel);
-                }
-            } else if (buffer.type == PixelDataType::UINT_10F_11F_11F_REV) {
-                // this doesn't depend on buffer.format
-                uint32_t const* src = reinterpret_cast<uint32_t const*>(
-                                              static_cast<char const*>(buffer.buffer)
-                                              + faceOffsets[j]) + y * stride;
-                for (size_t x = 0; x < size; x++, out++, src++) {
-                    using fp10 = fp<0, 5, 5>;
-                    using fp11 = fp<0, 5, 6>;
-                    fp11 const r{ uint16_t( *src         & 0x7FFu) };
-                    fp11 const g{ uint16_t((*src >> 11u) & 0x7FFu) };
-                    fp10 const b{ uint16_t((*src >> 22u) & 0x3FFu) };
-                    Cubemap::Texel const texel{ fp11::tof(r), fp11::tof(g), fp10::tof(b) };
-                    Cubemap::writeAt(out, texel);
-                }
-            }
-        }
-    }
-
-    /*
-     * Create the mipmap chain
-     */
-
-    auto images = FixedCapacityVector<Image>::with_capacity(getLevels());
-    auto levels = FixedCapacityVector<Cubemap>::with_capacity(getLevels());
-
-    images.push_back(std::move(temp));
-    levels.push_back(std::move(cml));
-
-    const float3 mirror = options->mirror ? float3{ -1, 1, 1 } : float3{ 1, 1, 1 };
-
-    // make the cubemap seamless
-    levels[0].makeSeamless();
-
-    // Now generate all the mipmap levels
-    generateMipmaps(js, levels, images);
-
-    // Finally generate each pre-filtered mipmap level
-    const size_t baseExp = ctz(size);
-    size_t const numSamples = options->sampleCount;
-    const size_t numLevels = baseExp + 1;
-    for (ssize_t i = (ssize_t)baseExp; i >= 0; --i) {
-        const size_t dim = 1U << i;
-        const size_t level = baseExp - i;
-        const float lod = saturate(float(level) / float(numLevels - 1));
-        const float linearRoughness = lod * lod;
-
-        Image image;
-        Cubemap dst = CubemapUtils::create(image, dim);
-        CubemapIBL::roughnessFilter(js, dst, { levels.begin(), uint32_t(levels.size()) },
-                linearRoughness, numSamples, mirror, true);
-
-        Texture::PixelBufferDescriptor const pbd(image.getData(), image.getSize(),
-                Texture::PixelBufferDescriptor::PixelDataFormat::RGB,
-                Texture::PixelBufferDescriptor::PixelDataType::FLOAT, 1, 0, 0, image.getStride());
-
-        uintptr_t const base = uintptr_t(image.getData());
-        for (size_t j = 0; j < 6; j++) {
-            Image const& faceImage = dst.getImageForFace((Cubemap::Face)j);
-            auto offset = uintptr_t(faceImage.getData()) - base;
-            driver.update3DImage(mHandle, level, 0, 0, j, dim, dim, 1, {
-                    (char*)image.getData() + offset, dim * dim * 3 * sizeof(float),
-                    Texture::PixelBufferDescriptor::PixelDataFormat::RGB,
-                    Texture::PixelBufferDescriptor::PixelDataType::FLOAT, 1,
-                    0, 0, uint32_t(image.getStride())
-            });
-        }
-
-        // enqueue a commands that holds the image data until it's executed
-        driver.queueCommand(make_copyable_function([data = image.detach()]() {}));
-    }
-
-    // no need to call the user callback because buffer is a reference, and it'll be destroyed
-    // by the caller (without being move()d here).
+TextureType FTexture::getTextureType() const noexcept {
+    return mTextureType;
 }
 
-bool FTexture::validatePixelFormatAndType(TextureFormat internalFormat,
-        PixelDataFormat format, PixelDataType type) noexcept {
+bool FTexture::validatePixelFormatAndType(TextureFormat const internalFormat,
+        PixelDataFormat const format, PixelDataType const type) noexcept {
 
     switch (internalFormat) {
         case TextureFormat::R8:

@@ -16,10 +16,20 @@
 
 #include <viewer/AutomationEngine.h>
 
+#include <image/ColorTransform.h>
+#include <image/ImageOps.h>
+#include <image/LinearImage.h>
+#include <imageio-lite/ImageEncoder.h>
+
 #include <filament/Camera.h>
 #include <filament/Engine.h>
+#include <filament/LightManager.h>
 #include <filament/Renderer.h>
+#include <filament/Scene.h>
+#include <filament/TransformManager.h>
 #include <filament/Viewport.h>
+
+#include <utils/EntityManager.h>
 
 #include <backend/PixelBufferDescriptor.h>
 
@@ -44,7 +54,9 @@ struct ScreenshotState {
     AutomationEngine* engine;
 };
 
-static void convertRGBAtoRGB(void* buffer, uint32_t width, uint32_t height) {
+namespace {
+
+void convertRGBAtoRGB(void* buffer, uint32_t width, uint32_t height) {
     uint8_t* writePtr = static_cast<uint8_t*>(buffer);
     uint8_t const* readPtr = static_cast<uint8_t const*>(buffer);
     for (uint32_t i = 0, n = width * height; i < n; ++i) {
@@ -55,6 +67,25 @@ static void convertRGBAtoRGB(void* buffer, uint32_t width, uint32_t height) {
         readPtr += 4;
     }
 }
+
+void exportPPM(void* buffer, uint32_t width, uint32_t height, std::ofstream& outstream) {
+    // ReadPixels on Metal only supports RGBA, but the PPM format only supports RGB.
+    // So, manually perform a quick transformation here.
+    convertRGBAtoRGB(buffer, width, height);
+
+    outstream << "P6 " << width << " " << height << " " << 255 << std::endl;
+    outstream.write(static_cast<char*>(buffer), width * height * 3);
+}
+
+using ExportFormat = AutomationEngine::Options::ExportFormat;
+constexpr char const* getExportFormatExtension(ExportFormat format) {
+    switch (format) {
+        case ExportFormat::PPM: return ".ppm";
+        case ExportFormat::TIFF: return ".tif";
+    }
+}
+
+} // anonymous namespace
 
 void AutomationEngine::exportScreenshot(View* view, Renderer* renderer, std::string filename,
         bool autoclose, AutomationEngine* automationEngine) {
@@ -75,14 +106,25 @@ void AutomationEngine::exportScreenshot(View* view, Renderer* renderer, std::str
             }
             const Viewport& vp = state->view->getViewport();
 
-            // ReadPixels on Metal only supports RGBA, but the PPM format only supports RGB.
-            // So, manually perform a quick transformation here.
-            convertRGBAtoRGB(buffer, vp.width, vp.height);
-
             Path out(state->filename);
-            std::ofstream ppmStream(out);
-            ppmStream << "P6 " << vp.width << " " << vp.height << " " << 255 << std::endl;
-            ppmStream.write(static_cast<char*>(buffer), vp.width * vp.height * 3);
+            std::ofstream outstream(out);
+
+            auto extension = out.getExtension();
+            if (extension == "ppm") {
+                exportPPM(buffer, vp.width, vp.height, outstream);
+            } else if (extension == "tif" || extension == "tiff") {
+                image::LinearImage image = image::toLinearWithAlpha<uint8_t>(
+                        vp.width, vp.height, vp.width * 4, (uint8_t*) buffer,
+                        [](uint8_t v) { return v; }, image::sRGBToLinear<filament::math::float4>);
+                imageio_lite::ImageEncoder::encode(outstream,
+                        imageio_lite::ImageEncoder::Format::TIFF, image, "", "");
+            } else {
+                utils::slog.e << out.c_str() << " does not specify a supported file extension."
+                              << utils::io::endl;
+            }
+
+            outstream.close();
+
             delete[] static_cast<uint8_t*>(buffer);
             if (state->autoclose) {
                 state->engine->requestClose();
@@ -168,9 +210,21 @@ void AutomationEngine::applySettings(Engine* engine, const char* json, size_t js
     }
     viewer::applySettings(engine, mSettings->lighting, content.indirectLight, content.sunlight,
             content.assetLights, content.assetLightCount, content.lightManager, content.scene, content.view);
+    updateCustomLights(engine, mSettings->lighting.lights, content.scene);
+
     Camera* camera = &content.view->getCamera();
     Skybox* skybox = content.scene->getSkybox();
     viewer::applySettings(engine, mSettings->viewer, camera, skybox, content.renderer);
+    viewer::applySettings(engine, mSettings->debug, content.renderer);
+
+    // Apply CameraSettings
+    double const aspect = (double) content.view->getViewport().width /
+                          (double) content.view->getViewport().height;
+    viewer::applySettings(engine, mSettings->camera, camera, aspect);
+
+    // Apply RenderSettings
+    content.renderer->setClearOptions(mSettings->render.clearOptions);
+    content.renderer->setFrameRateOptions(mSettings->render.frameRateOptions);
 }
 
 ColorGrading* AutomationEngine::getColorGrading(Engine* engine) {
@@ -186,14 +240,6 @@ ColorGrading* AutomationEngine::getColorGrading(Engine* engine) {
 }
 
 ViewerOptions AutomationEngine::getViewerOptions() const {
-    ViewerOptions options = mSettings->viewer;
-    const auto dofOptions = mSettings->view.dof;
-    if (dofOptions.enabled) {
-        options.cameraFocalLength = Camera::computeEffectiveFocalLength(
-                options.cameraFocalLength / 1000.0,
-                std::max(0.1f, options.cameraFocusDistance)) * 1000.0;
-
-    }
     return mSettings->viewer;
 }
 
@@ -206,6 +252,20 @@ void AutomationEngine::tick(Engine* engine, const ViewerContent& content, float 
         for (size_t i = 0; i < content.materialCount; i++) {
             viewer::applySettings(engine, mSettings->material, content.materials[i]);
         }
+        viewer::applySettings(engine, mSettings->lighting, content.indirectLight, content.sunlight,
+                content.assetLights, content.assetLightCount, content.lightManager, content.scene,
+                content.view);
+        updateCustomLights(engine, mSettings->lighting.lights, content.scene);
+
+        // Apply CameraSettings
+        double const aspect = (double) content.view->getViewport().width /
+                              (double) content.view->getViewport().height;
+        viewer::applySettings(engine, mSettings->camera, &content.view->getCamera(), aspect);
+
+        // Apply RenderSettings
+        content.renderer->setClearOptions(mSettings->render.clearOptions);
+        content.renderer->setFrameRateOptions(mSettings->render.frameRateOptions);
+
         if (mOptions.verbose) {
             utils::slog.i << "Running test " << mCurrentTest << utils::io::endl;
         }
@@ -232,7 +292,7 @@ void AutomationEngine::tick(Engine* engine, const ViewerContent& content, float 
 
     const bool isLastTest = mCurrentTest == mSpec->size() - 1;
 
-    const int digits = (int) log10 ((double) mSpec->size()) + 1;
+    int const digits = (int) log10((double) mSpec->size()) + 1;
     std::ostringstream stringStream;
     stringStream << mSpec->getName(mCurrentTest)
             << std::setfill('0') << std::setw(digits) << mCurrentTest;
@@ -244,8 +304,8 @@ void AutomationEngine::tick(Engine* engine, const ViewerContent& content, float 
     }
 
     if (mOptions.exportScreenshots) {
-        AutomationEngine::exportScreenshot(
-                content.view, content.renderer, prefix + ".ppm", isLastTest, this);
+        AutomationEngine::exportScreenshot(content.view, content.renderer,
+                prefix + getExportFormatExtension(mOptions.exportFormat), isLastTest, this);
     }
 
     if (isLastTest) {
@@ -263,6 +323,52 @@ void AutomationEngine::tick(Engine* engine, const ViewerContent& content, float 
 
 const char* AutomationEngine::getStatusMessage() const {
     return gStatus.c_str();
+}
+
+void AutomationEngine::updateCustomLights(Engine* engine,
+        const std::vector<LightDefinition>& lights, Scene* scene) {
+    auto& em = utils::EntityManager::get();
+    LightManager* lm = &engine->getLightManager();
+
+    // Destroy old lights
+    for (auto entity: mCustomLights) {
+        lm->destroy(entity);
+        scene->remove(entity);
+        em.destroy(entity);
+    }
+    mCustomLights.clear();
+
+    if (lights.empty()) {
+        return;
+    }
+
+    // Create new lights
+    mCustomLights.resize(lights.size());
+    em.create(mCustomLights.size(), mCustomLights.data());
+
+    for (size_t i = 0; i < lights.size(); ++i) {
+        const auto& def = lights[i];
+        LightManager::Builder builder(def.type);
+        builder.color(def.color)
+                .intensity(def.intensity)
+                .position(def.position)
+                .direction(def.direction)
+                .falloff(def.falloff)
+                .spotLightCone(def.spotInner, def.spotOuter)
+                .castShadows(def.castShadows)
+                .sunHaloSize(def.sunHaloSize)
+                .sunHaloFalloff(def.sunHaloFalloff)
+                .sunAngularRadius(def.sunAngularRadius)
+                .build(*engine, mCustomLights[i]);
+
+        // Shadow options must be set on the instance after creation
+        auto instance = lm->getInstance(mCustomLights[i]);
+        if (instance) {
+            lm->setShadowOptions(instance, def.shadowOptions);
+        }
+
+        scene->addEntity(mCustomLights[i]);
+    }
 }
 
 } // namespace viewer

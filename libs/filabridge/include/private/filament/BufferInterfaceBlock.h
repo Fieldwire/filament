@@ -40,11 +40,28 @@ public:
         std::string_view name;
         uint32_t size;
         backend::UniformType type;
-        backend::Precision precision{};
-        backend::FeatureLevel minFeatureLevel = backend::FeatureLevel::FEATURE_LEVEL_1;
-        std::string_view structName{};
-        uint32_t stride{};
-        std::string_view sizeName{};
+        backend::Precision precision;
+        uint8_t associatedSampler = 0;
+        backend::FeatureLevel minFeatureLevel;
+        std::string_view structName;
+        uint32_t stride;
+        std::string_view sizeName;
+        
+        InterfaceBlockEntry() = default;
+        InterfaceBlockEntry(std::string_view name, uint32_t size, backend::UniformType type,
+                backend::Precision precision = {},
+                backend::FeatureLevel minFeatureLevel = backend::FeatureLevel::FEATURE_LEVEL_1, std::string_view structName = {},
+                uint32_t stride = {}, std::string_view sizeName = {}) noexcept
+                : name(name), size(size), type(type), precision(precision),
+                associatedSampler(0), minFeatureLevel(minFeatureLevel),
+                structName(structName), stride(stride), sizeName(sizeName) {}
+        InterfaceBlockEntry(std::string_view name, uint8_t associatedSampler, uint32_t size, backend::UniformType type,
+                backend::Precision precision = {},
+                backend::FeatureLevel minFeatureLevel = backend::FeatureLevel::FEATURE_LEVEL_1, std::string_view structName = {},
+                uint32_t stride = {}, std::string_view sizeName = {}) noexcept
+                : name(name), size(size), type(type), precision(precision),
+                associatedSampler(associatedSampler), minFeatureLevel(minFeatureLevel),
+                structName(structName), stride(stride), sizeName(sizeName) {}
     };
 
     BufferInterfaceBlock();
@@ -68,6 +85,7 @@ public:
         bool isArray;               // true if the field is an array
         uint32_t size;              // size of the array in elements, or 0 if not an array
         Precision precision;        // precision of this field
+        uint8_t associatedSampler;   // sampler associated with this field
         backend::FeatureLevel minFeatureLevel; // below this feature level, this field is not needed
         utils::CString structName;  // name of this field structure if type is STRUCT
         utils::CString sizeName;    // name of the size parameter in the shader

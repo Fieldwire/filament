@@ -17,29 +17,27 @@
 #ifndef TNT_FILAMENT_BACKEND_OPENGL_SHADERCOMPILERSERVICE_H
 #define TNT_FILAMENT_BACKEND_OPENGL_SHADERCOMPILERSERVICE_H
 
-#include "gl_headers.h"
-
 #include "CallbackManager.h"
 #include "CompilerThreadPool.h"
 #include "OpenGLBlobCache.h"
 
 #include <backend/CallbackHandler.h>
+#include <backend/DriverEnums.h>
 #include <backend/Program.h>
 
 #include <utils/CString.h>
 #include <utils/FixedCapacityVector.h>
-#include <utils/Invocable.h>
 #include <utils/JobSystem.h>
 
-#include <atomic>
-#include <condition_variable>
-#include <deque>
+#include <array>
 #include <functional>
+#include <list>
 #include <memory>
-#include <mutex>
-#include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
+
+#include <stdint.h>
 
 namespace filament::backend {
 
@@ -57,6 +55,7 @@ class ShaderCompilerService {
 
 public:
     using program_token_t = std::shared_ptr<OpenGLProgramToken>;
+    using shaders_t = std::array<GLuint, Program::SHADER_TYPE_COUNT>;
 
     explicit ShaderCompilerService(OpenGLDriver& driver);
 
@@ -82,6 +81,7 @@ public:
     void tick();
 
     // Destroys a valid token and all associated resources. Used to "cancel" a program compilation.
+    // This function is not called if `initialize(token)` is already invoked.
     static void terminate(program_token_t& token);
 
     // stores a user data pointer in the token
@@ -90,6 +90,12 @@ public:
     // retrieves the user data pointer stored in the token
     static void* getUserData(const program_token_t& token) noexcept;
 
+    // Issue one callback handle.
+    CallbackManager::Handle issueCallbackHandle() const noexcept;
+
+    // Return a callback handle to the callback manager.
+    void submitCallbackHandle(CallbackManager::Handle handle) noexcept;
+
     // call the callback when all active programs are ready
     void notifyWhenAllProgramsAreReady(
             CallbackHandler* handler, CallbackHandler::Callback callback, void* user);
@@ -97,7 +103,7 @@ public:
 private:
     struct Job {
         template<typename FUNC>
-        Job(FUNC&& fn) : fn(std::forward<FUNC>(fn)) {}
+        Job(FUNC&& fn) : fn(std::forward<FUNC>(fn)) {} // NOLINT(*-explicit-constructor)
         Job(std::function<bool(Job const& job)> fn,
                 CallbackHandler* handler, void* user, CallbackHandler::Callback callback)
                 : fn(std::move(fn)), handler(handler), user(user), callback(callback) {
@@ -126,39 +132,69 @@ private:
     using ContainerType = std::tuple<CompilerPriorityQueue, program_token_t, Job>;
     std::vector<ContainerType> mRunAtNextTickOps;
 
-    GLuint initialize(ShaderCompilerService::program_token_t& token) noexcept;
+    std::list<program_token_t> mCanceledTokens;
+    // These members are only ever accessed on the main thread and are completely unused when mMode
+    // is not SYNCHRONOUS.
+    uint32_t mNumProgramsCreatedSynchronouslyThisTick = 0u;
+    uint32_t mNumTicksUntilNextSynchronousProgram = 0u;
+    using PendingSynchronousProgram = std::tuple<program_token_t, Program>;
+    std::vector<PendingSynchronousProgram> mPendingSynchronousPrograms;
 
-    static void getProgramFromCompilerPool(program_token_t& token) noexcept;
+    GLuint initialize(program_token_t& token);
+    void ensureTokenIsReady(program_token_t const& token);
 
-    static void compileShaders(
-            OpenGLContext& context,
-            Program::ShaderSource shadersSource,
-            utils::FixedCapacityVector<Program::SpecializationConstant> const& specializationConstants,
-            bool multiview,
-            std::array<GLuint, Program::SHADER_TYPE_COUNT>& outShaders,
-            std::array<utils::CString, Program::SHADER_TYPE_COUNT>& outShaderSourceCode) noexcept;
+    // Methods for THREAD_POOL mode.
+    void handleCanceledTokensForThreadPool();
 
-    static void process_GOOGLE_cpp_style_line_directive(OpenGLContext& context,
-            char* source, size_t len) noexcept;
+    // Methods for SYNCHRONOUS and ASYNCHRONOUS modes.
+    void runAtNextTick(CompilerPriorityQueue priority, program_token_t const& token,
+            Job job);
+    void executeTickOps();
+    bool cancelTickOp(program_token_t const& token) noexcept;
 
-    static void process_OVR_multiview2(OpenGLContext& context, int32_t eyeCount,
-            char* source, size_t len) noexcept;
+    bool shouldCompileSynchronousProgramThisTick() const noexcept;
+    void compilePendingSynchronousPrograms();
+    void compilePendingSynchronousProgramNow(program_token_t const& token);
+    void cancelPendingSynchronousProgram(program_token_t const& token) noexcept;
 
-    static std::string_view process_ARB_shading_language_packing(OpenGLContext& context) noexcept;
+    void compileProgram(program_token_t const& token, Program&& program);
 
-    static std::array<std::string_view, 3> splitShaderSource(std::string_view source) noexcept;
+    // Compile shaders with the given `shaderSource`. `gl.shaders` is always populated with valid
+    // shader IDs after this method. But this doesn't necessarily mean the shaders are successfully
+    // compiled. Errors can be checked by calling `checkCompileStatus` later.
+    static void compileShaders(OpenGLContext& context, Program::ShaderSource shadersSource,
+            utils::FixedCapacityVector<Program::SpecializationConstant> const&
+                    specializationConstants,
+            bool multiview, program_token_t const& token);
 
-    static GLuint linkProgram(OpenGLContext& context,
-            std::array<GLuint, Program::SHADER_TYPE_COUNT> shaders,
-            utils::FixedCapacityVector<std::pair<utils::CString, uint8_t>> const& attributes) noexcept;
+    // Check if the shader compilation is completed. You may want to call this when the extension
+    // `KHR_parallel_shader_compile` is enabled.
+    static bool isCompileCompleted(program_token_t const& token) noexcept;
 
-    static bool checkProgramStatus(program_token_t const& token) noexcept;
+    // Check compilation status of the shaders and log errors on failure.
+    static void checkCompileStatus(program_token_t const& token);
 
-    void runAtNextTick(CompilerPriorityQueue priority,
-            const program_token_t& token, Job job) noexcept;
-    void executeTickOps() noexcept;
-    bool cancelTickOp(program_token_t token) noexcept;
-    // order of insertion is important
+    // Create a program by linking the compiled shaders. `gl.program` is always populated with a
+    // valid program ID after this method. But this doesn't necessarily mean the program is
+    // successfully linked. Errors can be checked by calling `checkLinkStatusAndCleanupShaders`
+    // later.
+    static void linkProgram(OpenGLContext const& context, program_token_t const& token);
+
+    // Check if the program link is completed. You may want to call this when the extension
+    // `KHR_parallel_shader_compile` is enabled.
+    static bool isLinkCompleted(program_token_t const& token) noexcept;
+
+    // Check link status of the program and log errors on failure. Return the result of the link.
+    // Also cleanup shaders regardless of the result.
+    static bool checkLinkStatusAndCleanupShaders(program_token_t const& token) noexcept;
+
+    // Try retrieving the program from the cache. Return `true` if it's loaded from the cache.
+    static bool tryRetrievingProgram(OpenGLBlobCache& cache, OpenGLPlatform& platform,
+            Program const& program, program_token_t const& token) noexcept;
+
+    // Try caching the program if we haven't done it yet. Cache it only when the program is valid.
+    static void tryCachingProgram(OpenGLBlobCache& cache, OpenGLPlatform& platform,
+            program_token_t const& token) noexcept;
 };
 
 } // namespace filament::backend

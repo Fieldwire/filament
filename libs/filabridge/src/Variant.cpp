@@ -16,7 +16,16 @@
 
 #include <private/filament/Variant.h>
 
+#include <private/filament/EngineEnums.h>
+
+#include <filament/MaterialEnums.h>
+
+#include <utils/Slice.h>
+
 #include <array>
+
+#include <stddef.h>
+#include <stdint.h>
 
 namespace filament {
 
@@ -65,16 +74,29 @@ Variant Variant::filterUserVariant(
 
 namespace details {
 
+namespace {
+
 // Compile-time variant count for lit and unlit
 constexpr inline size_t variant_count(bool lit) noexcept {
     size_t count = 0;
     for (size_t i = 0; i < VARIANT_COUNT; i++) {
         Variant variant(i);
-        if (!Variant::isValid(variant)) {
+        if (!Variant::isValidStandardVariant(variant)) {
             continue;
         }
         variant = Variant::filterVariant(variant, lit);
         if (i == variant.key) {
+            count++;
+        }
+    }
+    return count;
+}
+
+constexpr inline size_t depth_variant_count() noexcept {
+    size_t count = 0;
+    for (size_t i = 0; i < VARIANT_COUNT; i++) {
+        Variant const variant(i);
+        if (Variant::isValidDepthVariant(variant)) {
             count++;
         }
     }
@@ -88,7 +110,7 @@ constexpr auto get_variants() noexcept {
     size_t count = 0;
     for (size_t i = 0; i < VARIANT_COUNT; i++) {
         Variant variant(i);
-        if (Variant::isReserved(variant)) {
+        if (!Variant::isValidStandardVariant(variant)) {
             continue;
         }
         variant = Variant::filterVariant(variant, LIT);
@@ -98,9 +120,27 @@ constexpr auto get_variants() noexcept {
     }
     return variants;
 }
-static auto const gLitVariants{ details::get_variants<true>() };
-static auto const gUnlitVariants{ details::get_variants<false>() };
 
+constexpr auto get_depth_variants() noexcept {
+    std::array<Variant, depth_variant_count()> variants;
+    size_t count = 0;
+    for (size_t i = 0; i < VARIANT_COUNT; i++) {
+        Variant const variant(i);
+        if (Variant::isValidDepthVariant(variant)) {
+            variants[count++] = variant;
+        }
+    }
+    return variants;
+}
+
+constexpr auto get_post_process_variants() noexcept {
+    std::array<Variant, POST_PROCESS_VARIANT_COUNT> variants;
+    for (size_t i = 0; i < POST_PROCESS_VARIANT_COUNT; i++) {
+        Variant const variant(i);
+        variants[i] = variant;
+    }
+    return variants;
+}
 
 // Below are compile time sanity-check tests
 constexpr inline bool reserved_is_not_valid() noexcept {
@@ -163,6 +203,14 @@ constexpr inline size_t fragment_variant_count() noexcept {
     return count;
 }
 
+} // anonymous namespace
+
+
+static auto const gLitVariants{ details::get_variants<true>() };
+static auto const gUnlitVariants{ details::get_variants<false>() };
+static auto const gDepthVariants{ details::get_depth_variants() };
+static auto const gPostProcessVariants{ details::get_post_process_variants() };
+
 static_assert(reserved_is_not_valid());
 static_assert(reserved_variant_count() == 160);
 static_assert(valid_variant_count() == 96);
@@ -174,12 +222,20 @@ static_assert(fragment_variant_count() == 33 - (2 + 2 + 8) + 4 - 1);    // 24
 
 namespace VariantUtils {
 
-utils::Slice<Variant> getLitVariants() noexcept {
+utils::Slice<const Variant> getLitVariants() noexcept {
     return { details::gLitVariants.data(), details::gLitVariants.size() };
 }
 
-utils::Slice<Variant> getUnlitVariants() noexcept {
+utils::Slice<const Variant> getUnlitVariants() noexcept {
     return { details::gUnlitVariants.data(), details::gUnlitVariants.size() };
+}
+
+utils::Slice<const Variant> getDepthVariants() noexcept {
+    return { details::gDepthVariants.data(), details::gDepthVariants.size() };
+}
+
+utils::Slice<const Variant> getPostProcessVariants() noexcept {
+    return { details::gPostProcessVariants.data(), details::gPostProcessVariants.size() };
 }
 
 }; // VariantUtils

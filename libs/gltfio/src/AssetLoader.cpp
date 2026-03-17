@@ -44,13 +44,14 @@
 #include <math/vec3.h>
 #include <math/vec4.h>
 
+#include <private/utils/Tracing.h>
+
 #include <utils/compiler.h>
 #include <utils/EntityManager.h>
 #include <utils/FixedCapacityVector.h>
 #include <utils/Log.h>
 #include <utils/Panic.h>
 #include <utils/NameComponentManager.h>
-#include <utils/Systrace.h>
 
 #include <tsl/robin_map.h>
 
@@ -267,7 +268,7 @@ struct FAssetLoader : public AssetLoader {
             mEngine(*config.engine),
             mDefaultNodeName(config.defaultNodeName) {
         if (config.ext) {
-            FILAMENT_CHECK_PRECONDITION(AssetConfigurationExtended::isSupported())
+            FILAMENT_CHECK_POSTCONDITION(AssetConfigurationExtended::isSupported())
                     << "Extend asset loading is not supported on this platform";
             mLoaderExtended = std::make_unique<AssetLoaderExtended>(
                     *config.ext, config.engine, mMaterials);
@@ -476,7 +477,7 @@ FilamentInstance* FAssetLoader::createInstance(FFilamentAsset* fAsset) {
 }
 
 FFilamentAsset* FAssetLoader::createRootAsset(const cgltf_data* srcAsset) {
-    SYSTRACE_CALL();
+    FILAMENT_TRACING_CALL(FILAMENT_TRACING_CATEGORY_GLTFIO);
     #if !GLTFIO_DRACO_SUPPORTED
     for (cgltf_size i = 0; i < srcAsset->extensions_required_count; i++) {
         if (!strcmp(srcAsset->extensions_required[i], "KHR_draco_mesh_compression")) {
@@ -1013,6 +1014,7 @@ bool FAssetLoader::createPrimitive(const cgltf_primitive& inPrim, const char* na
     vbb.enableBufferObjects();
 
     bool hasUv0 = false, hasUv1 = false, hasVertexColor = false, hasNormals = false;
+    int8_t currentCustomIndex = -1;
     uint32_t vertexCount = 0;
 
     const size_t firstSlot = slots->size();
@@ -1023,6 +1025,7 @@ bool FAssetLoader::createPrimitive(const cgltf_primitive& inPrim, const char* na
         const int index = attribute.index;
         const cgltf_attribute_type atype = attribute.type;
         const cgltf_accessor* accessor = attribute.data;
+        int8_t customIndex = -1;
 
         // The glTF tangent data is ignored here, but honored in ResourceLoader.
         if (atype == cgltf_attribute_type_tangent) {
@@ -1040,12 +1043,19 @@ bool FAssetLoader::createPrimitive(const cgltf_primitive& inPrim, const char* na
         }
 
         if (atype == cgltf_attribute_type_color) {
-            hasVertexColor = true;
+            if (hasVertexColor) {
+                // We already had a vertex color before, we need to store this is as a custom
+                // attribute.
+                customIndex = ++currentCustomIndex;
+            } else {
+                hasVertexColor = true;
+            }
         }
 
         // Translate the cgltf attribute enum into a Filament enum.
         VertexAttribute semantic;
-        if (!getVertexAttrType(atype, &semantic)) {
+        if (!getCustomVertexAttrType(customIndex, &semantic) &&
+                !getVertexAttrType(atype, &semantic)) {
             utils::slog.e << "Unrecognized vertex semantic in " << name << utils::io::endl;
             return false;
         }
@@ -1412,6 +1422,7 @@ MaterialKey FAssetLoader::getMaterialKey(const cgltf_data* srcAsset,
         .hasSheen = !!inputMat->has_sheen,
         .hasIOR = !!inputMat->has_ior,
         .hasVolume = !!inputMat->has_volume,
+        .hasDispersion = !!inputMat->has_dispersion,
         .hasSpecular = !!inputMat->has_specular,
         .hasSpecularTexture = spConfig.specular_texture.texture != nullptr,
         .hasSpecularColorTexture = spConfig.specular_color_texture.texture != nullptr,
@@ -1503,6 +1514,7 @@ MaterialInstance* FAssetLoader::createMaterialInstance(const cgltf_material* inp
     auto sgConfig = inputMat->pbr_specular_glossiness;
     auto ccConfig = inputMat->clearcoat;
     auto trConfig = inputMat->transmission;
+    auto dpConfig = inputMat->dispersion;
     auto shConfig = inputMat->sheen;
     auto vlConfig = inputMat->volume;
     auto spConfig = inputMat->specular;
@@ -1686,6 +1698,10 @@ MaterialInstance* FAssetLoader::createMaterialInstance(const cgltf_material* inp
         }
     }
 
+    if (matkey.hasDispersion) {
+        mi->setParameter("dispersion", dpConfig.dispersion);
+    }
+
     // IOR can be implemented as either IOR or reflectance because of ubershaders
     if (matkey.hasIOR) {
         if (mi->getMaterial()->hasParameter("ior")) {
@@ -1760,7 +1776,7 @@ void FAssetLoader::importSkins(FFilamentInstance* instance, const cgltf_data* gl
 // Including support for Android
 // See https://github.com/google/filament/discussions/7851#discussioncomment-9453369
 bool AssetConfigurationExtended::isSupported() {
-#if defined(IOS) || defined(__EMSCRIPTEN__)
+#if defined(FILAMENT_IOS) || defined(__EMSCRIPTEN__)
     return false;
 #else
     return true;

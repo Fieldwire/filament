@@ -45,13 +45,17 @@ set(HEADERS
         ../Include/BaseTypes.h
         ../Include/Common.h
         ../Include/ConstantUnion.h
+        ../Include/glslang_c_interface.h
+        ../Include/glslang_c_shader_types.h
         ../Include/InfoSink.h
         ../Include/InitializeGlobals.h
         ../Include/intermediate.h
         ../Include/PoolAlloc.h
         ../Include/ResourceLimits.h
         ../Include/ShHandle.h
+        ../Include/SpirvIntrinsics.h
         ../Include/Types.h
+        ../Include/visibility.h
         ../MachineIndependent/attribute.h
         ../MachineIndependent/glslang_tab.cpp.h
         ../MachineIndependent/gl_types.h
@@ -89,10 +93,11 @@ glslang_add_build_info_dependency(glslang)
 set(PUBLIC_HEADER_FOLDERS
         ../Include
         ../Public
-        ../MachineIndependent)
+        ../MachineIndependent
+        ../..)
 
 target_include_directories(glslang PUBLIC ${PUBLIC_HEADER_FOLDERS})
-target_link_libraries(glslang OGLCompiler OSDependent)
+target_link_libraries(glslang OSDependent)
 #if(ENABLE_HLSL)
 #    target_link_libraries(glslang HLSL)
 #endif()

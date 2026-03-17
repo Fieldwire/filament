@@ -17,15 +17,12 @@
 #ifndef TNT_FILAMENT_BACKEND_VULKANPIPELINECACHE_H
 #define TNT_FILAMENT_BACKEND_VULKANPIPELINECACHE_H
 
+#include "CallbackManager.h"
+#include "CompilerThreadPool.h"
 #include "VulkanCommands.h"
-#include "VulkanMemory.h"
-#include "VulkanResources.h"
-#include "VulkanUtility.h"
 
 #include <backend/DriverEnums.h>
 #include <backend/TargetBufferInfo.h>
-
-#include "backend/Program.h"
 
 #include <bluevk/BlueVK.h>
 
@@ -33,28 +30,19 @@
 #include <utils/compiler.h>
 #include <utils/Hash.h>
 
-#include <list>
 #include <tsl/robin_map.h>
 #include <type_traits>
-#include <vector>
-#include <unordered_map>
 
 namespace filament::backend {
 
 struct VulkanProgram;
 struct VulkanBufferObject;
 struct VulkanTexture;
-class VulkanResourceAllocator;
 
 // VulkanPipelineCache manages a cache of descriptor sets and pipelines.
 //
 // Please note the following limitations:
-//
-// - Push constants are not supported. (if adding support, see VkPipelineLayoutCreateInfo)
-// - Only DESCRIPTOR_TYPE_COUNT descriptor sets are bound at a time.
 // - Assumes that viewport and scissor should be dynamic. (not baked into VkPipeline)
-// - Assumes that uniform buffers should be visible across all shader stages.
-//
 class VulkanPipelineCache {
 public:
     VulkanPipelineCache(VulkanPipelineCache const&) = delete;
@@ -63,15 +51,10 @@ public:
     static constexpr uint32_t SHADER_MODULE_COUNT = 2;
     static constexpr uint32_t VERTEX_ATTRIBUTE_COUNT = MAX_VERTEX_ATTRIBUTE_COUNT;
 
-    // The ProgramBundle contains weak references to the compiled vertex and fragment shaders.
-    struct ProgramBundle {
-        VkShaderModule vertex;
-        VkShaderModule fragment;
-        VkSpecializationInfo* specializationInfos = nullptr;
-    };
-
+#if defined(__clang__)
     #pragma clang diagnostic push
     #pragma clang diagnostic warning "-Wpadded"
+#endif
 
     // The RasterState POD contains standard graphics-related state like blending, culling, etc.
     // The following states are omitted because Filament never changes them:
@@ -91,8 +74,7 @@ public:
         VkBlendFactor         dstAlphaBlendFactor : 5;
         VkColorComponentFlags colorWriteMask : 4;
         uint8_t               rasterizationSamples : 4;// offset = 4 bytes
-        uint8_t               depthClamp : 1;
-        uint8_t               reserved : 3;
+        uint8_t               depthClamp : 4;
         uint8_t               colorTargetCount;        // offset = 5 bytes
         BlendEquation         colorBlendOp : 4;        // offset = 6 bytes
         BlendEquation         alphaBlendOp : 4;
@@ -106,49 +88,52 @@ public:
 
     static_assert(sizeof(RasterState) == 16, "RasterState must not have implicit padding.");
 
-    struct UniformBufferBinding {
-        VkBuffer buffer;
-        VkDeviceSize offset;
-        VkDeviceSize size;
-    };
+    /**
+     * Creates a new instance of a pipeline cache for graphics pipelines.
+     *
+     * @param driver The driver this is being instantiated for. This is used only for construction of
+     *               the callback manager, which references the driver for scheduling callbacks.
+     * @param device The device that the pipelines will be created and run on.
+     * @param context Information about the current instance of Vulkan, such as supported extensions,
+     *                and enabled features.
+     */
+    VulkanPipelineCache(DriverBase& driver, VkDevice device, VulkanContext const& context);
 
-    // Upon construction, the pipeCache initializes some internal state but does not make any Vulkan
-    // calls. On destruction it will free any cached Vulkan objects that haven't already been freed.
-    VulkanPipelineCache(VkDevice device, VmaAllocator allocator);
-    ~VulkanPipelineCache();
+    // Loads a fake pipeline into memory on a separate thread, with the intent of
+    // preloading the Vulkan cache with enough information to have a cache hit when
+    // compiling the pipeline on the main thread at draw time. This is very dependent
+    // on the implementation of the driver on the current device; it's expected to work
+    // on devices with VK_EXT_vertex_input_dynamic_state and VK_KHR_dynamic_rendering.
+    void asyncPrewarmCache(resource_ptr<VulkanProgram> vprogram, VkPipelineLayout layout,
+                           StereoscopicType stereoscopicType, uint8_t stereoscopicViewCount,
+                           CompilerPriorityQueue priority);
 
-    void bindLayout(VkPipelineLayout layout) noexcept;
+    // Notifies the callback once all in-flight async cache prewarm jobs are complete.
+    // This typically signals that it is safe to use a material at draw time without
+    // hitching.
+    void addCachePrewarmCallback(CallbackHandler* handler,
+                                 const CallbackHandler::Callback callback,
+                                 void* user);
 
     // Creates a new pipeline if necessary and binds it using vkCmdBindPipeline.
     void bindPipeline(VulkanCommandBuffer* commands);
 
     // Each of the following methods are fast and do not make Vulkan calls.
-    void bindProgram(VulkanProgram* program) noexcept;
-    void bindRasterState(const RasterState& rasterState) noexcept;
-    void bindRenderPass(VkRenderPass renderPass, int subpassIndex) noexcept;
+    void bindLayout(VkPipelineLayout layout) noexcept;
+    void bindProgram(fvkmemory::resource_ptr<VulkanProgram> program) noexcept;
+    void bindRasterState(RasterState const& rasterState) noexcept;
+    void bindStencilState(StencilState const& stencilState) noexcept;
+    void bindRenderPass(fvkmemory::resource_ptr<VulkanRenderPass> renderPass,
+            int subpassIndex) noexcept;
     void bindPrimitiveTopology(VkPrimitiveTopology topology) noexcept;
-
     void bindVertexArray(VkVertexInputAttributeDescription const* attribDesc,
             VkVertexInputBindingDescription const* bufferDesc, uint8_t count);
 
+    // Set the current bindings for the pipeline and descriptor sets back to empty.
+    void resetBoundPipeline();
+
     // Destroys all managed Vulkan objects. This should be called before changing the VkDevice.
     void terminate() noexcept;
-
-    static VkPrimitiveTopology getPrimitiveTopology(PrimitiveType pt) noexcept {
-        switch (pt) {
-            case PrimitiveType::POINTS:
-                return VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
-            case PrimitiveType::LINES:
-                return VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
-            case PrimitiveType::LINE_STRIP:
-                return VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;
-            case PrimitiveType::TRIANGLES:
-                return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-            case PrimitiveType::TRIANGLE_STRIP:
-                return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
-        }
-    }
-
     void gc() noexcept;
 
 private:
@@ -203,11 +188,24 @@ private:
         VertexInputAttributeDescription vertexAttributes[VERTEX_ATTRIBUTE_COUNT]; //  128 : 28
         VertexInputBindingDescription vertexBuffers[VERTEX_ATTRIBUTE_COUNT];      //  128 : 156
         RasterState rasterState;                                                  //  16  : 284
-        uint32_t padding;                                                         //  4   : 300
-        VkPipelineLayout layout;                                                  //  8   : 304
+        StencilState stencilState;                                                //  12  : 300
+        VkPipelineLayout layout;                                                  //  8   : 312
     };
 
-    static_assert(sizeof(PipelineKey) == 312, "PipelineKey must not have implicit padding.");
+    // Provides information about any dynamic state that should be used in creation of the
+    // pipeline (if supported).
+    struct PipelineDynamicOptions {
+        // Requires `VK_EXT_vertex_input_dynamic_state` to enable.
+        bool useDynamicVertexInputState = false;
+        // Requires `VK_KHR_dynamic_rendering` to enable.
+        bool useDynamicRenderPasses = false;
+        // Only used if `useDynamicRenderPasses` is true.
+        StereoscopicType stereoscopicType = StereoscopicType::NONE;
+        // Only used if `stereoscopicType` is `StereoscopicType::MULTIVIEW`.
+        uint8_t stereoscopicViewCount = 2;
+    };
+
+    static_assert(sizeof(PipelineKey) == 320, "PipelineKey must not have implicit padding.");
 
     using PipelineHashFn = utils::hash::MurmurHashFn<PipelineKey>;
 
@@ -215,10 +213,9 @@ private:
         bool operator()(const PipelineKey& k1, const PipelineKey& k2) const;
     };
 
+#if defined(__clang__)
     #pragma clang diagnostic pop
-
-    // CACHE ENTRY STRUCTS
-    // -------------------
+#endif
 
     // The timestamp associated with a given cache entry represents time as a count of flush
     // events since the cache was constructed. If any cache entry was most recently used over
@@ -232,36 +229,45 @@ private:
         Timestamp lastUsed;
     };
 
-    struct PipelineLayoutCacheEntry {
-        VkPipelineLayout handle;
-        Timestamp lastUsed;
-    };
-
-    // CACHE CONTAINERS
-    // ----------------
-
     using PipelineMap = tsl::robin_map<PipelineKey, PipelineCacheEntry,
             PipelineHashFn, PipelineEqual>;
-
-private:
 
     PipelineCacheEntry* getOrCreatePipeline() noexcept;
 
     PipelineMap mPipelines;
 
+    // Creates a pipeline, with all optional dynamic pipeline states diabled.
+    // Note - because PipelineDynamicOptions is defined within VulkanPipelineCache,
+    // we cannot define the function with a default arg for it explicitly.
+    inline VkPipeline createPipeline(const PipelineKey& key) noexcept {
+        return createPipeline(key, {});
+    }
+
     // These helpers all return unstable pointers that should not be stored.
-    PipelineCacheEntry* createPipeline() noexcept;
-    PipelineLayoutCacheEntry* getOrCreatePipelineLayout() noexcept;
+    VkPipeline createPipeline(const PipelineKey& key, const PipelineDynamicOptions& dynamicOptions) noexcept;
 
     // Immutable state.
     VkDevice mDevice = VK_NULL_HANDLE;
-    VmaAllocator mAllocator = VK_NULL_HANDLE;
+
+    // Vuklan Driver pipeline cache handle. In the cases a pipeline has been  evicted by the `gc`,
+    // recreating the same pipeline is cheaper, helping with frame stalling.
+    VkPipelineCache mPipelineCache = VK_NULL_HANDLE;
 
     // Current requirements for the pipeline layout, pipeline, and descriptor sets.
     PipelineKey mPipelineRequirements = {};
 
     // Current bindings for the pipeline and descriptor sets.
     PipelineKey mBoundPipeline = {};
+
+    // Thread pool that allows us to "prewarm" the pipeline cache, reducing draw-time
+    // pipeline compilation time.
+    CompilerThreadPool mCompilerThreadPool;
+
+    // Callback manager that allows us to notify the frontend when a set of pipelines have
+    // been prewarmed, signifying that it is safe to compile pipelines at draw time.
+    CallbackManager mCallbackManager;
+
+    [[maybe_unused]] VulkanContext const& mContext;
 };
 
 } // namespace filament::backend

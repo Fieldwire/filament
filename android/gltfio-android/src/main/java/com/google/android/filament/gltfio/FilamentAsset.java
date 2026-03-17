@@ -467,7 +467,6 @@ public class FilamentAsset {
             ? nNewDirectByteBuffer(indicesPtr, (int) indicesSize) : null;
         java.nio.ByteBuffer expandedIndices = expandedIndicesPtr != 0 && expandedIndicesSize > 0
             ? nNewDirectByteBuffer(expandedIndicesPtr, (int) expandedIndicesSize) : null;
-
         return new MeshData(positions, indices, expandedIndices);
     }
 

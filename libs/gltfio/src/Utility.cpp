@@ -20,12 +20,16 @@
 #include "FFilamentAsset.h"
 #include "GltfEnums.h"
 
+#include <private/utils/Tracing.h>
+
 #include <utils/Log.h>
-#include <utils/Systrace.h>
+#include <utils/Panic.h>
 
 #define CGLTF_IMPLEMENTATION
 #include <cgltf.h>
 #include <meshoptimizer.h>
+
+#include <limits>
 
 namespace filament::gltfio::utility {
 
@@ -92,6 +96,12 @@ void decodeMeshoptCompression(cgltf_data* data) {
         const uint8_t* source = (const uint8_t*) compression->buffer->data;
         assert_invariant(source);
         source += compression->offset;
+
+        size_t const theoreticalMaxCount = std::numeric_limits<size_t>::max() / compression->stride;
+        FILAMENT_CHECK_PRECONDITION(compression->count <= theoreticalMaxCount)
+                << "gltfio: meshopt decompression exceeds maximum count of " << theoreticalMaxCount
+                << " (actual=" << compression->count << ") given stride of " << compression->stride
+                << ".";
 
         // This memory is freed by cgltf.
         void* destination = malloc(compression->count * compression->stride);
@@ -207,8 +217,8 @@ bool requiresPacking(cgltf_accessor const* accessor) {
 
 bool loadCgltfBuffers(cgltf_data const* gltf, char const* gltfPath,
         UriDataCacheHandle uriDataCacheHandle) {
-    SYSTRACE_CONTEXT();
-    SYSTRACE_NAME_BEGIN("Load buffers");
+    FILAMENT_TRACING_CONTEXT(FILAMENT_TRACING_CATEGORY_GLTFIO);
+    FILAMENT_TRACING_NAME_BEGIN(FILAMENT_TRACING_CATEGORY_GLTFIO, "Load buffers");
     cgltf_options options{};
 
     // For emscripten and Android builds we supply a custom file reader callback that looks inside a
@@ -251,7 +261,7 @@ bool loadCgltfBuffers(cgltf_data const* gltf, char const* gltfPath,
         return false;
     }
 
-    SYSTRACE_NAME_END();
+    FILAMENT_TRACING_NAME_END(FILAMENT_TRACING_CATEGORY_GLTFIO);
 
 #ifndef NDEBUG
     if (cgltf_validate((cgltf_data*) gltf) != cgltf_result_success) {

@@ -1,4 +1,6 @@
 // Copyright (c) 2016 Google Inc.
+// Modifications Copyright (C) 2024 Advanced Micro Devices, Inc. All rights
+// reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -46,6 +48,7 @@ class Sampler;
 class SampledImage;
 class Array;
 class RuntimeArray;
+class NodePayloadArrayAMDX;
 class Struct;
 class Opaque;
 class Pointer;
@@ -60,8 +63,13 @@ class PipeStorage;
 class NamedBarrier;
 class AccelerationStructureNV;
 class CooperativeMatrixNV;
+class CooperativeMatrixKHR;
+class CooperativeVectorNV;
 class RayQueryKHR;
 class HitObjectNV;
+class TensorLayoutNV;
+class TensorViewNV;
+class TensorARM;
 
 // Abstract class for a SPIR-V type. It has a bunch of As<sublcass>() methods,
 // which is used as a way to probe the actual <subclass>.
@@ -86,6 +94,7 @@ class Type {
     kSampledImage,
     kArray,
     kRuntimeArray,
+    kNodePayloadArrayAMDX,
     kStruct,
     kOpaque,
     kPointer,
@@ -100,8 +109,13 @@ class Type {
     kNamedBarrier,
     kAccelerationStructureNV,
     kCooperativeMatrixNV,
+    kCooperativeMatrixKHR,
+    kCooperativeVectorNV,
     kRayQueryKHR,
     kHitObjectNV,
+    kTensorLayoutNV,
+    kTensorViewNV,
+    kTensorARM,
     kLast
   };
 
@@ -148,12 +162,16 @@ class Type {
   // Returns a clone of |this| minus any decorations.
   std::unique_ptr<Type> RemoveDecorations() const;
 
-  // Returns true if this type must be unique.
+  // Returns true if this cannot hash to the same value as another type in the
+  // module. For example, structs are not unique types because the module could
+  // have two types
   //
-  // If variable pointers are allowed, then pointers are not required to be
-  // unique.
-  // TODO(alanbaker): Update this if variable pointers become a core feature.
-  bool IsUniqueType(bool allowVariablePointers = false) const;
+  //  %1 = OpTypeStruct %int
+  //  %2 = OpTypeStruct %int
+  //
+  // The only way to distinguish these types is the result id. The type manager
+  // will hash them to the same value.
+  bool IsUniqueType() const;
 
   bool operator==(const Type& other) const;
 
@@ -166,9 +184,9 @@ class Type {
   // non-composite type.
   uint64_t NumberOfComponents() const;
 
-// A bunch of methods for casting this type to a given type. Returns this if the
-// cast can be done, nullptr otherwise.
-// clang-format off
+  // A bunch of methods for casting this type to a given type. Returns this if
+  // the cast can be done, nullptr otherwise.
+  // clang-format off
 #define DeclareCastMethod(target)                  \
   virtual target* As##target() { return nullptr; } \
   virtual const target* As##target() const { return nullptr; }
@@ -183,6 +201,7 @@ class Type {
   DeclareCastMethod(SampledImage)
   DeclareCastMethod(Array)
   DeclareCastMethod(RuntimeArray)
+  DeclareCastMethod(NodePayloadArrayAMDX)
   DeclareCastMethod(Struct)
   DeclareCastMethod(Opaque)
   DeclareCastMethod(Pointer)
@@ -197,8 +216,13 @@ class Type {
   DeclareCastMethod(NamedBarrier)
   DeclareCastMethod(AccelerationStructureNV)
   DeclareCastMethod(CooperativeMatrixNV)
+  DeclareCastMethod(CooperativeMatrixKHR)
+  DeclareCastMethod(CooperativeVectorNV)
   DeclareCastMethod(RayQueryKHR)
   DeclareCastMethod(HitObjectNV)
+  DeclareCastMethod(TensorLayoutNV)
+  DeclareCastMethod(TensorViewNV)
+  DeclareCastMethod(TensorARM)
 #undef DeclareCastMethod
 
 protected:
@@ -208,7 +232,9 @@ protected:
  protected:
   // Decorations attached to this type. Each decoration is encoded as a vector
   // of uint32_t numbers. The first uint32_t number is the decoration value,
-  // and the rest are the parameters to the decoration (if exists).
+  // and the rest are the parameters to the decoration (if any exist).
+  // The parameters can be either all literals or all ids depending on the
+  // decoration value.
   std::vector<std::vector<uint32_t>> decorations_;
 
  private:
@@ -244,7 +270,8 @@ class Integer : public Type {
 
 class Float : public Type {
  public:
-  Float(uint32_t w) : Type(kFloat), width_(w) {}
+  Float(uint32_t w, spv::FPEncoding encoding = spv::FPEncoding::Max)
+      : Type(kFloat), width_(w), encoding_(encoding) {}
   Float(const Float&) = default;
 
   std::string str() const override;
@@ -252,13 +279,15 @@ class Float : public Type {
   Float* AsFloat() override { return this; }
   const Float* AsFloat() const override { return this; }
   uint32_t width() const { return width_; }
+  spv::FPEncoding encoding() const { return encoding_; }
 
   size_t ComputeExtraStateHash(size_t hash, SeenTypes* seen) const override;
 
  private:
   bool IsSameImpl(const Type* that, IsSameCache*) const override;
 
-  uint32_t width_;  // bit width
+  uint32_t width_;            // bit width
+  spv::FPEncoding encoding_;  // FPEncoding
 };
 
 class Vector : public Type {
@@ -427,6 +456,29 @@ class RuntimeArray : public Type {
   const Type* element_type_;
 };
 
+class NodePayloadArrayAMDX : public Type {
+ public:
+  NodePayloadArrayAMDX(const Type* element_type);
+  NodePayloadArrayAMDX(const NodePayloadArrayAMDX&) = default;
+
+  std::string str() const override;
+  const Type* element_type() const { return element_type_; }
+
+  NodePayloadArrayAMDX* AsNodePayloadArrayAMDX() override { return this; }
+  const NodePayloadArrayAMDX* AsNodePayloadArrayAMDX() const override {
+    return this;
+  }
+
+  size_t ComputeExtraStateHash(size_t hash, SeenTypes* seen) const override;
+
+  void ReplaceElementType(const Type* element_type);
+
+ private:
+  bool IsSameImpl(const Type* that, IsSameCache*) const override;
+
+  const Type* element_type_;
+};
+
 class Struct : public Type {
  public:
   Struct(const std::vector<const Type*>& element_types);
@@ -500,6 +552,8 @@ class Pointer : public Type {
   std::string str() const override;
   const Type* pointee_type() const { return pointee_type_; }
   spv::StorageClass storage_class() const { return storage_class_; }
+
+  bool is_untyped() const { return pointee_type_ == nullptr; }
 
   Pointer* AsPointer() override { return this; }
   const Pointer* AsPointer() const override { return this; }
@@ -618,6 +672,134 @@ class CooperativeMatrixNV : public Type {
   const uint32_t scope_id_;
   const uint32_t rows_id_;
   const uint32_t columns_id_;
+};
+
+class CooperativeMatrixKHR : public Type {
+ public:
+  CooperativeMatrixKHR(const Type* type, const uint32_t scope,
+                       const uint32_t rows, const uint32_t columns,
+                       const uint32_t use);
+  CooperativeMatrixKHR(const CooperativeMatrixKHR&) = default;
+
+  std::string str() const override;
+
+  CooperativeMatrixKHR* AsCooperativeMatrixKHR() override { return this; }
+  const CooperativeMatrixKHR* AsCooperativeMatrixKHR() const override {
+    return this;
+  }
+
+  size_t ComputeExtraStateHash(size_t hash, SeenTypes* seen) const override;
+
+  const Type* component_type() const { return component_type_; }
+  uint32_t scope_id() const { return scope_id_; }
+  uint32_t rows_id() const { return rows_id_; }
+  uint32_t columns_id() const { return columns_id_; }
+  uint32_t use_id() const { return use_id_; }
+
+ private:
+  bool IsSameImpl(const Type* that, IsSameCache*) const override;
+
+  const Type* component_type_;
+  const uint32_t scope_id_;
+  const uint32_t rows_id_;
+  const uint32_t columns_id_;
+  const uint32_t use_id_;
+};
+
+class TensorLayoutNV : public Type {
+ public:
+  TensorLayoutNV(const uint32_t dim, const uint32_t clamp_mode);
+  TensorLayoutNV(const TensorLayoutNV&) = default;
+
+  std::string str() const override;
+
+  TensorLayoutNV* AsTensorLayoutNV() override { return this; }
+  const TensorLayoutNV* AsTensorLayoutNV() const override { return this; }
+
+  size_t ComputeExtraStateHash(size_t hash, SeenTypes* seen) const override;
+
+  uint32_t dim_id() const { return dim_id_; }
+  uint32_t clamp_mode_id() const { return clamp_mode_id_; }
+
+ private:
+  bool IsSameImpl(const Type* that, IsSameCache*) const override;
+
+  const uint32_t dim_id_;
+  const uint32_t clamp_mode_id_;
+};
+
+class TensorViewNV : public Type {
+ public:
+  TensorViewNV(const uint32_t dim, const uint32_t clamp_mode,
+               const std::vector<uint32_t>& perm);
+  TensorViewNV(const TensorViewNV&) = default;
+
+  std::string str() const override;
+
+  TensorViewNV* AsTensorViewNV() override { return this; }
+  const TensorViewNV* AsTensorViewNV() const override { return this; }
+
+  size_t ComputeExtraStateHash(size_t hash, SeenTypes* seen) const override;
+
+  uint32_t dim_id() const { return dim_id_; }
+  uint32_t has_dimensions_id() const { return has_dimensions_id_; }
+  const std::vector<uint32_t>& perm() const { return perm_; }
+
+ private:
+  bool IsSameImpl(const Type* that, IsSameCache*) const override;
+
+  const uint32_t dim_id_;
+  const uint32_t has_dimensions_id_;
+  std::vector<uint32_t> perm_;
+};
+
+class CooperativeVectorNV : public Type {
+ public:
+  CooperativeVectorNV(const Type* type, const uint32_t components);
+  CooperativeVectorNV(const CooperativeVectorNV&) = default;
+
+  std::string str() const override;
+
+  CooperativeVectorNV* AsCooperativeVectorNV() override { return this; }
+  const CooperativeVectorNV* AsCooperativeVectorNV() const override {
+    return this;
+  }
+
+  size_t ComputeExtraStateHash(size_t hash, SeenTypes* seen) const override;
+
+  const Type* component_type() const { return component_type_; }
+  uint32_t components() const { return components_; }
+
+ private:
+  bool IsSameImpl(const Type* that, IsSameCache*) const override;
+
+  const Type* component_type_;
+  const uint32_t components_;
+};
+
+class TensorARM : public Type {
+ public:
+  TensorARM(const Type* elty, const uint32_t rank = 0,
+            const uint32_t shape = 0);
+  TensorARM(const TensorARM&) = default;
+
+  std::string str() const override;
+
+  TensorARM* AsTensorARM() override { return this; }
+  const TensorARM* AsTensorARM() const override { return this; }
+
+  size_t ComputeExtraStateHash(size_t hash, SeenTypes* seen) const override;
+
+  const Type* element_type() const { return element_type_; }
+  uint32_t rank_id() const { return rank_id_; }
+  uint32_t shape_id() const { return shape_id_; }
+
+ private:
+  bool IsSameImpl(const Type* that, IsSameCache*) const override;
+
+  const Type* element_type_;
+  const uint32_t rank_id_;
+  const uint32_t shape_id_;
 };
 
 #define DefineParameterlessType(type, name)                                \

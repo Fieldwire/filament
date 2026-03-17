@@ -294,6 +294,8 @@ class Instruction : public utils::IntrusiveNodeBase<Instruction> {
   // It is the responsibility of the caller to make sure
   // that the instruction remains valid.
   inline void AddOperand(Operand&& operand);
+  // Adds a copy of |operand| to the list of operands of this instruction.
+  inline void AddOperand(const Operand& operand);
   // Gets the |index|-th logical operand as a single SPIR-V word. This method is
   // not expected to be used with logical operands consisting of multiple SPIR-V
   // words.
@@ -336,7 +338,8 @@ class Instruction : public utils::IntrusiveNodeBase<Instruction> {
   // Updates lexical scope of DebugScope and OpLine.
   void UpdateLexicalScope(uint32_t scope);
   // Updates OpLine and DebugScope based on the information of |from|.
-  void UpdateDebugInfoFrom(const Instruction* from);
+  void UpdateDebugInfoFrom(const Instruction* from,
+                           const Instruction* line = nullptr);
   // Remove the |index|-th operand
   void RemoveOperand(uint32_t index) {
     operands_.erase(operands_.begin() + index);
@@ -522,6 +525,10 @@ class Instruction : public utils::IntrusiveNodeBase<Instruction> {
   // constant value by |FoldScalar|.
   bool IsFoldableByFoldScalar() const;
 
+  // Returns true if |this| is an instruction which could be folded into a
+  // constant value by |FoldVector|.
+  bool IsFoldableByFoldVector() const;
+
   // Returns true if we are allowed to fold or otherwise manipulate the
   // instruction that defines |id| in the given context. This includes not
   // handling NaN values.
@@ -674,6 +681,10 @@ inline const Operand& Instruction::GetOperand(uint32_t index) const {
 
 inline void Instruction::AddOperand(Operand&& operand) {
   operands_.push_back(std::move(operand));
+}
+
+inline void Instruction::AddOperand(const Operand& operand) {
+  operands_.push_back(operand);
 }
 
 inline void Instruction::SetInOperand(uint32_t index,
@@ -906,7 +917,7 @@ bool Instruction::IsAtomicWithLoad() const {
 bool Instruction::IsAtomicOp() const { return spvOpcodeIsAtomicOp(opcode()); }
 
 bool Instruction::IsConstant() const {
-  return IsCompileTimeConstantInst(opcode());
+  return IsConstantInst(opcode()) && !IsSpecConstantInst(opcode());
 }
 }  // namespace opt
 }  // namespace spvtools

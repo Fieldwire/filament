@@ -15,8 +15,11 @@
  */
 
 #include "VulkanSwapChain.h"
+
+#include "VulkanCommands.h"
 #include "VulkanTexture.h"
 
+#include <utils/debug.h>
 #include <utils/FixedCapacityVector.h>
 #include <utils/Panic.h>
 
@@ -26,17 +29,21 @@ using namespace utils;
 namespace filament::backend {
 
 VulkanSwapChain::VulkanSwapChain(VulkanPlatform* platform, VulkanContext const& context,
-        VmaAllocator allocator, VulkanCommands* commands, VulkanStagePool& stagePool,
-        void* nativeWindow, uint64_t flags, VkExtent2D extent)
-    : VulkanResource(VulkanResourceType::SWAP_CHAIN),
-      mPlatform(platform),
+        fvkmemory::ResourceManager* resourceManager, VmaAllocator allocator,
+        VulkanCommands* commands, VulkanStagePool& stagePool, void* nativeWindow, uint64_t flags,
+        VkExtent2D extent)
+    : mPlatform(platform),
+      mContext(context),
+      mResourceManager(resourceManager),
       mCommands(commands),
       mAllocator(allocator),
       mStagePool(stagePool),
       mHeadless(extent.width != 0 && extent.height != 0 && !nativeWindow),
       mFlushAndWaitOnResize(platform->getCustomization().flushAndWaitOnWindowResize),
       mTransitionSwapChainImageLayoutForPresent(
-            platform->getCustomization().transitionSwapChainImageLayoutForPresent),
+              platform->getCustomization().transitionSwapChainImageLayoutForPresent),
+      mLayerCount(1),
+      mCurrentSwapIndex(0),
       mAcquired(false),
       mIsFirstRenderPass(true) {
     swapChain = mPlatform->createSwapChain(nativeWindow, flags, extent);
@@ -51,6 +58,12 @@ VulkanSwapChain::~VulkanSwapChain() {
     mCommands->flush();
     mCommands->wait();
 
+    mColors = {};
+    mDepth = {};
+    for (auto& semaphore : mFinishedDrawing) {
+        semaphore = {};
+    }
+    mFinishedDrawing.clear();
     mPlatform->destroy(swapChain);
 }
 
@@ -58,53 +71,82 @@ void VulkanSwapChain::update() {
     mColors.clear();
 
     auto const bundle = mPlatform->getSwapChainBundle(swapChain);
+    size_t const swapChainCount = bundle.colors.size();
     mColors.reserve(bundle.colors.size());
     VkDevice const device = mPlatform->getDevice();
 
-    for (auto const color: bundle.colors) {
-        mColors.push_back(std::make_unique<VulkanTexture>(device, mAllocator, mCommands, color,
-                bundle.colorFormat, 1, bundle.extent.width, bundle.extent.height,
-                TextureUsage::COLOR_ATTACHMENT, mStagePool, true /* heap allocated */));
+    mFinishedDrawing.clear();
+    mFinishedDrawing.reserve(swapChainCount);
+    mFinishedDrawing.resize(swapChainCount);
+    for (size_t i = 0; i < swapChainCount; ++i) {
+        mFinishedDrawing[i] = {};
     }
-    mDepth = std::make_unique<VulkanTexture>(device, mAllocator, mCommands, bundle.depth,
-            bundle.depthFormat, 1, bundle.extent.width, bundle.extent.height,
-            TextureUsage::DEPTH_ATTACHMENT, mStagePool, true /* heap allocated */);
+
+    TextureUsage depthUsage = TextureUsage::DEPTH_ATTACHMENT;
+    TextureUsage colorUsage = TextureUsage::COLOR_ATTACHMENT;
+    if (bundle.isProtected) {
+        depthUsage |= TextureUsage::PROTECTED;
+        colorUsage |= TextureUsage::PROTECTED;
+    }
+    for (auto const color: bundle.colors) {
+        auto colorTexture = fvkmemory::resource_ptr<VulkanTexture>::construct(mResourceManager,
+                mContext, device, mAllocator, mResourceManager, mCommands, color, VK_NULL_HANDLE,
+                bundle.colorFormat, VK_NULL_HANDLE /*ycrcb */, 1, bundle.extent.width,
+                bundle.extent.height, bundle.layerCount, colorUsage, mStagePool);
+        mColors.push_back(colorTexture);
+    }
+
+    mDepth = fvkmemory::resource_ptr<VulkanTexture>::construct(mResourceManager, mContext, device,
+            mAllocator, mResourceManager, mCommands, bundle.depth, VK_NULL_HANDLE,
+            bundle.depthFormat, VK_NULL_HANDLE /*ycrcb */, 1, bundle.extent.width,
+            bundle.extent.height, bundle.layerCount, depthUsage, mStagePool);
 
     mExtent = bundle.extent;
+    mLayerCount = bundle.layerCount;
 }
 
-void VulkanSwapChain::present() {
+void VulkanSwapChain::present(DriverBase& driver) {
+    // The last acquire failed, so just skip presenting.
+    if (!mAcquired) {
+        return;
+    }
+
     if (!mHeadless && mTransitionSwapChainImageLayoutForPresent) {
-        VkCommandBuffer const cmdbuf = mCommands->get().buffer();
+        VulkanCommandBuffer& commands = mCommands->get();
         VkImageSubresourceRange const subresources{
                 .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
                 .baseMipLevel = 0,
                 .levelCount = 1,
                 .baseArrayLayer = 0,
-                .layerCount = 1,
+                .layerCount = mLayerCount,
         };
-        mColors[mCurrentSwapIndex]->transitionLayout(cmdbuf, subresources, VulkanLayout::PRESENT);
+        mColors[mCurrentSwapIndex]->transitionLayout(&commands, subresources, VulkanLayout::PRESENT);
     }
 
     mCommands->flush();
-    
-    // call the image ready wait function
-    if (mExplicitImageReadyWait != nullptr) {
-        mExplicitImageReadyWait(swapChain);
-    }
 
     // We only present if it is not headless. No-op for headless.
     if (!mHeadless) {
-        VkSemaphore const finishedDrawing = mCommands->acquireFinishedSignal();
-        VkResult const result = mPlatform->present(swapChain, mCurrentSwapIndex, finishedDrawing);
+        auto finishedDrawing = mCommands->acquireFinishedSignal();
+        mFinishedDrawing[mCurrentSwapIndex] = finishedDrawing;
+        VkResult const result =
+                mPlatform->present(swapChain, mCurrentSwapIndex, finishedDrawing->getVkSemaphore());
         FILAMENT_CHECK_POSTCONDITION(result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR ||
                 result == VK_ERROR_OUT_OF_DATE_KHR)
-                << "Cannot present in swapchain.";
+                << "Cannot present in swapchain. error=" << static_cast<int32_t>(result);
     }
 
     // We presented the last acquired buffer.
     mAcquired = false;
     mIsFirstRenderPass = true;
+
+    if (mFrameScheduled.callback) {
+        driver.scheduleCallback(mFrameScheduled.handler,
+                [callback = mFrameScheduled.callback]() {
+                    PresentCallable noop = PresentCallable(PresentCallable::noopPresent, nullptr);
+                    callback->operator()(noop);
+                });
+    }
 }
 
 void VulkanSwapChain::acquire(bool& resized) {
@@ -125,12 +167,21 @@ void VulkanSwapChain::acquire(bool& resized) {
 
     VulkanPlatform::ImageSyncData imageSyncData;
     VkResult const result = mPlatform->acquire(swapChain, &imageSyncData);
+
+    if (result != VK_SUCCESS) {
+        // We just don't set mAcquired here so the next present will just skip.
+        FVK_LOGD << "Failed to acquire next image in the swapchain result=" << (int) result;
+        return;
+    }
+
     mCurrentSwapIndex = imageSyncData.imageIndex;
-    mExplicitImageReadyWait = imageSyncData.explicitImageReadyWait;
-    FILAMENT_CHECK_POSTCONDITION(result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) 
-        << "Cannot acquire in swapchain.";
+    assert_invariant(mCurrentSwapIndex < mFinishedDrawing.size());
+    mFinishedDrawing[mCurrentSwapIndex] = {};
+    FILAMENT_CHECK_POSTCONDITION(result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR)
+            << "Cannot acquire in swapchain. error=" << static_cast<int32_t>(result);
     if (imageSyncData.imageReadySemaphore != VK_NULL_HANDLE) {
-        mCommands->injectDependency(imageSyncData.imageReadySemaphore);
+        mCommands->injectDependency(imageSyncData.imageReadySemaphore,
+                VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
     }
     mAcquired = true;
 }

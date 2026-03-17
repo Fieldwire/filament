@@ -34,10 +34,11 @@
 
 #include <geometry/Transcoder.h>
 
+#include <private/utils/Tracing.h>
+
 #include <utils/compiler.h>
 #include <utils/JobSystem.h>
-#include <utils/Log.h>
-#include <utils/Systrace.h>
+#include <utils/Logger.h>
 #include <utils/Path.h>
 
 #include <cgltf.h>
@@ -159,7 +160,7 @@ uint8_t const* parseDataUri(const char* uri, std::string* mimeType, size_t* psiz
 inline void normalizeSkinningWeights(cgltf_data const* gltf) {
     auto normalize = [](cgltf_accessor* data) {
         if (data->type != cgltf_type_vec4 || data->component_type != cgltf_component_type_r_32f) {
-            slog.w << "Cannot normalize weights, unsupported attribute type." << io::endl;
+            LOG(WARNING) << "Cannot normalize weights, unsupported attribute type.";
             return;
         }
         uint8_t* bytes = (uint8_t*) data->buffer_view->buffer->data;
@@ -233,9 +234,34 @@ inline void uploadBuffers(FFilamentAsset* asset, Engine& engine,
     auto& slots = std::get<FFilamentAsset::ResourceInfo>(asset->mResourceInfo).mBufferSlots;
     for (auto const& slot: slots) {
         const cgltf_accessor* accessor = slot.accessor;
-        if (!accessor->buffer_view) {
+        // Morph target accessors may not have a buffer_view (data is directly in the accessor)
+        bool isMorphTarget = (slot.morphTargetBuffer != nullptr);
+
+        if (!accessor->buffer_view && !isMorphTarget) {
             continue;
         }
+
+        // For morph targets without buffer_view, use cgltf_accessor_unpack_floats to unpack data directly
+        if (!accessor->buffer_view && isMorphTarget) {
+            const size_t floatsCount = accessor->count * cgltf_num_components(accessor->type);
+            const size_t floatsByteCount = sizeof(float) * floatsCount;
+            float* floatsData = (float*)malloc(floatsByteCount);
+            cgltf_accessor_unpack_floats(accessor, floatsData, floatsCount);
+
+            if (accessor->type == cgltf_type_vec3) {
+                slot.morphTargetBuffer->setPositionsAt(engine, slot.bufferIndex,
+                    (const float3*)floatsData, slot.morphTargetCount, slot.morphTargetOffset);
+            }
+            else {
+                assert_invariant(accessor->type == cgltf_type_vec4);
+                slot.morphTargetBuffer->setPositionsAt(engine, slot.bufferIndex,
+                    (const float4*)floatsData, slot.morphTargetCount, slot.morphTargetOffset);
+            }
+
+            free(floatsData);
+            continue;
+        }
+
         const uint8_t* bufferData = nullptr;
         const uint8_t* data = nullptr;
         if (accessor->buffer_view->has_meshopt_compression) {
@@ -365,8 +391,8 @@ void ResourceLoader::Impl::addResourceData(const char* uri, BufferDescriptor&& b
     // finalization begins. This marker provides a rough indicator of how long
     // the client is taking to load raw data blobs from storage.
     if (mUriDataCache->empty()) {
-        SYSTRACE_CONTEXT();
-        SYSTRACE_ASYNC_BEGIN("addResourceData", 1);
+        FILAMENT_TRACING_CONTEXT(FILAMENT_TRACING_CATEGORY_GLTFIO);
+        FILAMENT_TRACING_ASYNC_BEGIN(FILAMENT_TRACING_CATEGORY_GLTFIO, "addResourceData", 1);
     }
     // NOTE: replacing an existing item in a robin map does not seem to behave as expected.
     // To work around this, we explicitly erase the old element if it already exists.
@@ -405,8 +431,8 @@ bool ResourceLoader::loadResources(FilamentAsset* asset) {
 }
 
 bool ResourceLoader::loadResources(FFilamentAsset* asset, bool async) {
-    SYSTRACE_CONTEXT();
-    SYSTRACE_ASYNC_END("addResourceData", 1);
+    FILAMENT_TRACING_CONTEXT(FILAMENT_TRACING_CATEGORY_GLTFIO);
+    FILAMENT_TRACING_ASYNC_END(FILAMENT_TRACING_CATEGORY_GLTFIO, "addResourceData", 1);
 
     if (asset->mResourcesLoaded) {
         return false;
@@ -449,9 +475,6 @@ bool ResourceLoader::loadResources(FFilamentAsset* asset, bool async) {
         // that we need to generate the contents of a GPU buffer by processing one or more CPU
         // buffer(s).
         pImpl->computeTangents(asset);
-
-        std::get<FFilamentAsset::ResourceInfo>(asset->mResourceInfo).mBufferSlots.clear();
-        std::get<FFilamentAsset::ResourceInfo>(asset->mResourceInfo).mPrimitives.clear();
     } else {
         auto& slots = std::get<FFilamentAsset::ResourceInfoExtended>(asset->mResourceInfo).slots;
         ResourceLoaderExtended::loadResources(slots, pImpl->mEngine, asset->mBufferObjects);
@@ -575,8 +598,14 @@ void ResourceLoader::asyncUpdateLoad() {
 std::pair<Texture*, CacheResult> ResourceLoader::Impl::getOrCreateTexture(FFilamentAsset* asset,
         size_t textureIndex, TextureProvider::TextureFlags flags) {
     const cgltf_texture& srcTexture = asset->mSourceAsset->hierarchy->textures[textureIndex];
-    const cgltf_image* image = srcTexture.basisu_image ?
+    const cgltf_image* image = srcTexture.webp_image ? srcTexture.webp_image : srcTexture.basisu_image ?
             srcTexture.basisu_image : srcTexture.image;
+
+    if (!image) {
+        LOG(ERROR) << "Missing texture";
+        return {};
+    }
+
     const cgltf_buffer_view* bv = image->buffer_view;
     const char* uri = image->uri;
 
@@ -592,7 +621,7 @@ std::pair<Texture*, CacheResult> ResourceLoader::Impl::getOrCreateTexture(FFilam
 
     auto foundProvider = mTextureProviders.find(mime);
     if (foundProvider == mTextureProviders.end()) {
-        slog.e << "Missing texture provider for " << mime << io::endl;
+        LOG(ERROR) << "Missing texture provider for " << mime;
         return {};
     }
     TextureProvider* provider = foundProvider->second;
@@ -648,7 +677,7 @@ std::pair<Texture*, CacheResult> ResourceLoader::Impl::getOrCreateTexture(FFilam
         }
         Path fullpath = Path(mGltfPath).getParent() + uri;
         if (!fullpath.exists()) {
-            slog.e << "Unable to open " << fullpath << io::endl;
+            LOG(ERROR) << "Unable to open " << fullpath;
             return {};
         }
         using namespace std;
@@ -670,7 +699,7 @@ std::pair<Texture*, CacheResult> ResourceLoader::Impl::getOrCreateTexture(FFilam
     }
 
     const char* name = srcTexture.name ? srcTexture.name : uri;
-    slog.e << "Unable to create texture " << name << ": " << provider->getPushMessage() << io::endl;
+    LOG(ERROR) << "Unable to create texture " << name << ": " << provider->getPushMessage();
     return {};
 }
 
@@ -722,7 +751,7 @@ void ResourceLoader::Impl::createTextures(FFilamentAsset* asset, bool async) {
 }
 
 void ResourceLoader::Impl::computeTangents(FFilamentAsset* asset) {
-    SYSTRACE_CALL();
+    FILAMENT_TRACING_CALL(FILAMENT_TRACING_CATEGORY_GLTFIO);
 
     const cgltf_accessor* kGenerateTangents = &asset->mGenerateTangents;
     const cgltf_accessor* kGenerateNormals = &asset->mGenerateNormals;

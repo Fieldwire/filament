@@ -27,14 +27,51 @@
 
 #include "private/backend/BackendUtils.h"
 
-#include <utils/compiler.h>
+#include <utils/Logger.h>
 #include <utils/Panic.h>
-#include <utils/trap.h>
+#include <utils/compiler.h>
 #include <utils/debug.h>
+#include <utils/trap.h>
 
 #include <math/scalar.h>
 
 #include <math.h>
+
+// A wrapper around a C void* pointer that will free the memory when deallocated, unless the pointer
+// is first reset.
+// ReleasablePointer serves a similar purpose as std::unique_ptr, but avoids false positives with
+// TSAN and Objective-C blocks.
+@interface ReleasablePointer : NSObject
+@property(nonatomic, readonly) void* p;
+@end
+
+@implementation ReleasablePointer {
+    void* _p;
+}
+
+- (id)initWithPointer:(void*)p {
+    self = [super init];
+    if (self) {
+        _p = p;
+    }
+    return self;
+}
+
+- (void)dealloc {
+    if (_p) {
+        free(_p);
+    }
+}
+
+- (void*)p {
+    return _p;
+}
+
+- (void)reset {
+    _p = nullptr;
+}
+
+@end
 
 namespace filament {
 namespace backend {
@@ -65,27 +102,36 @@ static inline MTLTextureUsage getMetalTextureUsage(TextureUsage usage) {
     if (any(usage & TextureUsage::BLIT_SRC)) {
         u |= MTLTextureUsageShaderRead;
     }
+    if (any(usage & TextureUsage::GEN_MIPMAPPABLE)) {
+        u |= (MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead);
+    }
 
     return MTLTextureUsage(u);
 }
 
-MetalSwapChain::MetalSwapChain(MetalContext& context, CAMetalLayer* nativeWindow, uint64_t flags)
+MetalSwapChain::MetalSwapChain(
+        MetalContext& context, PlatformMetal& platform, CAMetalLayer* nativeWindow, uint64_t flags)
     : context(context),
+      platform(platform),
       depthStencilFormat(decideDepthStencilFormat(flags)),
       layer(nativeWindow),
       layerDrawableMutex(std::make_shared<std::mutex>()),
-      externalImage(context),
-      type(SwapChainType::CAMETALLAYER) {
+      type(SwapChainType::CAMETALLAYER),
+      flags(flags) {
+
+    FILAMENT_CHECK_PRECONDITION([nativeWindow isKindOfClass:[CAMetalLayer class]])
+            << "nativeWindow pointer of class "
+            << [NSStringFromClass([nativeWindow class]) UTF8String] << " is not a CAMetalLayer";
 
     if (!(flags & SwapChain::CONFIG_TRANSPARENT) && !nativeWindow.opaque) {
-        utils::slog.w << "Warning: Filament SwapChain has no CONFIG_TRANSPARENT flag, "
-                         "but the CAMetaLayer(" << (__bridge void*) nativeWindow << ")"
-                         " has .opaque set to NO." << utils::io::endl;
+        LOG(WARNING) << "Warning: Filament SwapChain has no CONFIG_TRANSPARENT flag, but the "
+                        "CAMetaLayer("
+                     << (__bridge void*) nativeWindow << ") has .opaque set to NO.";
     }
     if ((flags & SwapChain::CONFIG_TRANSPARENT) && nativeWindow.opaque) {
-        utils::slog.w << "Warning: Filament SwapChain has the CONFIG_TRANSPARENT flag, "
-                         "but the CAMetaLayer(" << (__bridge void*) nativeWindow << ")"
-                         " has .opaque set to YES." << utils::io::endl;
+        LOG(WARNING) << "Warning: Filament SwapChain has the CONFIG_TRANSPARENT flag, but the "
+                        "CAMetaLayer("
+                     << (__bridge void*) nativeWindow << ") has .opaque set to YES.";
     }
 
     // Needed so we can use the SwapChain as a blit source.
@@ -95,22 +141,26 @@ MetalSwapChain::MetalSwapChain(MetalContext& context, CAMetalLayer* nativeWindow
     layer.device = context.device;
 }
 
-MetalSwapChain::MetalSwapChain(MetalContext& context, int32_t width, int32_t height, uint64_t flags)
+MetalSwapChain::MetalSwapChain(MetalContext& context, PlatformMetal& platform, int32_t width,
+        int32_t height, uint64_t flags)
     : context(context),
+      platform(platform),
       depthStencilFormat(decideDepthStencilFormat(flags)),
       headlessWidth(width),
       headlessHeight(height),
-      externalImage(context),
-      type(SwapChainType::HEADLESS) {}
+      type(SwapChainType::HEADLESS),
+      flags(flags) {}
 
-MetalSwapChain::MetalSwapChain(MetalContext& context, CVPixelBufferRef pixelBuffer, uint64_t flags)
+MetalSwapChain::MetalSwapChain(MetalContext& context, PlatformMetal& platform,
+        CVPixelBufferRef pixelBuffer, uint64_t flags)
     : context(context),
+      platform(platform),
       depthStencilFormat(decideDepthStencilFormat(flags)),
-      externalImage(context),
-      type(SwapChainType::CVPIXELBUFFERREF) {
+      externalImage(MetalExternalImage::createFromImage(context, pixelBuffer)),
+      type(SwapChainType::CVPIXELBUFFERREF),
+      flags(flags) {
     assert_invariant(flags & SWAP_CHAIN_CONFIG_APPLE_CVPIXELBUFFER);
     MetalExternalImage::assertWritableImage(pixelBuffer);
-    externalImage.set(pixelBuffer);
     assert_invariant(externalImage.isValid());
 }
 
@@ -120,8 +170,28 @@ MTLPixelFormat MetalSwapChain::decideDepthStencilFormat(uint64_t flags) {
                                                         : MTLPixelFormatDepth32Float;
 }
 
+id<MTLTexture> MetalSwapChain::createMultisampledTexture(MetalContext const& context,
+        MTLPixelFormat format, uint32_t width, uint32_t height, uint8_t samples) {
+    MTLTextureDescriptor* descriptor =
+            [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format
+                                                               width:width
+                                                              height:height
+                                                           mipmapped:NO];
+    descriptor.textureType = MTLTextureType2DMultisample;
+    descriptor.sampleCount = samples;
+    descriptor.usage = MTLTextureUsageRenderTarget;
+    descriptor.resourceOptions = MTLResourceStorageModePrivate;
+
+    if (context.supportsMemorylessRenderTargets) {
+        if (@available(macOS 11.0, *)) {
+            descriptor.resourceOptions = MTLResourceStorageModeMemoryless;
+        }
+    }
+
+    return [context.device newTextureWithDescriptor:descriptor];
+}
+
 MetalSwapChain::~MetalSwapChain() {
-    externalImage.set(nullptr);
 }
 
 NSUInteger MetalSwapChain::getSurfaceWidth() const {
@@ -144,48 +214,16 @@ NSUInteger MetalSwapChain::getSurfaceHeight() const {
     return (NSUInteger) layer.drawableSize.height;
 }
 
-id<MTLTexture> MetalSwapChain::acquireDrawable() {
-    if (drawable) {
-        return drawable.texture;
+
+NSUInteger MetalSwapChain::getSampleCount() const {
+    if (flags & flags & SwapChain::CONFIG_MSAA_4_SAMPLES) {
+        return 4u;
     }
+    return 1u;
+}
 
-    if (isHeadless()) {
-        if (headlessDrawable) {
-            return headlessDrawable;
-        }
-        // For headless surfaces we construct a "fake" drawable, which is simply a renderable
-        // texture.
-        MTLTextureDescriptor* textureDescriptor = [MTLTextureDescriptor new];
-        textureDescriptor.pixelFormat = MTLPixelFormatBGRA8Unorm;
-        textureDescriptor.width = headlessWidth;
-        textureDescriptor.height = headlessHeight;
-        // Specify MTLTextureUsageShaderRead so the headless surface can be blitted from.
-        textureDescriptor.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
-#if defined(IOS)
-        textureDescriptor.storageMode = MTLStorageModeShared;
-#else
-        textureDescriptor.storageMode = MTLStorageModeManaged;
-#endif
-        headlessDrawable = [context.device newTextureWithDescriptor:textureDescriptor];
-        return headlessDrawable;
-    }
-
-    if (isPixelBuffer()) {
-        return externalImage.getMetalTextureForDraw();
-    }
-
-    assert_invariant(isCaMetalLayer());
-
-    // CAMetalLayer's drawable pool is not thread safe. Use a mutex when
-    // calling -nextDrawable, or when releasing the last known reference
-    // to any CAMetalDrawable returned from a previous -nextDrawable.
-    {
-        std::lock_guard<std::mutex> lock(*layerDrawableMutex);
-        drawable = [layer nextDrawable];
-    }
-
-    FILAMENT_CHECK_POSTCONDITION(drawable != nil) << "Could not obtain drawable.";
-    return drawable.texture;
+bool MetalSwapChain::isAbandoned() const {
+    return context.currentFrame < abandonedUntilFrame;
 }
 
 void MetalSwapChain::releaseDrawable() {
@@ -195,32 +233,45 @@ void MetalSwapChain::releaseDrawable() {
     }
 }
 
-id<MTLTexture> MetalSwapChain::acquireDepthTexture() {
-    ensureDepthStencilTexture();
-    assert_invariant(depthStencilTexture);
-    return depthStencilTexture;
-}
-
-id<MTLTexture> MetalSwapChain::acquireStencilTexture() {
-    if (!isMetalFormatStencil(depthStencilFormat)) {
-        return nil;
+MetalAttachment MetalSwapChain::acquireDrawable() {
+    MetalAttachment attachment = acquireBaseDrawable();
+    if (auto texture = attachment.getTexture();
+            texture && flags & SwapChain::CONFIG_MSAA_4_SAMPLES) {
+        return attachment.withMsaaTexture(
+                ensureMsaaColorTexture(texture.pixelFormat, texture.width, texture.height, 4u));
     }
-    ensureDepthStencilTexture();
-    assert_invariant(depthStencilTexture);
-    return depthStencilTexture;
+    return attachment;
 }
 
-void MetalSwapChain::ensureDepthStencilTexture() {
-    NSUInteger width = getSurfaceWidth();
-    NSUInteger height = getSurfaceHeight();
-    if (UTILS_LIKELY(depthStencilTexture)) {
-        // If the surface size has changed, we'll need to allocate a new depth/stencil texture.
-        if (UTILS_UNLIKELY(
-                    depthStencilTexture.width != width || depthStencilTexture.height != height)) {
-            depthStencilTexture = nil;
-        } else {
-            return;
-        }
+MetalAttachment MetalSwapChain::acquireDepthTexture() {
+    MetalAttachment attachment =
+            MetalAttachment(ensureDepthStencilTexture(getSurfaceWidth(), getSurfaceHeight()));
+    if (auto texture = attachment.getTexture();
+            texture && flags & SwapChain::CONFIG_MSAA_4_SAMPLES) {
+        return attachment.withMsaaTexture(ensureMsaaDepthStencilTexture(texture.pixelFormat,
+                texture.width, texture.height, 4u));
+    }
+    return attachment;
+}
+
+MetalAttachment MetalSwapChain::acquireStencilTexture() {
+    if (!(flags & SwapChain::CONFIG_HAS_STENCIL_BUFFER)) {
+        return MetalAttachment::invalidAttachment();
+    }
+    MetalAttachment attachment =
+            MetalAttachment(ensureDepthStencilTexture(getSurfaceWidth(), getSurfaceHeight()));
+    if (auto texture = attachment.getTexture();
+            texture && flags & SwapChain::CONFIG_MSAA_4_SAMPLES) {
+        return attachment.withMsaaTexture(ensureMsaaDepthStencilTexture(texture.pixelFormat,
+                texture.width, texture.height, 4u));
+    }
+    return attachment;
+}
+
+id<MTLTexture> MetalSwapChain::ensureDepthStencilTexture(uint32_t width, uint32_t height) {
+    if (UTILS_LIKELY(depthStencilTexture && depthStencilTexture.width == width &&
+                     depthStencilTexture.height == height)) {
+        return depthStencilTexture;
     }
     MTLTextureDescriptor* descriptor =
             [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:depthStencilFormat
@@ -229,13 +280,39 @@ void MetalSwapChain::ensureDepthStencilTexture() {
                                                            mipmapped:NO];
     descriptor.usage = MTLTextureUsageRenderTarget;
     descriptor.resourceOptions = MTLResourceStorageModePrivate;
-    depthStencilTexture = [context.device newTextureWithDescriptor:descriptor];
+    return depthStencilTexture = [context.device newTextureWithDescriptor:descriptor];
+}
+
+id<MTLTexture> MetalSwapChain::ensureMsaaColorTexture(MTLPixelFormat format, uint32_t width, uint32_t height,
+        uint8_t samples) {
+    if (UTILS_LIKELY(msaaColor && msaaColor.pixelFormat == format && msaaColor.width == width &&
+                     msaaColor.height == height && msaaColor.sampleCount == samples)) {
+        return msaaColor;
+    }
+    return msaaColor = createMultisampledTexture(context, format, width, height, samples);
+}
+
+id<MTLTexture> MetalSwapChain::ensureMsaaDepthStencilTexture(MTLPixelFormat format, uint32_t width,
+        uint32_t height, uint8_t samples) {
+    if (UTILS_LIKELY(msaaDepthStencil && msaaDepthStencil.pixelFormat == format &&
+                     msaaDepthStencil.width == width && msaaDepthStencil.height == height &&
+                     msaaDepthStencil.sampleCount == samples)) {
+        return msaaDepthStencil;
+    }
+    return msaaDepthStencil = createMultisampledTexture(context, format, width, height, samples);
 }
 
 void MetalSwapChain::setFrameScheduledCallback(
-        CallbackHandler* handler, FrameScheduledCallback&& callback) {
+        CallbackHandler* handler, FrameScheduledCallback&& callback, uint64_t flags) {
+    if (!callback) {
+        frameScheduled.handler = nullptr;
+        frameScheduled.callback.reset();
+        frameScheduled.flags = 0;
+        return;
+    }
     frameScheduled.handler = handler;
     frameScheduled.callback = std::make_shared<FrameScheduledCallback>(std::move(callback));
+    frameScheduled.flags = flags;
 }
 
 void MetalSwapChain::setFrameCompletedCallback(
@@ -248,18 +325,22 @@ void MetalSwapChain::present() {
     if (frameCompleted.callback) {
         scheduleFrameCompletedCallback();
     }
+    const auto timeNs = presentationTimeNs;
+    presentationTimeNs = 0;
     if (drawable) {
         if (frameScheduled.callback) {
-            scheduleFrameScheduledCallback();
+            scheduleFrameScheduledCallback(timeNs);
         } else  {
-            [getPendingCommandBuffer(&context) presentDrawable:drawable];
+            if (presentationTimeNs) {
+                const CFTimeInterval timeSeconds =
+                        (CFTimeInterval) presentationTimeNs / 1000000000.0;
+                [getPendingCommandBuffer(&context) presentDrawable:drawable atTime:timeSeconds];
+            } else {
+                [getPendingCommandBuffer(&context) presentDrawable:drawable];
+            }
         }
     }
 }
-
-#ifndef FILAMENT_RELEASE_PRESENT_DRAWABLE_MAIN_THREAD
-#define FILAMENT_RELEASE_PRESENT_DRAWABLE_MAIN_THREAD 1
-#endif
 
 class PresentDrawableData {
 public:
@@ -268,31 +349,45 @@ public:
     PresentDrawableData& operator=(const PresentDrawableData&) = delete;
 
     static PresentDrawableData* create(id<CAMetalDrawable> drawable,
-            std::shared_ptr<std::mutex> drawableMutex, MetalDriver* driver) {
+            std::shared_ptr<std::mutex> drawableMutex, MetalDriver* driver, uint64_t flags,
+            int64_t presentationTimeNs) {
         assert_invariant(drawableMutex);
         assert_invariant(driver);
-        return new PresentDrawableData(drawable, drawableMutex, driver);
+        return new PresentDrawableData(drawable, drawableMutex, driver, flags, presentationTimeNs);
     }
 
     static void maybePresentAndDestroyAsync(PresentDrawableData* that, bool shouldPresent) {
         if (shouldPresent) {
-           [that->mDrawable present];
+            if (that->mPresentationTimeNs) {
+                const CFTimeInterval timeSeconds =
+                        (CFTimeInterval) that->mPresentationTimeNs / 1000000000.0;
+                [that->mDrawable presentAtTime:timeSeconds];
+            } else {
+                [that->mDrawable present];
+            }
         }
 
-#if FILAMENT_RELEASE_PRESENT_DRAWABLE_MAIN_THREAD == 1
-        // mDrawable is acquired on the driver thread. Typically, we would release this object on
-        // the same thread, but after receiving consistent crash reports from within
-        // [CAMetalDrawable dealloc], we suspect this object requires releasing on the main thread.
-        dispatch_async(dispatch_get_main_queue(), ^{ cleanupAndDestroy(that); });
-#else
-        that->mDriver->runAtNextTick([that]() { cleanupAndDestroy(that); });
-#endif
+        if (that->mFlags & SwapChain::CALLBACK_DEFAULT_USE_METAL_COMPLETION_HANDLER) {
+            cleanupAndDestroy(that);
+        } else {
+            // mDrawable is acquired on the driver thread. Typically, we would release this object
+            // on the same thread, but after receiving consistent crash reports from within
+            // [CAMetalDrawable dealloc], we suspect this object requires releasing on the main
+            // thread.
+            dispatch_async(dispatch_get_main_queue(), ^{
+                cleanupAndDestroy(that);
+            });
+        }
     }
 
 private:
     PresentDrawableData(id<CAMetalDrawable> drawable, std::shared_ptr<std::mutex> drawableMutex,
-            MetalDriver* driver)
-        : mDrawable(drawable), mDrawableMutex(drawableMutex), mDriver(driver) {}
+            MetalDriver* driver, uint64_t flags, int64_t presentationTimeNs)
+            : mDrawable(drawable),
+              mDrawableMutex(drawableMutex),
+              mDriver(driver),
+              mFlags(flags),
+              mPresentationTimeNs(presentationTimeNs) {}
 
     static void cleanupAndDestroy(PresentDrawableData *that) {
         if (that->mDrawable) {
@@ -307,6 +402,8 @@ private:
     id<CAMetalDrawable> mDrawable;
     std::shared_ptr<std::mutex> mDrawableMutex;
     MetalDriver* mDriver = nullptr;
+    uint64_t mFlags = 0;
+    int64_t mPresentationTimeNs = 0;
 };
 
 void presentDrawable(bool presentFrame, void* user) {
@@ -314,7 +411,7 @@ void presentDrawable(bool presentFrame, void* user) {
     PresentDrawableData::maybePresentAndDestroyAsync(presentDrawableData, presentFrame);
 }
 
-void MetalSwapChain::scheduleFrameScheduledCallback() {
+void MetalSwapChain::scheduleFrameScheduledCallback(int64_t presentationTimeNs) {
     if (!frameScheduled.callback) {
         return;
     }
@@ -323,8 +420,11 @@ void MetalSwapChain::scheduleFrameScheduledCallback() {
 
     struct Callback {
         Callback(std::shared_ptr<FrameScheduledCallback> callback, id<CAMetalDrawable> drawable,
-                 std::shared_ptr<std::mutex> drawableMutex, MetalDriver* driver)
-            : f(callback), data(PresentDrawableData::create(drawable, drawableMutex, driver)) {}
+                std::shared_ptr<std::mutex> drawableMutex, MetalDriver* driver, uint64_t flags,
+                int64_t presentationTimeNs)
+                : f(callback),
+                  data(PresentDrawableData::create(drawable, drawableMutex, driver, flags,
+                          presentationTimeNs)) {}
         std::shared_ptr<FrameScheduledCallback> f;
         // PresentDrawableData* is destroyed by maybePresentAndDestroyAsync() later.
         std::unique_ptr<PresentDrawableData> data;
@@ -338,15 +438,22 @@ void MetalSwapChain::scheduleFrameScheduledCallback() {
     };
 
     // This callback pointer will be captured by the block. Even if the scheduled handler is never
-    // called, the unique_ptr will still ensure we don't leak memory.
-    __block auto callback = std::make_unique<Callback>(
-        frameScheduled.callback, drawable, layerDrawableMutex, context.driver);
+    // called, the ReleasablePointer will still ensure we don't leak memory.
+    uint64_t const flags = frameScheduled.flags;
+    ReleasablePointer* callback = [[ReleasablePointer alloc]
+            initWithPointer:new Callback(frameScheduled.callback, drawable, layerDrawableMutex,
+                                    context.driver, flags, presentationTimeNs)];
 
     backend::CallbackHandler* handler = frameScheduled.handler;
     MetalDriver* driver = context.driver;
     [getPendingCommandBuffer(&context) addScheduledHandler:^(id<MTLCommandBuffer> cb) {
-        Callback* user = callback.release();
-        driver->scheduleCallback(handler, user, &Callback::func);
+        Callback* user = static_cast<Callback*>(callback.p);
+        [callback reset];
+        if (flags & SwapChain::CALLBACK_DEFAULT_USE_METAL_COMPLETION_HANDLER) {
+            Callback::func(user);
+        } else {
+            driver->scheduleCallback(handler, user, &Callback::func);
+        }
     }];
 }
 
@@ -367,26 +474,86 @@ void MetalSwapChain::scheduleFrameCompletedCallback() {
 
     // This callback pointer will be captured by the block. Even if the completed handler is never
     // called, the unique_ptr will still ensure we don't leak memory.
-    __block auto callback = std::make_unique<Callback>(frameCompleted.callback);
+    ReleasablePointer* callback =
+            [[ReleasablePointer alloc] initWithPointer:new Callback(frameCompleted.callback)];
 
     CallbackHandler* handler = frameCompleted.handler;
     MetalDriver* driver = context.driver;
     [getPendingCommandBuffer(&context) addCompletedHandler:^(id<MTLCommandBuffer> cb) {
-        Callback* user = callback.release();
+        Callback* user = static_cast<Callback*>(callback.p);
+        [callback reset];
         driver->scheduleCallback(handler, user, &Callback::func);
     }];
 }
 
-MetalBufferObject::MetalBufferObject(MetalContext& context, BufferObjectBinding bindingType,
-        BufferUsage usage, uint32_t byteCount)
-        : HwBufferObject(byteCount), buffer(context, bindingType, usage, byteCount) {}
+MetalAttachment MetalSwapChain::acquireBaseDrawable() {
+    if (drawable) {
+        return MetalAttachment(drawable.texture);
+    }
 
-void MetalBufferObject::updateBuffer(void* data, size_t size, uint32_t byteOffset) {
-    buffer.copyIntoBuffer(data, size, byteOffset);
+    if (isHeadless()) {
+        if (headlessDrawable) {
+            return MetalAttachment(headlessDrawable);
+        }
+        // For headless surfaces we construct a "fake" drawable, which is simply a renderable
+        // texture.
+        MTLTextureDescriptor* textureDescriptor = [MTLTextureDescriptor new];
+        textureDescriptor.pixelFormat = MTLPixelFormatBGRA8Unorm;
+        textureDescriptor.width = headlessWidth;
+        textureDescriptor.height = headlessHeight;
+        // Specify MTLTextureUsageShaderRead so the headless surface can be blitted from.
+        textureDescriptor.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+#if defined(FILAMENT_IOS)
+        textureDescriptor.storageMode = MTLStorageModeShared;
+#else
+        textureDescriptor.storageMode = MTLStorageModeManaged;
+#endif
+        headlessDrawable = [context.device newTextureWithDescriptor:textureDescriptor];
+        return MetalAttachment(headlessDrawable);
+    }
+
+    if (isPixelBuffer()) {
+        return MetalAttachment(externalImage.getMtlTexture());
+    }
+
+    assert_invariant(isCaMetalLayer());
+
+    // CAMetalLayer's drawable pool is not thread safe. Use a mutex when
+    // calling -nextDrawable, or when releasing the last known reference
+    // to any CAMetalDrawable returned from a previous -nextDrawable.
+    {
+        std::lock_guard<std::mutex> lock(*layerDrawableMutex);
+        drawable = [layer nextDrawable];
+    }
+
+    if (UTILS_UNLIKELY(drawable == nil)) {
+        switch (platform.getDrawableFailureBehavior()) {
+            case PlatformMetal::DrawableFailureBehavior::PANIC:
+                FILAMENT_CHECK_POSTCONDITION(drawable != nil) << "Could not obtain drawable.";
+                break;
+
+            case PlatformMetal::DrawableFailureBehavior::ABORT_FRAME:
+                abandonedUntilFrame = context.currentFrame + 1;
+                return MetalAttachment::invalidAttachment();
+        }
+    }
+
+    return MetalAttachment(drawable.texture);
 }
 
-void MetalBufferObject::updateBufferUnsynchronized(void* data, size_t size, uint32_t byteOffset) {
-    buffer.copyIntoBufferUnsynchronized(data, size, byteOffset);
+
+MetalBufferObject::MetalBufferObject(MetalContext& context, BufferObjectBinding bindingType,
+        BufferUsage usage, uint32_t byteCount)
+        : HwBufferObject(byteCount, false), buffer(context, bindingType, usage, byteCount) {}
+
+void MetalBufferObject::updateBuffer(
+        void* data, size_t size, uint32_t byteOffset, TagResolver&& getHandleTag) {
+    buffer.copyIntoBuffer(data, size, byteOffset, std::move(getHandleTag));
+}
+
+void MetalBufferObject::updateBufferUnsynchronized(
+        void* data, size_t size, uint32_t byteOffset, TagResolver&& getHandleTag) {
+    buffer.copyIntoBufferUnsynchronized(data, size, byteOffset, std::move(getHandleTag));
 }
 
 MetalVertexBufferInfo::MetalVertexBufferInfo(MetalContext& context, uint8_t bufferCount,
@@ -468,31 +635,21 @@ MetalVertexBuffer::MetalVertexBuffer(MetalContext& context,
 }
 
 MetalIndexBuffer::MetalIndexBuffer(MetalContext& context, BufferUsage usage, uint8_t elementSize,
-        uint32_t indexCount) : HwIndexBuffer(elementSize, indexCount),
+        uint32_t indexCount) : HwIndexBuffer(elementSize, indexCount, false),
         buffer(context, BufferObjectBinding::VERTEX, usage, elementSize * indexCount, true) { }
-
-MetalRenderPrimitive::MetalRenderPrimitive() {
-}
-
-void MetalRenderPrimitive::setBuffers(MetalVertexBufferInfo const* const vbi,
-        MetalVertexBuffer* vertexBuffer, MetalIndexBuffer* indexBuffer) {
-    this->vertexBuffer = vertexBuffer;
-    this->indexBuffer = indexBuffer;
-}
 
 MetalProgram::MetalProgram(MetalContext& context, Program&& program) noexcept
     : HwProgram(program.getName()), mContext(context) {
-
-    // Save this program's SamplerGroupInfo, it's used during draw calls to bind sampler groups to
-    // the appropriate stage(s).
-    samplerGroupInfo = program.getSamplerGroupInfo();
-
     mToken = context.shaderCompiler->createProgram(program.getName(), std::move(program));
     assert_invariant(mToken);
 }
 
 const MetalShaderCompiler::MetalFunctionBundle& MetalProgram::getFunctions() {
     initialize();
+    return mFunctionBundle;
+}
+
+const MetalShaderCompiler::MetalFunctionBundle& MetalProgram::getFunctionsIfPresent() const {
     return mFunctionBundle;
 }
 
@@ -506,10 +663,9 @@ void MetalProgram::initialize() {
 
 MetalTexture::MetalTexture(MetalContext& context, SamplerType target, uint8_t levels,
         TextureFormat format, uint8_t samples, uint32_t width, uint32_t height, uint32_t depth,
-        TextureUsage usage, TextureSwizzle r, TextureSwizzle g, TextureSwizzle b,
-        TextureSwizzle a) noexcept
-    : HwTexture(target, levels, samples, width, height, depth, format, usage), context(context),
-        externalImage(context, r, g, b, a) {
+        TextureUsage usage) noexcept
+    : HwTexture(target, levels, samples, width, height, depth, format, usage, false), context(context) {
+    assert_invariant(target != SamplerType::SAMPLER_EXTERNAL);
 
     devicePixelFormat = decidePixelFormat(&context, format);
     FILAMENT_CHECK_POSTCONDITION(devicePixelFormat != MTLPixelFormatInvalid)
@@ -518,7 +674,7 @@ MetalTexture::MetalTexture(MetalContext& context, SamplerType target, uint8_t le
     const BOOL mipmapped = levels > 1;
     const BOOL multisampled = samples > 1;
 
-#if defined(IOS)
+#if defined(FILAMENT_IOS)
     const BOOL textureArray = target == SamplerType::SAMPLER_2D_ARRAY;
     FILAMENT_CHECK_PRECONDITION(!textureArray || !multisampled)
             << "iOS does not support multisampled texture arrays.";
@@ -531,7 +687,7 @@ MetalTexture::MetalTexture(MetalContext& context, SamplerType target, uint8_t le
         switch (target) {
             case SamplerType::SAMPLER_2D:
                 return MTLTextureType2DMultisample;
-#if !defined(IOS)
+#if !defined(FILAMENT_IOS)
             case SamplerType::SAMPLER_2D_ARRAY:
                 return MTLTextureType2DMultisampleArray;
 #endif
@@ -595,16 +751,28 @@ MetalTexture::MetalTexture(MetalContext& context, SamplerType target, uint8_t le
             << ", levels = " << int(levels) << ", MTLPixelFormat = " << int(devicePixelFormat)
             << ", width = " << width << ", height = " << height << ", depth = " << depth
             << "). Out of memory?";
+}
 
-    // If swizzling is set, set up a swizzled texture view that we'll use when sampling this texture.
-    const bool isDefaultSwizzle =
-            r == TextureSwizzle::CHANNEL_0 &&
-            g == TextureSwizzle::CHANNEL_1 &&
-            b == TextureSwizzle::CHANNEL_2 &&
-            a == TextureSwizzle::CHANNEL_3;
-    // If texture is nil, then it must be a SAMPLER_EXTERNAL texture.
-    // Swizzling for external textures is handled inside MetalExternalImage.
-    if (!isDefaultSwizzle && texture && context.supportsTextureSwizzling) {
+MetalTexture::MetalTexture(MetalContext& context, MetalTexture const* src, uint8_t baseLevel,
+        uint8_t levelCount) noexcept
+    : HwTexture(src->target, src->levels, src->samples, src->width, src->height, src->depth,
+              src->format, src->usage, false),
+      context(context),
+      devicePixelFormat(src->devicePixelFormat),
+      externalImage(src->externalImage) {
+    texture = createTextureViewWithLodRange(
+            src->getMtlTextureForRead(), baseLevel, baseLevel + levelCount - 1);
+}
+
+MetalTexture::MetalTexture(MetalContext& context, MetalTexture const* src, TextureSwizzle r,
+        TextureSwizzle g, TextureSwizzle b, TextureSwizzle a) noexcept
+    : HwTexture(src->target, src->levels, src->samples, src->width, src->height, src->depth,
+              src->format, src->usage, false),
+      context(context),
+      devicePixelFormat(src->devicePixelFormat),
+      externalImage(src->externalImage) {
+    texture = src->getMtlTextureForRead();
+    if (context.supportsTextureSwizzling) {
         // Even though we've already checked context.supportsTextureSwizzling, we still need to
         // guard these calls with @availability, otherwise the API usage will generate compiler
         // warnings.
@@ -618,44 +786,30 @@ MetalTexture::MetalTexture(MetalContext& context, SamplerType target, uint8_t le
 MetalTexture::MetalTexture(MetalContext& context, SamplerType target, uint8_t levels, TextureFormat format,
         uint8_t samples, uint32_t width, uint32_t height, uint32_t depth, TextureUsage usage,
         id<MTLTexture> metalTexture) noexcept
-    : HwTexture(target, levels, samples, width, height, depth, format, usage), context(context),
-        externalImage(context) {
+    : HwTexture(target, levels, samples, width, height, depth, format, usage, false), context(context) {
     texture = metalTexture;
-    setLodRange(0, levels - 1);
 }
 
-void MetalTexture::terminate() noexcept {
-    texture = nil;
-    swizzledTextureView = nil;
-    lodTextureView = nil;
-    msaaSidecar = nil;
-    externalImage.set(nullptr);
-    terminated = true;
+MetalTexture::MetalTexture(MetalContext& context, TextureFormat format, uint32_t width,
+        uint32_t height, TextureUsage usage, CVPixelBufferRef image) noexcept
+    : HwTexture(SamplerType::SAMPLER_EXTERNAL, 1, 1, width, height, 1, format, usage, false),
+      context(context),
+      externalImage(std::make_shared<MetalExternalImage>(
+              MetalExternalImage::createFromImage(context, image))) {
+    texture = externalImage->getMtlTexture();
 }
 
-MetalTexture::~MetalTexture() {
-    externalImage.set(nullptr);
+MetalTexture::MetalTexture(MetalContext& context, TextureFormat format, uint32_t width,
+        uint32_t height, TextureUsage usage, CVPixelBufferRef image, uint32_t plane) noexcept
+    : HwTexture(SamplerType::SAMPLER_EXTERNAL, 1, 1, width, height, 1, format, usage, false),
+      context(context),
+      externalImage(std::make_shared<MetalExternalImage>(
+              MetalExternalImage::createFromImagePlane(context, image, plane))) {
+    texture = externalImage->getMtlTexture();
 }
 
-id<MTLTexture> MetalTexture::getMtlTextureForRead() noexcept {
-    if (lodTextureView) {
-        return lodTextureView;
-    }
-    // The texture's swizzle remains constant throughout its lifetime, however its LOD range can
-    // change. We'll cache the LOD view, and set lodTextureView to nil if minLod or maxLod is
-    // updated.
-    id<MTLTexture> t = swizzledTextureView ? swizzledTextureView : texture;
-    if (!t) {
-        return nil;
-    }
-    if (UTILS_UNLIKELY(minLod > maxLod)) {
-        // If the texture does not have any available LODs, provide a view of only level 0.
-        // Filament should prevent this from ever occurring.
-        lodTextureView = createTextureViewWithLodRange(t, 0, 0);
-        return lodTextureView;
-    }
-    lodTextureView = createTextureViewWithLodRange(t, minLod, maxLod);
-    return lodTextureView;
+id<MTLTexture> MetalTexture::getMtlTextureForRead() const noexcept {
+    return swizzledTextureView ? swizzledTextureView : texture;
 }
 
 MTLPixelFormat MetalTexture::decidePixelFormat(MetalContext* context, TextureFormat format) {
@@ -774,15 +928,12 @@ void MetalTexture::loadImage(uint32_t level, MTLRegion region, PixelBufferDescri
             assert_invariant(false);
         }
     }
-
-    extendLodRangeTo(level);
 }
 
 void MetalTexture::generateMipmaps() noexcept {
     id <MTLBlitCommandEncoder> blitEncoder = [getPendingCommandBuffer(&context) blitCommandEncoder];
     [blitEncoder generateMipmapsForTexture:texture];
     [blitEncoder endEncoding];
-    setLodRange(0, texture.mipmapLevelCount - 1);
 }
 
 void MetalTexture::loadSlice(uint32_t level, MTLRegion region, uint32_t byteOffset, uint32_t slice,
@@ -859,7 +1010,7 @@ void MetalTexture::loadWithBlit(uint32_t level, uint32_t slice, MTLRegion region
     descriptor.height = region.size.height;
     descriptor.depth = region.size.depth;
 
-#if defined(IOS)
+#if defined(FILAMENT_IOS)
     descriptor.storageMode = MTLStorageModeShared;
 #else
     descriptor.storageMode = MTLStorageModeManaged;
@@ -906,183 +1057,109 @@ void MetalTexture::loadWithBlit(uint32_t level, uint32_t slice, MTLRegion region
     context.blitter->blit(getPendingCommandBuffer(&context), args, "Texture upload blit");
 }
 
-void MetalTexture::extendLodRangeTo(uint16_t level) {
-    assert_invariant(!isInRenderPass(&context));
-    minLod = std::min(minLod, level);
-    maxLod = std::max(maxLod, level);
-    lodTextureView = nil;
-}
-
-void MetalTexture::setLodRange(uint16_t min, uint16_t max) {
-    assert_invariant(!isInRenderPass(&context));
-    assert_invariant(min <= max);
-    minLod = min;
-    maxLod = max;
-    lodTextureView = nil;
-}
-
-void MetalSamplerGroup::finalize() {
-    assert_invariant(encoder);
-    // TODO: we should be able to encode textures and samplers inside setFinalizedTexture and
-    // setFinalizedSampler as they become available, but Metal doesn't seem to like this; the arg
-    // buffer gets encoded incorrectly. This warrants more investigation.
-
-    auto [buffer, offset] = argBuffer->getCurrentAllocation();
-    [encoder setArgumentBuffer:buffer offset:offset];
-
-    // Encode all textures and samplers.
-    for (size_t s = 0; s < size; s++) {
-        [encoder setTexture:textures[s] atIndex:(s * 2 + 0)];
-        [encoder setSamplerState:samplers[s] atIndex:(s * 2 + 1)];
-    }
-
-    finalized = true;
-}
-
-void MetalSamplerGroup::reset(id<MTLCommandBuffer> cmdBuffer, id<MTLArgumentEncoder> e,
-        id<MTLDevice> device) {
-    encoder = e;
-
-    // The number of slots in the ring buffer we use to manage argument buffer allocations.
-    // This number was chosen to avoid running out of slots and having to allocate a "fallback"
-    // buffer when SamplerGroups are updated multiple times a frame. This value can reduced after
-    // auditing Filament's calls to updateSamplerGroup, which should be as few times as possible.
-    // For example, the bloom downsample pass should be refactored to maintain two separate
-    // MaterialInstances instead of "ping ponging" between two texture bindings, which causes a
-    // single SamplerGroup to be updated many times a frame.
-    static constexpr auto METAL_ARGUMENT_BUFFER_SLOTS = 32;
-
-    MTLSizeAndAlign argBufferLayout;
-    argBufferLayout.size = encoder.encodedLength;
-    argBufferLayout.align = encoder.alignment;
-    // Chances are, even though the MTLArgumentEncoder might change, the required size and alignment
-    // probably won't. So we can re-use the previous ring buffer.
-    if (UTILS_UNLIKELY(!argBuffer || !argBuffer->canAccomodateLayout(argBufferLayout))) {
-        argBuffer = std::make_unique<MetalRingBuffer>(device, MTLResourceStorageModeShared,
-                argBufferLayout, METAL_ARGUMENT_BUFFER_SLOTS);
-    } else {
-        argBuffer->createNewAllocation(cmdBuffer);
-    }
-
-    // Clear all textures and samplers.
-    assert_invariant(textureHandles.size() == textures.size());
-    assert_invariant(textures.size() == samplers.size());
-    for (size_t s = 0; s < textureHandles.size(); s++) {
-        textureHandles[s] = {};
-        textures[s] = nil;
-        samplers[s] = nil;
-    }
-
-    finalized = false;
-}
-
-void MetalSamplerGroup::mutate(id<MTLCommandBuffer> cmdBuffer) {
-    assert_invariant(finalized);    // only makes sense to mutate if this sampler group is finalized
-    assert_invariant(argBuffer);
-    argBuffer->createNewAllocation(cmdBuffer);
-    finalized = false;
-}
-
-void MetalSamplerGroup::useResources(id<MTLRenderCommandEncoder> renderPassEncoder) {
-    assert_invariant(finalized);
-    if (@available(iOS 13, *)) {
-        // TODO: pass only the appropriate stages to useResources.
-        [renderPassEncoder useResources:textures.data()
-                                  count:textures.size()
-                                  usage:MTLResourceUsageRead | MTLResourceUsageSample
-                                 stages:MTLRenderStageFragment | MTLRenderStageVertex];
-    } else {
-        [renderPassEncoder useResources:textures.data()
-                                  count:textures.size()
-                                  usage:MTLResourceUsageRead | MTLResourceUsageSample];
-    }
-}
-
 MetalRenderTarget::MetalRenderTarget(MetalContext* context, uint32_t width, uint32_t height,
-        uint8_t samples, Attachment colorAttachments[MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT],
-        Attachment depthAttachment, Attachment stencilAttachment) :
-        HwRenderTarget(width, height), context(context), samples(samples) {
-    math::uint2 tmin = {std::numeric_limits<uint32_t>::max()};
-    UTILS_UNUSED_IN_RELEASE math::uint2 tmax = {0};
+        uint8_t samples, AttachmentInfo colorAttachments[MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT],
+        AttachmentInfo depthAttachment, AttachmentInfo stencilAttachment)
+        : HwRenderTarget(width, height),
+          context(context),
+          samples(samples) {
+    math::uint2 tmin = { std::numeric_limits<uint32_t>::max() };
+    UTILS_UNUSED_IN_RELEASE math::uint2 tmax = { 0 };
     UTILS_UNUSED_IN_RELEASE size_t attachmentCount = 0;
 
     for (size_t i = 0; i < MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT; i++) {
-        if (!colorAttachments[i]) {
+        MetalTexture* const texture = colorAttachments[i].texture;
+        const auto& level = colorAttachments[i].level;
+        const auto& layer = colorAttachments[i].layer;
+        if (!texture) {
             continue;
         }
-        color[i] = colorAttachments[i];
 
-        FILAMENT_CHECK_PRECONDITION(color[i].getSampleCount() <= samples)
+        FILAMENT_CHECK_PRECONDITION(texture->samples <= samples)
                 << "MetalRenderTarget was initialized with a MSAA COLOR" << i
                 << " texture, but sample count is " << samples << ".";
 
-        auto t = color[i].metalTexture;
-        const auto twidth = std::max(1u, t->width >> color[i].level);
-        const auto theight = std::max(1u, t->height >> color[i].level);
+        const auto twidth = std::max(1u, texture->width >> level);
+        const auto theight = std::max(1u, texture->height >> level);
         tmin = { std::min(tmin.x, twidth), std::min(tmin.y, theight) };
         tmax = { std::max(tmax.x, twidth), std::max(tmax.y, theight) };
         attachmentCount++;
 
+        id<MTLTexture> mtlTexture = texture->getMtlTextureForWrite();
+        color[i] = MetalAttachment(mtlTexture, level, layer);
+
         // If we were given a single-sampled texture but the samples parameter is > 1, we create
         // a multisampled sidecar texture and do a resolve automatically.
-        if (samples > 1 && color[i].getSampleCount() == 1) {
-            auto& sidecar = color[i].metalTexture->msaaSidecar;
-            if (!sidecar) {
-                sidecar = createMultisampledTexture(color[i].getPixelFormat(),
-                        color[i].metalTexture->width, color[i].metalTexture->height, samples);
+        if (samples > 1 && texture->samples == 1) {
+            auto& sidecar = texture->msaaSidecar;
+            if (!sidecar || sidecar.sampleCount != samples) {
+                sidecar = createMultisampledTexture(mtlTexture.pixelFormat, texture->width,
+                        texture->height, samples);
             }
+            color[i] = MetalAttachment(mtlTexture, level, layer).withMsaaTexture(sidecar);
         }
     }
 
-    if (depthAttachment) {
-        depth = depthAttachment;
+    if (depthAttachment.texture) {
+        MetalTexture* const texture = depthAttachment.texture;
+        const auto& level = depthAttachment.level;
+        const auto& layer = depthAttachment.layer;
 
-        FILAMENT_CHECK_PRECONDITION(depth.getSampleCount() <= samples)
+        FILAMENT_CHECK_PRECONDITION(texture->samples <= samples)
                 << "MetalRenderTarget was initialized with a MSAA DEPTH texture, but sample count "
                    "is "
                 << samples << ".";
 
-        auto t = depth.metalTexture;
-        const auto twidth = std::max(1u, t->width >> depth.level);
-        const auto theight = std::max(1u, t->height >> depth.level);
+        const auto twidth = std::max(1u, texture->width >> level);
+        const auto theight = std::max(1u, texture->height >> level);
         tmin = { math::min(tmin.x, twidth), math::min(tmin.y, theight) };
         tmax = { math::max(tmax.x, twidth), math::max(tmax.y, theight) };
         attachmentCount++;
 
+        id<MTLTexture> mtlTexture = texture->getMtlTextureForWrite();
+        depth = MetalAttachment(mtlTexture, level, layer);
+
         // If we were given a single-sampled texture but the samples parameter is > 1, we create
         // a multisampled sidecar texture and do a resolve automatically.
-        if (samples > 1 && depth.getSampleCount() == 1) {
-            auto& sidecar = depth.metalTexture->msaaSidecar;
-            if (!sidecar) {
-                sidecar = createMultisampledTexture(depth.getPixelFormat(),
-                        depth.metalTexture->width, depth.metalTexture->height, samples);
+        if (samples > 1 && texture->samples == 1) {
+            auto& sidecar = texture->msaaSidecar;
+            if (!sidecar || sidecar.sampleCount != samples) {
+                sidecar = createMultisampledTexture(mtlTexture.pixelFormat, texture->width,
+                        texture->height, samples);
             }
+            depth = MetalAttachment(mtlTexture, level, layer).withMsaaTexture(sidecar);
         }
     }
 
-    if (stencilAttachment) {
-        stencil = stencilAttachment;
+    if (stencilAttachment.texture) {
+        // stencil = stencilAttachment;
+        MetalTexture* const texture = stencilAttachment.texture;
+        const auto& level = stencilAttachment.level;
+        const auto& layer = stencilAttachment.layer;
 
-        FILAMENT_CHECK_PRECONDITION(stencil.getSampleCount() <= samples)
+        FILAMENT_CHECK_PRECONDITION(texture->samples <= samples)
                 << "MetalRenderTarget was initialized with a MSAA STENCIL texture, but sample "
                    "count is "
                 << samples << ".";
 
-        auto t = stencil.metalTexture;
-        const auto twidth = std::max(1u, t->width >> stencil.level);
-        const auto theight = std::max(1u, t->height >> stencil.level);
+        const auto twidth = std::max(1u, texture->width >> level);
+        const auto theight = std::max(1u, texture->height >> level);
         tmin = { math::min(tmin.x, twidth), math::min(tmin.y, theight) };
         tmax = { math::max(tmax.x, twidth), math::max(tmax.y, theight) };
         attachmentCount++;
 
+        id<MTLTexture> mtlTexture = texture->getMtlTextureForWrite();
+        stencil = MetalAttachment(mtlTexture, level, layer);
+
         // If we were given a single-sampled texture but the samples parameter is > 1, we create
         // a multisampled sidecar texture and do a resolve automatically.
-        if (samples > 1 && stencil.getSampleCount() == 1) {
-            auto& sidecar = stencil.metalTexture->msaaSidecar;
-            if (!sidecar) {
-                sidecar = createMultisampledTexture(stencil.getPixelFormat(),
-                        stencil.metalTexture->width, stencil.metalTexture->height, samples);
+        if (samples > 1 && texture->samples == 1) {
+            auto& sidecar = texture->msaaSidecar;
+            if (!sidecar || sidecar.sampleCount != samples) {
+                sidecar = createMultisampledTexture(mtlTexture.pixelFormat, texture->width,
+                        texture->height, samples);
             }
+            stencil = MetalAttachment(mtlTexture, level, layer).withMsaaTexture(sidecar);
         }
     }
 
@@ -1105,105 +1182,105 @@ void MetalRenderTarget::setUpRenderPassAttachments(MTLRenderPassDescriptor* desc
     const auto discardFlags = params.flags.discardEnd;
 
     for (size_t i = 0; i < MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT; i++) {
-        Attachment attachment = getDrawColorAttachment(i);
+        MetalAttachment attachment = getDrawColorAttachment(i);
         if (!attachment) {
             continue;
         }
 
         descriptor.colorAttachments[i].texture = attachment.getTexture();
-        descriptor.colorAttachments[i].level = attachment.level;
-        descriptor.colorAttachments[i].slice = attachment.layer;
+        descriptor.colorAttachments[i].level = attachment.getLevel();
+        descriptor.colorAttachments[i].slice = attachment.getLayer();
         descriptor.colorAttachments[i].loadAction = getLoadAction(params, getTargetBufferFlagsAt(i));
         descriptor.colorAttachments[i].storeAction = getStoreAction(params,
                 getTargetBufferFlagsAt(i));
         descriptor.colorAttachments[i].clearColor = MTLClearColorMake(
                 params.clearColor.r, params.clearColor.g, params.clearColor.b, params.clearColor.a);
 
-        const bool automaticResolve = samples > 1 && attachment.getSampleCount() == 1;
-        if (automaticResolve) {
+        if (attachment.getMsaaTexture()) {
+            // Check that the loadAction is valid for MSAA targets: either DontCare or Clear.
             // We're rendering into our temporary MSAA texture and doing an automatic resolve.
             // We should not be attempting to load anything into the MSAA texture.
-            assert_invariant(descriptor.colorAttachments[i].loadAction != MTLLoadActionLoad);
-            assert_invariant(!defaultRenderTarget);
+            // This might happen if the user is rendering multiple views into a MSAA SwapChain,
+            // which is not supported. In that case, ignore the load action.
+            if (descriptor.colorAttachments[i].loadAction == MTLLoadActionLoad) {
+                descriptor.colorAttachments[i].loadAction = MTLLoadActionDontCare;
+            }
 
-            id<MTLTexture> sidecar = attachment.getMSAASidecarTexture();
-            assert_invariant(sidecar);
-
-            descriptor.colorAttachments[i].texture = sidecar;
+            descriptor.colorAttachments[i].texture = attachment.getMsaaTexture();
             descriptor.colorAttachments[i].level = 0;
             descriptor.colorAttachments[i].slice = 0;
             const bool discard = any(discardFlags & getTargetBufferFlagsAt(i));
             if (!discard) {
-                descriptor.colorAttachments[i].resolveTexture = attachment.texture;
-                descriptor.colorAttachments[i].resolveLevel = attachment.level;
-                descriptor.colorAttachments[i].resolveSlice = attachment.layer;
+                descriptor.colorAttachments[i].resolveTexture = attachment.getTexture();
+                descriptor.colorAttachments[i].resolveLevel = attachment.getLevel();
+                descriptor.colorAttachments[i].resolveSlice = attachment.getLayer();
                 descriptor.colorAttachments[i].storeAction = MTLStoreActionMultisampleResolve;
             }
         }
     }
 
-    Attachment depthAttachment = getDepthAttachment();
+    MetalAttachment depthAttachment = getDepthAttachment();
     if (depthAttachment) {
         descriptor.depthAttachment.texture = depthAttachment.getTexture();
-        descriptor.depthAttachment.level = depthAttachment.level;
-        descriptor.depthAttachment.slice = depthAttachment.layer;
+        descriptor.depthAttachment.level = depthAttachment.getLevel();
+        descriptor.depthAttachment.slice = depthAttachment.getLayer();
         descriptor.depthAttachment.loadAction = getLoadAction(params, TargetBufferFlags::DEPTH);
         descriptor.depthAttachment.storeAction = getStoreAction(params, TargetBufferFlags::DEPTH);
         descriptor.depthAttachment.clearDepth = params.clearDepth;
     }
 
-    const bool depthAutomaticResolve = samples > 1 && depthAttachment.getSampleCount() == 1;
-    if (depthAutomaticResolve) {
+    if (depthAttachment.getMsaaTexture()) {
+        // Check that the loadAction is valid for MSAA targets: either DontCare or Clear.
         // We're rendering into our temporary MSAA texture and doing an automatic resolve.
         // We should not be attempting to load anything into the MSAA texture.
-        assert_invariant(descriptor.depthAttachment.loadAction != MTLLoadActionLoad);
-        assert_invariant(!defaultRenderTarget);
+        // This might happen if the user is rendering multiple views into a MSAA SwapChain,
+        // which is not supported. In that case, ignore the load action.
+        if (descriptor.depthAttachment.loadAction == MTLLoadActionLoad) {
+            descriptor.depthAttachment.loadAction = MTLLoadActionDontCare;
+        }
 
-        id<MTLTexture> sidecar = depthAttachment.getMSAASidecarTexture();
-        assert_invariant(sidecar);
-
-        descriptor.depthAttachment.texture = sidecar;
+        descriptor.depthAttachment.texture = depthAttachment.getMsaaTexture();
         descriptor.depthAttachment.level = 0;
         descriptor.depthAttachment.slice = 0;
         const bool discard = any(discardFlags & TargetBufferFlags::DEPTH);
         if (!discard) {
             assert_invariant(context->supportsAutoDepthResolve);
             descriptor.depthAttachment.resolveTexture = depthAttachment.getTexture();
-            descriptor.depthAttachment.resolveLevel = depthAttachment.level;
-            descriptor.depthAttachment.resolveSlice = depthAttachment.layer;
+            descriptor.depthAttachment.resolveLevel = depthAttachment.getLevel();
+            descriptor.depthAttachment.resolveSlice = depthAttachment.getLayer();
             descriptor.depthAttachment.storeAction = MTLStoreActionMultisampleResolve;
         }
     }
 
-    Attachment stencilAttachment = getStencilAttachment();
+    MetalAttachment stencilAttachment = getStencilAttachment();
     if (stencilAttachment) {
         descriptor.stencilAttachment.texture = stencilAttachment.getTexture();
-        descriptor.stencilAttachment.level = stencilAttachment.level;
-        descriptor.stencilAttachment.slice = stencilAttachment.layer;
+        descriptor.stencilAttachment.level = stencilAttachment.getLevel();
+        descriptor.stencilAttachment.slice = stencilAttachment.getLayer();
         descriptor.stencilAttachment.loadAction = getLoadAction(params, TargetBufferFlags::STENCIL);
         descriptor.stencilAttachment.storeAction = getStoreAction(params, TargetBufferFlags::STENCIL);
         descriptor.stencilAttachment.clearStencil = params.clearStencil;
     }
 
-    const bool stencilAutomaticResolve = samples > 1 && stencilAttachment.getSampleCount() == 1;
-    if (stencilAutomaticResolve) {
+    if (stencilAttachment.getMsaaTexture()) {
+        // Check that the loadAction is valid for MSAA targets: either DontCare or Clear.
         // We're rendering into our temporary MSAA texture and doing an automatic resolve.
         // We should not be attempting to load anything into the MSAA texture.
-        assert_invariant(descriptor.stencilAttachment.loadAction != MTLLoadActionLoad);
-        assert_invariant(!defaultRenderTarget);
+        // This might happen if the user is rendering multiple views into a MSAA SwapChain,
+        // which is not supported. In that case, ignore the load action.
+        if (descriptor.stencilAttachment.loadAction == MTLLoadActionLoad) {
+            descriptor.stencilAttachment.loadAction = MTLLoadActionDontCare;
+        }
 
-        id<MTLTexture> sidecar = stencilAttachment.getMSAASidecarTexture();
-        assert_invariant(sidecar);
-
-        descriptor.stencilAttachment.texture = sidecar;
+        descriptor.stencilAttachment.texture = stencilAttachment.getMsaaTexture();
         descriptor.stencilAttachment.level = 0;
         descriptor.stencilAttachment.slice = 0;
         const bool discard = any(discardFlags & TargetBufferFlags::STENCIL);
         if (!discard) {
             assert_invariant(context->supportsAutoDepthResolve);
             descriptor.stencilAttachment.resolveTexture = stencilAttachment.getTexture();
-            descriptor.stencilAttachment.resolveLevel = stencilAttachment.level;
-            descriptor.stencilAttachment.resolveSlice = stencilAttachment.layer;
+            descriptor.stencilAttachment.resolveLevel = stencilAttachment.getLevel();
+            descriptor.stencilAttachment.resolveSlice = stencilAttachment.getLayer();
             descriptor.stencilAttachment.storeAction = MTLStoreActionMultisampleResolve;
             if (@available(iOS 12.0, *)) {
                 descriptor.stencilAttachment.stencilResolveFilter = MTLMultisampleStencilResolveFilterSample0;
@@ -1212,40 +1289,52 @@ void MetalRenderTarget::setUpRenderPassAttachments(MTLRenderPassDescriptor* desc
     }
 }
 
-MetalRenderTarget::Attachment MetalRenderTarget::getDrawColorAttachment(size_t index) {
+bool MetalRenderTarget::involvesAbandonedSwapChain() const noexcept {
+    const auto* draw = context->currentDrawSwapChain;
+    const auto* read = context->currentReadSwapChain;
+    return (draw && draw->isAbandoned()) || (read && read->isAbandoned());
+}
+
+MetalAttachment MetalRenderTarget::getDrawColorAttachment(size_t index) {
     assert_invariant(index < MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT);
-    Attachment result = color[index];
     if (index == 0 && defaultRenderTarget) {
         assert_invariant(context->currentDrawSwapChain);
-        result.texture = context->currentDrawSwapChain->acquireDrawable();
+        return context->currentDrawSwapChain->acquireDrawable();
     }
-    return result;
+    return color[index];
 }
 
-MetalRenderTarget::Attachment MetalRenderTarget::getReadColorAttachment(size_t index) {
+MetalAttachment MetalRenderTarget::getReadColorAttachment(size_t index) {
     assert_invariant(index < MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT);
-    Attachment result = color[index];
     if (index == 0 && defaultRenderTarget) {
         assert_invariant(context->currentReadSwapChain);
-        result.texture = context->currentReadSwapChain->acquireDrawable();
+        return context->currentReadSwapChain->acquireDrawable();
     }
-    return result;
+    return color[index];
 }
 
-MetalRenderTarget::Attachment MetalRenderTarget::getDepthAttachment() {
-    Attachment result = depth;
+MetalAttachment MetalRenderTarget::getDepthAttachment() {
     if (defaultRenderTarget) {
-        result.texture = context->currentDrawSwapChain->acquireDepthTexture();
+        assert_invariant(context->currentDrawSwapChain);
+        return context->currentDrawSwapChain->acquireDepthTexture();
     }
-    return result;
+    return depth;
 }
 
-MetalRenderTarget::Attachment MetalRenderTarget::getStencilAttachment() {
-    Attachment result = stencil;
+MetalAttachment MetalRenderTarget::getStencilAttachment() {
     if (defaultRenderTarget) {
-        result.texture = context->currentDrawSwapChain->acquireStencilTexture();
+        assert_invariant(context->currentDrawSwapChain);
+        return context->currentDrawSwapChain->acquireStencilTexture();
     }
-    return result;
+    return stencil;
+}
+
+NSUInteger MetalRenderTarget::getSampleCount() const {
+    if (defaultRenderTarget) {
+        assert_invariant(context->currentDrawSwapChain);
+        return context->currentDrawSwapChain->getSampleCount();
+    }
+    return samples;
 }
 
 MTLLoadAction MetalRenderTarget::getLoadAction(const RenderPassParams& params,
@@ -1335,12 +1424,306 @@ FenceStatus MetalFence::wait(uint64_t timeoutNs) {
                 state->cv.wait(guard);
             } else if (timeoutNs == 0 ||
                     state->cv.wait_for(guard, ns(timeoutNs)) == std::cv_status::timeout) {
-                return FenceStatus::TIMEOUT_EXPIRED;
+                return state->status;
             }
         }
-        return FenceStatus::CONDITION_SATISFIED;
+        return state->status;
     }
     return FenceStatus::ERROR;
+}
+
+void MetalFence::cancel() {
+    std::unique_lock guard(state->mutex);
+    state->status = FenceStatus::ERROR;
+    state->cv.notify_all();
+}
+
+MetalDescriptorSetLayout::MetalDescriptorSetLayout(DescriptorSetLayout&& l) noexcept
+    : mLayout(std::move(l)) {
+    size_t dynamicBindings = 0;
+    for (const auto& binding : mLayout.descriptors) {
+        if (any(binding.flags & DescriptorFlags::DYNAMIC_OFFSET)) {
+            dynamicBindings++;
+        }
+    }
+    mDynamicOffsetCount = dynamicBindings;
+}
+
+id<MTLArgumentEncoder> MetalDescriptorSetLayout::getArgumentEncoder(id<MTLDevice> device, ShaderStage stage,
+        utils::FixedCapacityVector<MTLTextureType> const& textureTypes) {
+    auto const index = static_cast<size_t>(stage);
+    assert_invariant(index < mCachedArgumentEncoder.size());
+    if (mCachedArgumentEncoder[index] &&
+            std::equal(
+                    textureTypes.begin(), textureTypes.end(), mCachedTextureTypes[index].begin())) {
+        return mCachedArgumentEncoder[index];
+    }
+    mCachedArgumentEncoder[index] = getArgumentEncoderSlow(device, stage, textureTypes);
+    mCachedTextureTypes[index] = textureTypes;
+    return mCachedArgumentEncoder[index];
+}
+
+id<MTLArgumentEncoder> MetalDescriptorSetLayout::getArgumentEncoderSlow(id<MTLDevice> device,
+        ShaderStage stage, utils::FixedCapacityVector<MTLTextureType> const& textureTypes) {
+    auto const& bindings = getBindings();
+    NSMutableArray<MTLArgumentDescriptor*>* arguments = [NSMutableArray new];
+    // Important! The bindings must be sorted by binding number. This has already been done inside
+    // createDescriptorSetLayout.
+    size_t textureIndex = 0;
+    for (auto const& binding : bindings) {
+        if (!hasShaderType(binding.stageFlags, stage)) {
+            continue;
+        }
+        switch (binding.type) {
+            case DescriptorType::UNIFORM_BUFFER:
+            case DescriptorType::SHADER_STORAGE_BUFFER: {
+                MTLArgumentDescriptor* bufferArgument = [MTLArgumentDescriptor argumentDescriptor];
+                bufferArgument.index = binding.binding * 2;
+                bufferArgument.dataType = MTLDataTypePointer;
+                bufferArgument.access = MTLArgumentAccessReadOnly;
+                [arguments addObject:bufferArgument];
+                break;
+            }
+            case DescriptorType::SAMPLER_2D_FLOAT:
+            case DescriptorType::SAMPLER_2D_INT:
+            case DescriptorType::SAMPLER_2D_UINT:
+            case DescriptorType::SAMPLER_2D_DEPTH:
+            case DescriptorType::SAMPLER_2D_ARRAY_FLOAT:
+            case DescriptorType::SAMPLER_2D_ARRAY_INT:
+            case DescriptorType::SAMPLER_2D_ARRAY_UINT:
+            case DescriptorType::SAMPLER_2D_ARRAY_DEPTH:
+            case DescriptorType::SAMPLER_CUBE_FLOAT:
+            case DescriptorType::SAMPLER_CUBE_INT:
+            case DescriptorType::SAMPLER_CUBE_UINT:
+            case DescriptorType::SAMPLER_CUBE_DEPTH:
+            case DescriptorType::SAMPLER_CUBE_ARRAY_FLOAT:
+            case DescriptorType::SAMPLER_CUBE_ARRAY_INT:
+            case DescriptorType::SAMPLER_CUBE_ARRAY_UINT:
+            case DescriptorType::SAMPLER_CUBE_ARRAY_DEPTH:
+            case DescriptorType::SAMPLER_3D_FLOAT:
+            case DescriptorType::SAMPLER_3D_INT:
+            case DescriptorType::SAMPLER_3D_UINT:
+            case DescriptorType::SAMPLER_2D_MS_FLOAT:
+            case DescriptorType::SAMPLER_2D_MS_INT:
+            case DescriptorType::SAMPLER_2D_MS_UINT:
+            case DescriptorType::SAMPLER_2D_MS_ARRAY_FLOAT:
+            case DescriptorType::SAMPLER_2D_MS_ARRAY_INT:
+            case DescriptorType::SAMPLER_2D_MS_ARRAY_UINT:
+            case DescriptorType::SAMPLER_EXTERNAL: {
+                MTLArgumentDescriptor* textureArgument = [MTLArgumentDescriptor argumentDescriptor];
+                textureArgument.index = binding.binding * 2;
+                textureArgument.dataType = MTLDataTypeTexture;
+                MTLTextureType textureType = MTLTextureType2D;
+                if (textureIndex < textureTypes.size()) {
+                    textureType = textureTypes[textureIndex++];
+                }
+                textureArgument.textureType = textureType;
+                textureArgument.access = MTLArgumentAccessReadOnly;
+                [arguments addObject:textureArgument];
+
+                MTLArgumentDescriptor* samplerArgument = [MTLArgumentDescriptor argumentDescriptor];
+                samplerArgument.index = binding.binding * 2 + 1;
+                samplerArgument.dataType = MTLDataTypeSampler;
+                textureArgument.access = MTLArgumentAccessReadOnly;
+                [arguments addObject:samplerArgument];
+                break;
+            }
+            case DescriptorType::INPUT_ATTACHMENT:
+                // TODO: support INPUT_ATTACHMENT
+                assert_invariant(false);
+                break;
+        }
+    }
+    if (arguments.count == 0) {
+        return nil;
+    }
+    return [device newArgumentEncoderWithArguments:arguments];
+}
+
+MetalDescriptorSet::MetalDescriptorSet(MetalDescriptorSetLayout* layout) noexcept
+    : layout(layout) {}
+
+void MetalDescriptorSet::finalize(MetalDriver* driver) {
+    [driver->mContext->currentRenderPassEncoder useResource:driver->mContext->emptyBuffer
+                                                      usage:MTLResourceUsageRead];
+    [driver->mContext->currentRenderPassEncoder
+            useResource:getOrCreateEmptyTexture(driver->mContext)
+                  usage:MTLResourceUsageRead];
+
+    if (@available(iOS 13.0, *)) {
+        [driver->mContext->currentRenderPassEncoder useResources:vertexResources.data()
+                                                           count:vertexResources.size()
+                                                           usage:MTLResourceUsageRead
+                                                          stages:MTLRenderStageVertex];
+        [driver->mContext->currentRenderPassEncoder useResources:fragmentResources.data()
+                                                           count:fragmentResources.size()
+                                                           usage:MTLResourceUsageRead
+                                                          stages:MTLRenderStageFragment];
+    } else {
+        [driver->mContext->currentRenderPassEncoder useResources:vertexResources.data()
+                                                           count:vertexResources.size()
+                                                           usage:MTLResourceUsageRead];
+        [driver->mContext->currentRenderPassEncoder useResources:fragmentResources.data()
+                                                           count:fragmentResources.size()
+                                                           usage:MTLResourceUsageRead];
+    }
+}
+
+id<MTLBuffer> MetalDescriptorSet::finalizeAndGetBuffer(MetalDriver* driver, ShaderStage stage) {
+    auto const index = static_cast<size_t>(stage);
+    assert_invariant(index < cachedBuffer.size());
+    auto& buffer = cachedBuffer[index];
+
+    if (buffer) {
+        return buffer.get();
+    }
+
+    // Map all the texture bindings to their respective texture types.
+    auto const& bindings = layout->getBindings();
+    auto textureTypes = utils::FixedCapacityVector<MTLTextureType>::with_capacity(bindings.size());
+    for (auto const& binding : bindings) {
+        if (!hasShaderType(binding.stageFlags, stage)) {
+            continue;
+        }
+        MTLTextureType textureType = MTLTextureType2D;
+        if (auto found = textures.find(binding.binding); found != textures.end()) {
+            auto const& textureBinding = textures[binding.binding];
+            textureType = textureBinding.texture.textureType;
+        }
+        textureTypes.push_back(textureType);
+    }
+
+    MetalContext const& context = *driver->mContext;
+
+    id<MTLArgumentEncoder> encoder =
+            layout->getArgumentEncoder(context.device, stage, textureTypes);
+    if (!encoder) {
+        return nil;
+    }
+
+    {
+        ScopedAllocationTimer timer("descriptor_set");
+        buffer = { [context.device newBufferWithLength:encoder.encodedLength
+                                               options:MTLResourceStorageModeShared],
+            TrackedMetalBuffer::Type::DESCRIPTOR_SET };
+#if FILAMENT_METAL_DEBUG_LABELS
+        if (!label.empty()) {
+            buffer.get().label = @(label.c_str_safe());
+        }
+#endif
+    }
+    [encoder setArgumentBuffer:buffer.get() offset:0];
+
+    for (auto const& binding : bindings) {
+        if (!hasShaderType(binding.stageFlags, stage)) {
+            continue;
+        }
+        switch (binding.type) {
+            case DescriptorType::UNIFORM_BUFFER:
+            case DescriptorType::SHADER_STORAGE_BUFFER: {
+                auto found = buffers.find(binding.binding);
+                if (found == buffers.end()) {
+                    [encoder setBuffer:driver->mContext->emptyBuffer
+                                offset:0
+                               atIndex:binding.binding * 2];
+                    continue;
+                }
+
+                auto const& bufferBinding = buffers[binding.binding];
+                [encoder setBuffer:bufferBinding.buffer
+                            offset:bufferBinding.offset
+                           atIndex:binding.binding * 2];
+                break;
+            }
+            case DescriptorType::SAMPLER_2D_FLOAT:
+            case DescriptorType::SAMPLER_2D_INT:
+            case DescriptorType::SAMPLER_2D_UINT:
+            case DescriptorType::SAMPLER_2D_DEPTH:
+            case DescriptorType::SAMPLER_2D_ARRAY_FLOAT:
+            case DescriptorType::SAMPLER_2D_ARRAY_INT:
+            case DescriptorType::SAMPLER_2D_ARRAY_UINT:
+            case DescriptorType::SAMPLER_2D_ARRAY_DEPTH:
+            case DescriptorType::SAMPLER_CUBE_FLOAT:
+            case DescriptorType::SAMPLER_CUBE_INT:
+            case DescriptorType::SAMPLER_CUBE_UINT:
+            case DescriptorType::SAMPLER_CUBE_DEPTH:
+            case DescriptorType::SAMPLER_CUBE_ARRAY_FLOAT:
+            case DescriptorType::SAMPLER_CUBE_ARRAY_INT:
+            case DescriptorType::SAMPLER_CUBE_ARRAY_UINT:
+            case DescriptorType::SAMPLER_CUBE_ARRAY_DEPTH:
+            case DescriptorType::SAMPLER_3D_FLOAT:
+            case DescriptorType::SAMPLER_3D_INT:
+            case DescriptorType::SAMPLER_3D_UINT:
+            case DescriptorType::SAMPLER_2D_MS_FLOAT:
+            case DescriptorType::SAMPLER_2D_MS_INT:
+            case DescriptorType::SAMPLER_2D_MS_UINT:
+            case DescriptorType::SAMPLER_2D_MS_ARRAY_FLOAT:
+            case DescriptorType::SAMPLER_2D_MS_ARRAY_INT:
+            case DescriptorType::SAMPLER_2D_MS_ARRAY_UINT:
+            case DescriptorType::SAMPLER_EXTERNAL: {
+                auto found = textures.find(binding.binding);
+                if (found == textures.end()) {
+                    [encoder setTexture:getOrCreateEmptyTexture(driver->mContext) atIndex:binding.binding * 2];
+                    id<MTLSamplerState> sampler =
+                            driver->mContext->samplerStateCache.getOrCreateState({});
+                    [encoder setSamplerState:sampler atIndex:binding.binding * 2 + 1];
+                    continue;
+                }
+
+                auto const& textureBinding = textures[binding.binding];
+                [encoder setTexture:textureBinding.texture atIndex:binding.binding * 2];
+                SamplerState samplerState { .samplerParams = textureBinding.sampler };
+                id<MTLSamplerState> sampler =
+                        driver->mContext->samplerStateCache.getOrCreateState(samplerState);
+                [encoder setSamplerState:sampler atIndex:binding.binding * 2 + 1];
+                break;
+            }
+            case DescriptorType::INPUT_ATTACHMENT:
+                assert_invariant(false);
+                break;
+        }
+    }
+
+    return buffer.get();
+}
+
+MetalMemoryMappedBuffer::MetalMemoryMappedBuffer(MetalBufferObject* bo, size_t offset, size_t size,
+    MapBufferAccessFlags access) noexcept : access(access) {
+    MetalBuffer* buffer = bo->getBuffer();
+    assert_invariant(buffer);
+    id<MTLBuffer> mtlBuffer = buffer->getGpuBufferForDraw();
+
+    assert_invariant(offset + size <= bo->byteCount);
+    assert_invariant(mtlBuffer.storageMode != MTLStorageModePrivate);
+
+    mtl.bo = bo;
+    mtl.vaddr = static_cast<char*>(mtlBuffer.contents) + offset;
+    mtl.size = size;
+    mtl.offset = offset;
+}
+
+MetalMemoryMappedBuffer::~MetalMemoryMappedBuffer() = default;
+
+void MetalMemoryMappedBuffer::unmap() {
+#if !defined(FILAMENT_IOS) && defined(__x86_64__)
+    // Managed memory requires didModifyRange to synchronize changes to the GPU. This is specific to Intel Macs.
+    MetalBuffer* buffer = mtl.bo->getBuffer();
+    id<MTLBuffer> mtlBuffer = buffer->getGpuBufferForDraw();
+    if (mtlBuffer && mtlBuffer.storageMode == MTLStorageModeManaged) {
+        [mtlBuffer didModifyRange:NSMakeRange(mtl.offset, mtl.size)];
+    }
+#endif
+    // Shared memory on UMA systems is coherent; no explicit synchronization is required.
+}
+
+void MetalMemoryMappedBuffer::copy(MetalDriver& mtld, size_t offset, BufferDescriptor&& data) const {
+    assert_invariant(any(access & MapBufferAccessFlags::WRITE_BIT));
+    assert_invariant(offset + data.size <= mtl.size);
+    assert_invariant(mtl.vaddr);
+
+    memcpy(static_cast<char*>(mtl.vaddr) + offset, data.buffer, data.size);
+
+    mtld.scheduleDestroy(std::move(data));
 }
 
 } // namespace backend

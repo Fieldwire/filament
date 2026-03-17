@@ -30,34 +30,46 @@ namespace filament {
 static constexpr size_t POST_PROCESS_VARIANT_BITS = 1;
 static constexpr size_t POST_PROCESS_VARIANT_COUNT = (1u << POST_PROCESS_VARIANT_BITS);
 static constexpr size_t POST_PROCESS_VARIANT_MASK = POST_PROCESS_VARIANT_COUNT - 1;
+
 enum class PostProcessVariant : uint8_t {
     OPAQUE,
     TRANSLUCENT
 };
 
-// Binding points for uniform buffers
-enum class UniformBindingPoints : uint8_t {
-    PER_VIEW                   = 0,    // uniforms updated per view
-    PER_RENDERABLE             = 1,    // uniforms updated per renderable
-    PER_RENDERABLE_BONES       = 2,    // bones data, per renderable
-    PER_RENDERABLE_MORPHING    = 3,    // morphing uniform/sampler updated per render primitive
-    LIGHTS                     = 4,    // lights data array
-    SHADOW                     = 5,    // punctual shadow data
-    FROXEL_RECORDS             = 6,
-    FROXELS                    = 7,
-    PER_MATERIAL_INSTANCE      = 8,    // uniforms updates per material
-    // Update utils::Enum::count<>() below when adding values here
-    // These are limited by CONFIG_BINDING_COUNT (currently 10)
+enum class DescriptorSetBindingPoints : uint8_t {
+    PER_VIEW        = 0,
+    PER_RENDERABLE  = 1,
+    PER_MATERIAL    = 2,
 };
 
-// Binding points for sampler buffers.
-enum class SamplerBindingPoints : uint8_t {
-    PER_VIEW                   = 0,    // samplers updated per view
-    PER_RENDERABLE_MORPHING    = 1,    // morphing sampler updated per render primitive
-    PER_MATERIAL_INSTANCE      = 2,    // samplers updates per material
-    PER_RENDERABLE_SKINNING    = 3,    // bone indices and weights sampler updated per render primitive
-    // Update utils::Enum::count<>() below when adding values here
-    // These are limited by CONFIG_SAMPLER_BINDING_COUNT (currently 4)
+// binding point for the "per-view" descriptor set
+enum class PerViewBindingPoints : uint8_t  {
+    FRAME_UNIFORMS  =  0,   // uniforms updated per view
+    SHADOWS         =  1,   // punctual shadow data
+    LIGHTS          =  2,   // lights data array
+    RECORD_BUFFER   =  3,   // froxel record buffer
+    FROXEL_BUFFER   =  4,   // froxel buffer
+    STRUCTURE       =  5,   // variable, DEPTH
+    SHADOW_MAP      =  6,   // user defined (1024x1024) DEPTH, array
+    IBL_DFG_LUT     =  7,   // user defined (128x128), RGB16F
+    IBL_SPECULAR    =  8,   // user defined, user defined, CUBEMAP
+    SSAO            =  9,   // variable, RGB8 {AO, [depth]}
+    SSR             = 10,   // variable, 2d array, RGB_11_11_10, mipmapped
+    SSR_HISTORY     = 10,   // variable, 2d texture, RGB_11_11_10
+    FOG             = 11    // variable, user defined, CUBEMAP
+};
+
+enum class PerRenderableBindingPoints : uint8_t  {
+    OBJECT_UNIFORMS             =  0,   // uniforms updated per renderable
+    BONES_UNIFORMS              =  1,
+    MORPHING_UNIFORMS           =  2,
+    MORPH_TARGET_POSITIONS      =  3,
+    MORPH_TARGET_TANGENTS       =  4,
+    BONES_INDICES_AND_WEIGHTS   =  5,
+};
+
+enum class PerMaterialBindingPoints : uint8_t  {
+    MATERIAL_PARAMS             =  0,   // uniforms
 };
 
 enum class ReservedSpecializationConstants : uint8_t {
@@ -70,28 +82,38 @@ enum class ReservedSpecializationConstants : uint8_t {
     CONFIG_DEBUG_DIRECTIONAL_SHADOWMAP = 6,
     CONFIG_DEBUG_FROXEL_VISUALIZATION = 7,
     CONFIG_STEREO_EYE_COUNT = 8, // don't change (hardcoded in ShaderCompilerService.cpp)
-    CONFIG_SH_BANDS_COUNT = 9
+    CONFIG_SH_BANDS_COUNT = 9,
+    CONFIG_SHADOW_SAMPLING_METHOD = 10,
+    CONFIG_FROXEL_RECORD_BUFFER_HEIGHT = 11,
+    // check CONFIG_NEXT_RESERVED_SPEC_CONSTANT and CONFIG_MAX_RESERVED_SPEC_CONSTANTS below
 };
 
 enum class PushConstantIds : uint8_t  {
     MORPHING_BUFFER_OFFSET = 0,
 };
 
+// number of renderpass channels
+constexpr size_t CONFIG_RENDERPASS_CHANNEL_COUNT = 8;
+
 // This value is limited by UBO size, ES3.0 only guarantees 16 KiB.
 // It's also limited by the Froxelizer's record buffer data type (uint8_t).
-constexpr size_t CONFIG_MAX_LIGHT_COUNT = 256;
+// And it's limited by the Froxelizer's Froxel data structure, which stores
+// a light count in a uint8_t (so the count is limited to 255)
+constexpr size_t CONFIG_MAX_LIGHT_COUNT = 255;
 constexpr size_t CONFIG_MAX_LIGHT_INDEX = CONFIG_MAX_LIGHT_COUNT - 1;
 
 // The number of specialization constants that Filament reserves for its own use. These are always
 // the first constants (from 0 to CONFIG_MAX_RESERVED_SPEC_CONSTANTS - 1).
 // Updating this value necessitates a material version bump.
 constexpr size_t CONFIG_MAX_RESERVED_SPEC_CONSTANTS = 16;
+// The number of the next unassigned reserved spec constant.
+constexpr size_t CONFIG_NEXT_RESERVED_SPEC_CONSTANT = 12;
 
-// The maximum number of shadowmaps.
-// There is currently a maximum limit of 128 shadowmaps.
+// The maximum number of shadow maps possible.
+// There is currently a maximum limit of 128 shadow maps.
 // Factors contributing to this limit:
 // - minspec for UBOs is 16KiB, which currently can hold a maximum of 128 entries
-constexpr size_t CONFIG_MAX_SHADOWMAPS = 64;
+constexpr size_t CONFIG_MAX_SHADOWMAPS = 128;
 
 // The maximum number of shadow layers.
 // There is currently a maximum limit of 255 layers.
@@ -99,7 +121,8 @@ constexpr size_t CONFIG_MAX_SHADOWMAPS = 64;
 // - minspec for 2d texture arrays layer is 256
 // - we're using uint8_t to store the number of layers (255 max)
 // - nonsensical to be larger than the number of shadowmaps
-constexpr size_t CONFIG_MAX_SHADOW_LAYERS = CONFIG_MAX_SHADOWMAPS;
+// - AtlasAllocator depth limits it to 64
+constexpr size_t CONFIG_MAX_SHADOW_LAYERS = 64;
 
 // The maximum number of shadow cascades that can be used for directional lights.
 constexpr size_t CONFIG_MAX_SHADOW_CASCADES = 4;
@@ -138,9 +161,14 @@ constexpr uint8_t CONFIG_MAX_STEREOSCOPIC_EYES = 4;
 } // namespace filament
 
 template<>
-struct utils::EnableIntegerOperators<filament::UniformBindingPoints> : public std::true_type {};
+struct utils::EnableIntegerOperators<filament::DescriptorSetBindingPoints> : public std::true_type {};
 template<>
-struct utils::EnableIntegerOperators<filament::SamplerBindingPoints> : public std::true_type {};
+struct utils::EnableIntegerOperators<filament::PerViewBindingPoints> : public std::true_type {};
+template<>
+struct utils::EnableIntegerOperators<filament::PerRenderableBindingPoints> : public std::true_type {};
+template<>
+struct utils::EnableIntegerOperators<filament::PerMaterialBindingPoints> : public std::true_type {};
+
 template<>
 struct utils::EnableIntegerOperators<filament::ReservedSpecializationConstants> : public std::true_type {};
 template<>
@@ -149,13 +177,6 @@ template<>
 struct utils::EnableIntegerOperators<filament::PostProcessVariant> : public std::true_type {};
 
 template<>
-inline constexpr size_t utils::Enum::count<filament::UniformBindingPoints>() { return 9; }
-template<>
-inline constexpr size_t utils::Enum::count<filament::SamplerBindingPoints>() { return 4; }
-template<>
 inline constexpr size_t utils::Enum::count<filament::PostProcessVariant>() { return filament::POST_PROCESS_VARIANT_COUNT; }
-
-static_assert(utils::Enum::count<filament::UniformBindingPoints>() <= filament::backend::CONFIG_UNIFORM_BINDING_COUNT);
-static_assert(utils::Enum::count<filament::SamplerBindingPoints>() <= filament::backend::CONFIG_SAMPLER_BINDING_COUNT);
 
 #endif // TNT_FILAMENT_ENGINE_ENUM_H

@@ -50,7 +50,7 @@ private:
 
     // private ctor -- this cannot be constructed by users
     FrameGraphHandle() noexcept = default;
-    explicit FrameGraphHandle(Index index) noexcept : index(index) {}
+    explicit FrameGraphHandle(Index const index) noexcept : index(index) {}
 
     // index to the resource handle
     static constexpr uint16_t UNINITIALIZED = std::numeric_limits<Index>::max();
@@ -63,6 +63,8 @@ public:
     FrameGraphHandle& operator=(FrameGraphHandle const& rhs) noexcept = default;
 
     bool isInitialized() const noexcept { return index != UNINITIALIZED; }
+
+    uint16_t getIndex() const noexcept { return index; }
 
     operator bool() const noexcept { return isInitialized(); }
 
@@ -87,7 +89,7 @@ class FrameGraphId : public FrameGraphHandle {
 public:
     using FrameGraphHandle::FrameGraphHandle;
     FrameGraphId() noexcept = default;
-    explicit FrameGraphId(FrameGraphHandle r) : FrameGraphHandle(r) { }
+    explicit FrameGraphId(FrameGraphHandle const r) : FrameGraphHandle(r) { }
 };
 
 } // namespace filament

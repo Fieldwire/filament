@@ -3,22 +3,26 @@
 //------------------------------------------------------------------------------
 
 /** @public-api */
-#define PI                 3.14159265359
+#define PI                          3.14159265359
 /** @public-api */
-#define HALF_PI            1.570796327
+#define HALF_PI                     1.570796327
 
-#define MEDIUMP_FLT_MAX    65504.0
-#define MEDIUMP_FLT_MIN    0.00006103515625
+#define MEDIUMP_FLT_MAX             65504.0
+#define MEDIUMP_FLT_MIN             0.00006103515625
 
 #ifdef TARGET_MOBILE
-#define FLT_EPS            MEDIUMP_FLT_MIN
-#define saturateMediump(x) min(x, MEDIUMP_FLT_MAX)
+#define FLT_EPS                     MEDIUMP_FLT_MIN
 #else
-#define FLT_EPS            1e-5
-#define saturateMediump(x) x
+#define FLT_EPS                     1e-5
 #endif
 
-#define saturate(x)        clamp(x, 0.0, 1.0)
+#define saturate(x)                 clamp(x, 0.0, 1.0)
+
+#ifdef TARGET_MOBILE
+#define PREVENT_DIV0(n, d, magic)   ((n) / max(d, magic))
+#else
+#define PREVENT_DIV0(n, d, magic)   ((n) / (d))
+#endif
 
 //------------------------------------------------------------------------------
 // Scalar operations
@@ -65,7 +69,7 @@ float vmax(const vec3 v) {
 }
 
 float vmax(const vec4 v) {
-    return max(max(v.x, v.y), max(v.y, v.z));
+    return max(max(v.x, v.y), max(v.z, v.w));
 }
 
 /**
@@ -86,7 +90,7 @@ float vmin(const vec3 v) {
 }
 
 float vmin(const vec4 v) {
-    return min(min(v.x, v.y), min(v.y, v.z));
+    return min(min(v.x, v.y), min(v.z, v.w));
 }
 
 //------------------------------------------------------------------------------

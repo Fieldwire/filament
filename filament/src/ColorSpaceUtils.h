@@ -213,42 +213,9 @@ constexpr float MIDDLE_GRAY_ACEScct = 0.4135884f;
 
 // Returns the y chromaticity coordinate in xyY for an illuminant series D,
 // given its x chromaticity coordinate.
-inline constexpr float chromaticityCoordinateIlluminantD(float x) noexcept {
+inline constexpr float chromaticityCoordinateIlluminantD(float const x) noexcept {
     // See http://en.wikipedia.org/wiki/Standard_illuminant#Illuminant_series_D
     return 2.87f * x - 3.0f * x * x - 0.275f;
-}
-
-//------------------------------------------------------------------------------
-// Color space conversions
-//------------------------------------------------------------------------------
-
-inline constexpr XYZ xyY_to_XYZ(xyY v) noexcept {
-    const float a = v.z / max(v.y, 1e-5f);
-    return XYZ{v.x * a, v.z, (1.0f - v.x - v.y) * a};
-}
-
-inline constexpr xyY XYZ_to_xyY(XYZ v) noexcept {
-    return {v.xy / max(v.x + v.y + v.z, 1e-5f), v.y};
-}
-
-inline constexpr float3 pow3(float3 x) noexcept {
-    return x * x * x;
-}
-
-inline float3 sRGB_to_OkLab(float3 x) noexcept {
-    return OkLab_LMS_to_OkLab * cbrt(sRGB_to_OkLab_LMS * x);
-}
-
-inline float3 Rec2020_to_OkLab(float3 x) noexcept {
-    return OkLab_LMS_to_OkLab * cbrt(Rec2020_to_OkLab_LMS * x);
-}
-
-inline float3 OkLab_to_sRGB(float3 x) noexcept {
-    return OkLab_LMS_to_sRGB * pow3(OkLab_to_OkLab_LMS * x);
-}
-
-inline float3 OkLab_to_Rec2020(float3 x) noexcept {
-    return OkLab_LMS_to_Rec2020 * pow3(OkLab_to_OkLab_LMS * x);
 }
 
 //------------------------------------------------------------------------------
@@ -256,7 +223,7 @@ inline float3 OkLab_to_Rec2020(float3 x) noexcept {
 //------------------------------------------------------------------------------
 
 // Decodes a linear value from LogC using the Alexa LogC EI 1000 curve
-inline float3 LogC_to_linear(float3 x) noexcept {
+inline float3 LogC_to_linear(float3 const x) noexcept {
     const float ia = 1.0f / 5.555556f;
     const float b  = 0.047996f;
     const float ic = 1.0f / 0.244161f;
@@ -265,7 +232,7 @@ inline float3 LogC_to_linear(float3 x) noexcept {
 }
 
 // Encodes a linear value in LogC using the Alexa LogC EI 1000 curve
-inline float3 linear_to_LogC(float3 x) noexcept {
+inline float3 linear_to_LogC(float3 const x) noexcept {
     const float a = 5.555556f;
     const float b = 0.047996f;
     const float c = 0.244161f;
@@ -296,7 +263,7 @@ inline float3 linearAP1_to_ACEScct(float3 x) noexcept {
     return x;
 }
 
-inline float3 OETF_Linear(float3 x) noexcept {
+inline float3 OETF_Linear(float3 const x) noexcept {
     return x;
 }
 
@@ -322,34 +289,95 @@ inline float3 EOTF_sRGB(float3 x) noexcept {
     return x;
 }
 
-inline float3 OETF_PQ(float3 x, float maxPqValue) {
+inline float3 OETF_PQ(float3 x) {
     constexpr float PQ_constant_N  = 2610.0f / 4096.0f /   4.0f;
     constexpr float PQ_constant_M  = 2523.0f / 4096.0f * 128.0f;
     constexpr float PQ_constant_C1 = 3424.0f / 4096.0f;
     constexpr float PQ_constant_C2 = 2413.0f / 4096.0f *  32.0f;
     constexpr float PQ_constant_C3 = 2392.0f / 4096.0f *  32.0f;
+    constexpr float PQ_C = 10000.0f;
 
-    x /= maxPqValue;
-
-    float3 g = pow(x, PQ_constant_N);
+    float3 g = pow(x / PQ_C, PQ_constant_N);
     float3 numerator = PQ_constant_C1 + PQ_constant_C2 * g;
     float3 denominator = 1.0f + PQ_constant_C3 * g;
     return pow(numerator / denominator, PQ_constant_M);
 }
 
-inline float3 EOTF_PQ(float3 x, float maxPqValue) {
+inline float3 EOTF_PQ(float3 x) {
     constexpr float PQ_constant_N  = 2610.0f / 4096.0f /   4.0f;
     constexpr float PQ_constant_M  = 2523.0f / 4096.0f * 128.0f;
     constexpr float PQ_constant_C1 = 3424.0f / 4096.0f;
     constexpr float PQ_constant_C2 = 2413.0f / 4096.0f *  32.0f;
     constexpr float PQ_constant_C3 = 2392.0f / 4096.0f *  32.0f;
+    constexpr float PQ_C = 10000.0f;
 
-    float3 g = pow(x, 1.0f / PQ_constant_M);
+    float3 g = pow(saturate(x), 1.0f / PQ_constant_M);
     float3 numerator = max(g - PQ_constant_C1, 0.0f);
     float3 denominator = PQ_constant_C2 - (PQ_constant_C3 * g);
     float3 linearColor = pow(numerator / denominator, 1.0f / PQ_constant_N);
 
-    return linearColor * maxPqValue;
+    return linearColor * PQ_C;
+}
+
+//------------------------------------------------------------------------------
+// Color space conversions
+//------------------------------------------------------------------------------
+
+inline constexpr XYZ xyY_to_XYZ(xyY const v) noexcept {
+    const float a = v.z / max(v.y, 1e-5f);
+    return XYZ{v.x * a, v.z, (1.0f - v.x - v.y) * a};
+}
+
+inline constexpr xyY XYZ_to_xyY(XYZ v) noexcept {
+    return {v.xy / max(v.x + v.y + v.z, 1e-5f), v.y};
+}
+
+inline constexpr float3 pow3(float3 const x) noexcept {
+    return x * x * x;
+}
+
+inline float3 sRGB_to_OkLab(float3 const x) noexcept {
+    return OkLab_LMS_to_OkLab * cbrt(sRGB_to_OkLab_LMS * x);
+}
+
+inline float3 Rec2020_to_OkLab(float3 const x) noexcept {
+    return OkLab_LMS_to_OkLab * cbrt(Rec2020_to_OkLab_LMS * x);
+}
+
+inline float3 OkLab_to_sRGB(float3 const x) noexcept {
+    return OkLab_LMS_to_sRGB * pow3(OkLab_to_OkLab_LMS * x);
+}
+
+inline float3 OkLab_to_Rec2020(float3 const x) noexcept {
+    return OkLab_LMS_to_Rec2020 * pow3(OkLab_to_OkLab_LMS * x);
+}
+
+inline float3 Rec2020_to_ICtCp(float3 const x) noexcept {
+    const float3 lmsPQ = OETF_PQ(float3{
+        (x.r * 1688.0f + x.g * 2146.0f + x.b * 262.0f) / 4096.0f,
+        (x.r * 683.0f + x.g * 2951.0f + x.b * 462.0f) / 4096.0f,
+        (x.r * 99.0f + x.g * 309.0f + x.b * 3688.0f) / 4096.0f
+    });
+
+    return float3{
+        (2048.0f * lmsPQ.x + 2048.0f * lmsPQ.y) / 4096.0f,
+        (6610.0f * lmsPQ.x - 13613.0f * lmsPQ.y + 7003.0f * lmsPQ.z) / 4096.0f,
+        (17933.0f * lmsPQ.x - 17390.0f * lmsPQ.y - 543.0f * lmsPQ.z) / 4096.0f
+    };
+}
+
+inline float3 ICtCp_to_Rec2020(float3 const x) noexcept {
+    const float3 linear = EOTF_PQ(float3{
+        x.r + 0.00860904f * x.g + 0.11103f * x.b,
+        x.r - 0.00860904f * x.g - 0.11103f * x.b,
+        x.r + 0.560031f * x.g - 0.320627f * x.b
+    });
+
+    return float3{
+        std::max(3.43661f * linear.x - 2.50645f * linear.y + 0.0698454f * linear.z, 0.0f),
+        std::max(-0.79133f * linear.x + 1.9836f * linear.y - 0.192271f * linear.z, 0.0f),
+        std::max(-0.0259499f * linear.x - 0.0989137f * linear.y + 1.12486f * linear.z, 0.0f)
+    };
 }
 
 //------------------------------------------------------------------------------

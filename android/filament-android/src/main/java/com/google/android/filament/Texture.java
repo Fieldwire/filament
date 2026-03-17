@@ -71,6 +71,16 @@ import static com.google.android.filament.Texture.Type.COMPRESSED;
  * @see MaterialInstance#setParameter(String, Texture, TextureSampler)
  */
 public class Texture {
+
+    private static Class<?> HardwareBufferClass = null;
+
+    static {
+        try {
+            HardwareBufferClass = Class.forName("android.hardware.HardwareBuffer");
+        } catch (ClassNotFoundException ignored) {
+        }
+    }
+
     private static final Sampler[] sSamplerValues = Sampler.values();
     private static final InternalFormat[] sInternalFormatValues = InternalFormat.values();
 
@@ -654,6 +664,19 @@ public class Texture {
     }
 
     /**
+     * Checks whether a given texture format is supported for mipmapping in this {@link Engine}.
+     * This depends on the selected backend.
+     *
+     * @param engine {@link Engine} to test the {@link InternalFormat InternalFormat} against
+     * @param format format to check
+     * @return <code>true</code> if this format is supported for texturing.
+     */
+    public static boolean isTextureFormatMipmappable(@NonNull Engine engine,
+            @NonNull InternalFormat format) {
+        return nIsTextureFormatMipmappable(engine.getNativeObject(), format.ordinal());
+    }
+
+    /**
      * Checks whether texture swizzling is supported in this {@link Engine}.
      * This depends on the selected backend.
      *
@@ -662,6 +685,38 @@ public class Texture {
      */
     public static boolean isTextureSwizzleSupported(@NonNull Engine engine) {
         return nIsTextureSwizzleSupported(engine.getNativeObject());
+    }
+
+    /**
+     * Checks whether a given combination of texture format, pixel data and type is valid.
+     *
+     * @param internalFormat texture format
+     * @param pixelDataFormat pixel data format
+     * @param pixelDataType pixel data type
+     * @return <code>true</code> if the combination is valid
+     */
+    public static boolean validatePixelFormatAndType(@NonNull InternalFormat internalFormat,
+            @NonNull Format pixelDataFormat, @NonNull Type pixelDataType) {
+        return nValidatePixelFormatAndType(internalFormat.ordinal(), pixelDataFormat.ordinal(),
+                pixelDataType.ordinal());
+    }
+
+    /**
+     * @param engine {@link Engine}
+     * @param type Texture sampler type
+     * @return The maximum size in texels of a texture of type \p type. At least 2048 for
+     *         2D textures, 256 for 3D textures
+     */
+    public static int getMaxTextureSize(@NonNull Engine engine, Sampler type) {
+        return nGetMaxTextureSize(engine.getNativeObject(), type.ordinal());
+    }
+
+    /**
+     * @param engine {@link Engine}
+     * @return The maximum number of layers supported by texture arrays. At least 256.
+     */
+    public static int getMaxArrayTextureLayers(@NonNull Engine engine) {
+        return nGetMaxArrayTextureLayers(engine.getNativeObject());
     }
 
     /**
@@ -741,6 +796,17 @@ public class Texture {
         }
 
         /**
+         * Specifies the number of samples for multisample anti-aliasing.
+         * @param samples number of samples, must be at least 1. Default is 1.
+         * @return This Builder, for chaining calls.
+         */
+        @NonNull
+        public Builder samples(@IntRange(from = 1) int samples) {
+            nBuilderSamples(mNativeBuilder, samples);
+            return this;
+        }
+
+        /**
          * Specifies the texture's internal format.
          * <p>The internal format specifies how texels are stored (which may be different from how
          * they're specified in {@link #setImage}). {@link InternalFormat InternalFormat} specifies
@@ -801,6 +867,19 @@ public class Texture {
         }
 
         /**
+         * Creates an external texture. The content must be set using setExternalImage().
+         * The sampler can be SAMPLER_EXTERNAL or SAMPLER_2D depending on the format. Generally
+         * YUV formats must use SAMPLER_EXTERNAL. This depends on the backend features and is not
+         * validated.
+         * @return This Builder, for chaining calls.
+         */
+        @NonNull
+        public Builder external() {
+            nBuilderExternal(mNativeBuilder);
+            return this;
+        }
+
+        /**
          * Creates a new <code>Texture</code> instance.
          * @param engine The {@link Engine} to associate this <code>Texture</code> with.
          * @return A newly created <code>Texture</code>
@@ -853,6 +932,10 @@ public class Texture {
         public static final int BLIT_SRC = 0x40;
         /** Texture can be used the destination of a blit() */
         public static final int BLIT_DST = 0x80;
+        /** Texture can be used for protected content */
+        public static final int PROTECTED = 0x0100;
+        /** Texture can be used with generateMipmaps() */
+        public static final int GEN_MIPMAPPABLE = 0x0200;
         /** by default textures are <code>UPLOADABLE</code> and <code>SAMPLEABLE</code>*/
         public static final int DEFAULT = UPLOADABLE | SAMPLEABLE;
     }
@@ -1111,6 +1194,38 @@ public class Texture {
     }
 
     /**
+     * Specifies the external image to associate with this <code>Texture</code>.
+     *
+     * <p>Typically, the external image is OS specific, and can be a video or camera frame.
+     * There are many restrictions when using an external image as a texture, such as:</p>
+     * <ul>
+     *   <li> only the level of detail (lod) 0 can be specified</li>
+     *   <li> only nearest or linear filtering is supported</li>
+     *   <li> the size and format of the texture is defined by the external image</li>
+     *   <li> only the CLAMP_TO_EDGE wrap mode is supported</li>
+     * </ul>
+     *
+     * @param engine    {@link Engine} this texture is associated to. Must be the
+     *                  instance passed to {@link Builder#build Builder.build()}.
+     * @param externalImageRef An OS specific Object. On Android it must be a
+     *                         <code>android.hardware.HardwareBuffer</code>
+     */
+    public void setExternalImage(@NonNull Engine engine, Object externalImageRef) {
+        if (HardwareBufferClass != null) {
+            if (!HardwareBufferClass.isInstance(externalImageRef)) {
+                throw new IllegalArgumentException("externalImageRef must be a AHardwareBuffer");
+            }
+            if (!nSetExternalImageByAHB(getNativeObject(), engine.getNativeObject(), externalImageRef)) {
+                throw new IllegalStateException("Error setting AHardwareBuffer as external image");
+            }
+        } else {
+            throw new UnsupportedOperationException(
+                "setExternalImage(Engine, Object) not supported on this platform");
+        }
+    }
+
+
+    /**
      * Specifies the external stream to associate with this <code>Texture</code>.
      *
      *  <p>This <code>Texture</code> instance must use
@@ -1247,7 +1362,13 @@ public class Texture {
     }
 
     private static native boolean nIsTextureFormatSupported(long nativeEngine, int internalFormat);
+    private static native boolean nIsTextureFormatMipmappable(long nativeEngine, int internalFormat);
     private static native boolean nIsTextureSwizzleSupported(long nativeEngine);
+    private static native int nGetMaxTextureSize(long nativeObject, int ordinal);
+    private static native int nGetMaxArrayTextureLayers(long nativeObject);
+
+    private static native boolean nValidatePixelFormatAndType(int internalFormat, int pixelDataFormat,
+            int pixelDataType);
 
     private static native long nCreateBuilder();
     private static native void nDestroyBuilder(long nativeBuilder);
@@ -1260,7 +1381,9 @@ public class Texture {
     private static native void nBuilderFormat(long nativeBuilder, int format);
     private static native void nBuilderUsage(long nativeBuilder, int flags);
     private static native void nBuilderSwizzle(long nativeBuilder, int r, int g, int b, int a);
+    private static native void nBuilderSamples(long nativeBuilder, int samples);
     private static native void nBuilderImportTexture(long nativeBuilder, long id);
+    private static native void nBuilderExternal(long nativeBuilder);
     private static native long nBuilderBuild(long nativeBuilder, long nativeEngine);
 
     private static native int nGetWidth(long nativeTexture, int level);
@@ -1294,6 +1417,8 @@ public class Texture {
 
     private static native void nSetExternalImage(
             long nativeObject, long nativeEngine, long eglImage);
+
+    private static native boolean nSetExternalImageByAHB(long nativeTexture, long nativeObject, Object ahb);
 
     private static native void nSetExternalStream(long nativeTexture,
             long nativeEngine, long nativeStream);
