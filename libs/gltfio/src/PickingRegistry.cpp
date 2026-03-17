@@ -240,9 +240,26 @@ bool PickingRegistry::registerExpandedIndices(const Entity entity,
 
     MeshData& meshData = it->second;
 
-    // Store the expanded indices that match the renderable's vertex buffer
-    // The vertex buffer is owned by the renderable - we don't need to store positions
-    // These indices will be returned by nGetMeshIndicesBuffer for use in triangle filtering
+    // registerMesh() must be called first — it populates meshData.indices.
+    // If indices is empty, registerMesh() was either not called or produced no geometry.
+    if (meshData.indices.empty()) {
+        slog.w << "PickingRegistry::registerExpandedIndices: entity " << entity.getId()
+               << " has no indices. registerMesh() must be called before registerExpandedIndices()."
+               << io::endl;
+        return false;
+    }
+
+    // Validate that the expanded index count matches the original index count.
+    // If these diverge, triangle filtering will be inconsistent because both operate
+    // on the same index-slot ranges derived from meshData.indices.
+    if (indexCount != meshData.indices.size()) {
+        slog.w << "PickingRegistry::registerExpandedIndices: size mismatch for entity "
+               << entity.getId()
+               << ": expected " << meshData.indices.size()
+               << " (from registerMesh) but got " << indexCount
+               << ". Expanded indices not registered." << io::endl;
+        return false;
+    }
     meshData.expandedIndices.assign(expandedIndices, expandedIndices + indexCount);
 
     return true;
