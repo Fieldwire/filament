@@ -936,6 +936,26 @@ public:
 
     /**
      * Swaps only the index buffer for the given primitive while reusing the existing vertex buffer.
+     *
+     * This preserves the primitive type, vertex buffer and material that were originally set via
+     * Builder::geometry() or setGeometryAt(), and replaces only the index data.
+     *
+     * The \p offset and \p count parameters are expressed in indices, not bytes. The following
+     * constraints apply:
+     * - \p offset + \p count must not exceed the total number of indices in \p indices.
+     * - The index type of \p indices (e.g. 16-bit vs 32-bit) must be compatible with the index
+     *   type that was used when the primitive was created.
+     * - The sequence of indices referenced by [\p offset, \p offset + \p count) must be valid
+     *   for the primitive type configured for this primitive. For example, for triangle
+     *   primitives \p count should be a multiple of 3, and for line primitives a multiple of 2.
+     *
+     * @param instance       the renderable of interest
+     * @param primitiveIndex the primitive of interest within the renderable
+     * @param indices        the index buffer to use for this primitive
+     * @param offset         starting index within \p indices from which to begin reading indices
+     * @param count          number of indices to read from \p indices, starting at \p offset
+     *
+     * @see Builder::geometry(), setGeometryAt(), getIndexCountAt(), IndexBuffer
      */
     void swapIndexBufferAt(Instance instance, size_t primitiveIndex,
             IndexBuffer* UTILS_NONNULL indices, size_t offset, size_t count) noexcept;

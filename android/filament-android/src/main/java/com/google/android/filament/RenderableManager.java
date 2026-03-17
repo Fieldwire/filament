@@ -933,6 +933,22 @@ public class RenderableManager {
                 0, indices.getIndexCount());
     }
 
+    /**
+     * Swaps the {@link IndexBuffer} for the given primitive without touching the
+     * {@link VertexBuffer} or any other primitive state.
+     *
+     * <p>Use this to efficiently hide or filter triangles by supplying a pre-built index buffer
+     * that omits the unwanted indices, while reusing the existing vertex buffer as-is.</p>
+     *
+     * @param i              the renderable instance (from {@link #getInstance})
+     * @param primitiveIndex the primitive whose index buffer should be replaced
+     * @param indices        the new {@link IndexBuffer} to bind; must remain valid for the
+     *                       lifetime of this renderable or until the next swap/setGeometryAt call
+     * @param offset         offset into {@code indices}, in indices (not bytes)
+     * @param count          number of indices to draw starting at {@code offset}
+     *
+     * @see #setGeometryAt
+     */
     public void swapIndexBufferAt(@EntityInstance int i, @IntRange(from = 0) int primitiveIndex,
             @NonNull IndexBuffer indices, @IntRange(from = 0) int offset,
             @IntRange(from = 0) int count) {

@@ -519,13 +519,9 @@ bool ResourceLoader::loadResources(FFilamentAsset* asset, bool async) {
     asset->mPendingMeshRegistrations.clear();
 
     // Clear expandedIndices from all primitives in mMeshCache to save memory
-    // Now that all entities have been registered, we can safely free this temporary data
     for (auto& primList : asset->mMeshCache) {
         for (auto& prim : primList) {
-            if (!prim.expandedIndices.empty()) {
-                prim.expandedIndices.clear();
-                prim.expandedIndices.shrink_to_fit();
-            }
+            prim.expandedIndices = {};
         }
     }
 
