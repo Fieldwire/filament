@@ -103,6 +103,31 @@ public class AssetLoader {
         mMaterialCache = provider;
     }
 
+    /**
+     * Constructs an <code>AssetLoader</code> that uses the extended loader configuration.
+     * <p>
+     * This overload allows opting into additional features such as triangle picking support.
+     * Note that the {@code generateNormals} flag currently selects the extended loader behavior
+     * and may not provide fine-grained control over whether normals are generated in all cases;
+     * the underlying implementation may still generate normals unconditionally when using the
+     * extended loader path.
+     * </p>
+     * <p>
+     * Unlike the {@link #AssetLoader(Engine, MaterialProvider, EntityManager, String)} overload,
+     * this constructor does not accept a {@code defaultNodeName}. When using the extended loader
+     * configuration, the default node name (if any) is determined by the native implementation.
+     * </p>
+     *
+     * @param engine the engine that the loader should pass to builder objects
+     * @param provider an object that provides Filament materials corresponding to glTF materials
+     * @param entities the {@link EntityManager} that should be used to create entities
+     * @param generateNormals selects the extended loader path and requests normal generation;
+     *                        current implementations may generate normals even if this flag is
+     *                        ignored by the native loader
+     * @param trianglePickingEnabled enables creation of data structures used for triangle-based
+     *                               picking on the loaded asset, if supported by the native
+     *                               loader implementation
+     */
     public AssetLoader(
         @NonNull Engine engine,
         @NonNull MaterialProvider provider,
