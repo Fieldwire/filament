@@ -121,9 +121,11 @@ public class AssetLoader {
      * @param engine the engine that the loader should pass to builder objects
      * @param provider an object that provides Filament materials corresponding to glTF materials
      * @param entities the {@link EntityManager} that should be used to create entities
-     * @param generateNormals if true, selects the extended loader path;
-     *                        normal generation is not currently implemented and
-     *                        this flag has no effect on geometry beyond path selection
+     * @param generateNormals if true, selects the extended loader path. The extended path can
+     *                        compute flat normals (and corresponding tangents) for primitives
+     *                        that do not provide them, as part of the native loading pipeline.
+     *                        This flag therefore influences both path selection and whether
+     *                        normals may be generated when they are missing in the source data.
      * @param trianglePickingEnabled enables creation of BVH and picking data
      *                               structures for triangle-level picking
      */
