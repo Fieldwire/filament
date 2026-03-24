@@ -119,12 +119,12 @@ struct FFilamentAsset : public FilamentAsset {
     FFilamentAsset(Engine* engine, utils::NameComponentManager* names,
             utils::EntityManager* entityManager, NodeManager* nodeManager,
             TrsTransformManager* trsTransformManager, const cgltf_data* srcAsset,
-            bool useExtendedAlgo) :
+            bool useExtendedAlgo, const bool trianglePickingEnabled) :
             mEngine(engine), mNameManager(names), mEntityManager(entityManager),
             mNodeManager(nodeManager), mTrsTransformManager(trsTransformManager),
             mSourceAsset(new SourceAsset {(cgltf_data*)srcAsset}),
             mTextures(srcAsset->textures_count),
-            mMeshCache(srcAsset->meshes_count) {
+            mMeshCache(srcAsset->meshes_count), mTrianglePickingEnabled(trianglePickingEnabled) {
         if (!useExtendedAlgo) {
             mResourceInfo = ResourceInfo{};
         } else {
@@ -240,6 +240,10 @@ struct FFilamentAsset : public FilamentAsset {
             SceneMask sceneFilter) const;
 
     PickingRegistry* getPickingRegistry() noexcept {
+        if (!mTrianglePickingEnabled) {
+            return nullptr;
+        }
+
         return &mPickingRegistry;
     }
 
@@ -299,6 +303,8 @@ struct FFilamentAsset : public FilamentAsset {
     const cgltf_accessor mGenerateNormals = {};
     const cgltf_accessor mGenerateTangents = {};
 
+    const bool mTrianglePickingEnabled;
+
     // Encapsulates reference-counted source data, which includes the cgltf hierachy
     // and potentially also includes buffer data that can be uploaded to the GPU.
     struct SourceAsset {
@@ -336,9 +342,6 @@ struct FFilamentAsset : public FilamentAsset {
 
     // The mapping from cgltf_mesh to VertexBuffer* (etc) is required when creating new instances.
     MeshCache mMeshCache;
-
-    // Pending mesh registrations for picking - processed after buffers are loaded
-    std::vector<std::pair<utils::Entity, const cgltf_mesh*>> mPendingMeshRegistrations;
 
     // Asset information that is produced by AssetLoader and consumed by ResourceLoader:
     struct ResourceInfo {
@@ -390,6 +393,7 @@ struct FFilamentAsset : public FilamentAsset {
 
     std::variant<ResourceInfo, ResourceInfoExtended> mResourceInfo;
 
+private:
     /**
      * Picking registry for triangle-level ray intersection testing.
      * Automatically populated during asset loading.

@@ -272,6 +272,7 @@ struct FAssetLoader : public AssetLoader {
                     << "Extend asset loading is not supported on this platform";
             mLoaderExtended = std::make_unique<AssetLoaderExtended>(
                     *config.ext, config.engine, mMaterials);
+            mTrianglePickingEnabled = config.ext->trianglePickingEnabled;
         }
     }
 
@@ -359,6 +360,9 @@ public:
 
 public:
     std::unique_ptr<AssetLoaderExtended> mLoaderExtended;
+
+private:
+    bool mTrianglePickingEnabled = false;
 };
 
 FILAMENT_DOWNCAST(AssetLoader)
@@ -489,7 +493,8 @@ FFilamentAsset* FAssetLoader::createRootAsset(const cgltf_data* srcAsset) {
 
     mDummyBufferObject = nullptr;
     FFilamentAsset* fAsset = new FFilamentAsset(&mEngine, mNameManager, &mEntityManager,
-            &mNodeManager, &mTrsTransformManager, srcAsset, (bool) mLoaderExtended);
+            &mNodeManager, &mTrsTransformManager, srcAsset, (bool) mLoaderExtended,
+            mTrianglePickingEnabled);
 
     // It is not an error for a glTF file to have zero scenes.
     fAsset->mScenes.clear();
@@ -707,16 +712,18 @@ void FAssetLoader::createPrimitives(const cgltf_node* node, const char* name,
                         fAsset->mIndexBuffers.push_back(outputPrim.indices);
                     }
 
-                    // Capture expanded indices from the slots for later registration with PickingRegistry
-                    // NOTE: expandedIndices is identical to the data that will be uploaded to outputPrim.indices
-                    // We store a CPU-side copy because slot.data will be freed after GPU upload,
-                    // but PickingRegistry needs CPU-side indices for proper triangle filtering
-                    for (const auto& slot : resourceInfo.slots) {
-                        if (slot.indices == outputPrim.indices && slot.data) {
-                            const uint32_t* expandedIndicesData = static_cast<const uint32_t*>(slot.data);
-                            size_t indexCount = slot.sizeInBytes / sizeof(uint32_t);
-                            outputPrim.expandedIndices.assign(expandedIndicesData, expandedIndicesData + indexCount);
-                            break;
+                    if (fAsset->mTrianglePickingEnabled) {
+                        // Capture expanded indices from the slots for later registration with PickingRegistry
+                        // NOTE: expandedIndices is identical to the data that will be uploaded to outputPrim.indices
+                        // We store a CPU-side copy because slot.data will be freed after GPU upload,
+                        // but PickingRegistry needs CPU-side indices for proper triangle filtering
+                        for (const auto& slot : resourceInfo.slots) {
+                            if (slot.indices == outputPrim.indices && slot.data) {
+                                const uint32_t* expandedIndicesData = static_cast<const uint32_t*>(slot.data);
+                                size_t indexCount = slot.sizeInBytes / sizeof(uint32_t);
+                                outputPrim.expandedIndices.assign(expandedIndicesData, expandedIndicesData + indexCount);
+                                break;
+                            }
                         }
                     }
                 }
@@ -923,11 +930,8 @@ void FAssetLoader::createRenderable(const cgltf_node* node, Entity entity, const
         mRenderableManager.setMorphWeights(renderable, weights.data(), size);
     }
 
-    // Defer mesh registration for picking until ResourceLoader has loaded cgltf buffers
-    // At this point, buffer->data is NULL, so we can't read vertex positions yet
-    // Store the entity-mesh pair to be processed later in ResourceLoader::loadResources()
-    if (node->mesh) {
-        fAsset->mPendingMeshRegistrations.emplace_back(entity, node->mesh);
+    if (const auto pickingRegistry = fAsset->getPickingRegistry()) {
+        pickingRegistry->enqueueMesh(entity, node->mesh);
     }
 }
 
