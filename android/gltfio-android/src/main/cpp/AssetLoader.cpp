@@ -320,7 +320,7 @@ Java_com_google_android_filament_gltfio_AssetLoader_nFwCreateAssetLoader(
         .engine = engine,
         .materials = materialProvider,
         .names = names,
-        .defaultNodeName = kDefaultNodeName,
+        .defaultNodeName = const_cast<char*>(kDefaultNodeName),
         .ext = &ext,
     };
 
