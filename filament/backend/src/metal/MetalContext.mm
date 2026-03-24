@@ -18,8 +18,9 @@
 
 #include "MetalHandles.h"
 
-#include <utils/debug.h>
 #include <utils/FixedCapacityVector.h>
+#include <utils/Logger.h>
+#include <utils/debug.h>
 
 #include <utility>
 
@@ -94,6 +95,38 @@ void initializeSupportedGpuFamilies(MetalContext* context) {
     }
 }
 
+void logMTLCommandBufferError(MTLCommandBufferError error) {
+#define MTL_COMMAND_ERROR_CASE(ERR)                                                                \
+    if (error == (ERR)) {                                                                          \
+        LOG(ERROR) << "Filament Metal error: " #ERR ".";                                           \
+        return;                                                                                    \
+    }
+
+#if !defined(FILAMENT_IOS)
+    MTL_COMMAND_ERROR_CASE(MTLCommandBufferErrorDeviceRemoved)
+#endif
+    MTL_COMMAND_ERROR_CASE(MTLCommandBufferErrorNone)
+    MTL_COMMAND_ERROR_CASE(MTLCommandBufferErrorInternal)
+    MTL_COMMAND_ERROR_CASE(MTLCommandBufferErrorTimeout)
+    MTL_COMMAND_ERROR_CASE(MTLCommandBufferErrorPageFault)
+    MTL_COMMAND_ERROR_CASE(MTLCommandBufferErrorAccessRevoked)
+    MTL_COMMAND_ERROR_CASE(MTLCommandBufferErrorNotPermitted)
+    MTL_COMMAND_ERROR_CASE(MTLCommandBufferErrorOutOfMemory)
+    MTL_COMMAND_ERROR_CASE(MTLCommandBufferErrorInvalidResource)
+
+    if (@available(macOS 11.0, *)) {
+        MTL_COMMAND_ERROR_CASE(MTLCommandBufferErrorMemoryless)
+    }
+
+    if (@available(iOS 15.0, macOS 12.0, *)) {
+        MTL_COMMAND_ERROR_CASE(MTLCommandBufferErrorStackOverflow)
+    }
+
+    LOG(ERROR) << "Filament Metal unknown error.";
+
+#undef MTL_COMMAND_ERROR_CASE
+}
+
 id<MTLCommandBuffer> getPendingCommandBuffer(MetalContext* context) {
     if (context->pendingCommandBuffer) {
         return context->pendingCommandBuffer;
@@ -101,16 +134,26 @@ id<MTLCommandBuffer> getPendingCommandBuffer(MetalContext* context) {
     context->pendingCommandBuffer = [context->commandQueue commandBuffer];
     // It's safe for this block to capture the context variable. MetalDriver::terminate will ensure
     // all frames and their completion handlers finish before context is deallocated.
+    const uint64_t thisCommandBufferId = context->pendingCommandBufferId;
     [context->pendingCommandBuffer addCompletedHandler:^(id <MTLCommandBuffer> buffer) {
         context->resourceTracker.clearResources((__bridge void*) buffer);
-        
+
+        // Command buffers should complete in order, so latestCompletedCommandBufferId will only
+        // ever increase.
+        context->latestCompletedCommandBufferId = thisCommandBufferId;
+
         auto errorCode = (MTLCommandBufferError)buffer.error.code;
         if (@available(macOS 11.0, *)) {
             if (errorCode == MTLCommandBufferErrorMemoryless) {
-                utils::slog.w << "Metal: memoryless geometry limit reached. "
-                        "Continuing with private storage mode." << utils::io::endl;
+                LOG(WARNING) << "Metal: memoryless geometry limit reached. Continuing with private "
+                                "storage mode.";
                 context->memorylessLimitsReached = true;
             }
+        }
+
+        if (UTILS_UNLIKELY(errorCode != MTLCommandBufferErrorNone)) {
+            logMTLCommandBufferError(errorCode);
+            context->commandBufferErrors.push(buffer.error);
         }
     }];
     FILAMENT_CHECK_POSTCONDITION(context->pendingCommandBuffer)
@@ -125,6 +168,7 @@ void submitPendingCommands(MetalContext* context) {
     assert_invariant(context->pendingCommandBuffer.status != MTLCommandBufferStatusCommitted);
     [context->pendingCommandBuffer commit];
     context->pendingCommandBuffer = nil;
+    context->pendingCommandBufferId++;
 }
 
 id<MTLTexture> getOrCreateEmptyTexture(MetalContext* context) {
@@ -167,7 +211,6 @@ void MetalPushConstantBuffer::setPushConstant(PushConstantVariant value, uint8_t
 
 void MetalPushConstantBuffer::setBytes(id<MTLCommandEncoder> encoder, ShaderStage stage) {
     constexpr size_t PUSH_CONSTANT_SIZE_BYTES = 4;
-    constexpr size_t PUSH_CONSTANT_BUFFER_INDEX = 26;
 
     static char buffer[MAX_PUSH_CONSTANT_COUNT * PUSH_CONSTANT_SIZE_BYTES];
     assert_invariant(mPushConstants.size() <= MAX_PUSH_CONSTANT_COUNT);

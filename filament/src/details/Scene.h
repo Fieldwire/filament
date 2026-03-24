@@ -22,29 +22,21 @@
 #include "Allocators.h"
 #include "Culler.h"
 
+#include "ds/DescriptorSet.h"
+
 #include "components/LightManager.h"
 #include "components/RenderableManager.h"
-#include "components/TransformManager.h"
 
-#include "BufferPoolAllocator.h"
-
-#include <filament/Box.h>
 #include <filament/Scene.h>
 
-#include <math/mathfwd.h>
-
-#include <utils/compiler.h>
 #include <utils/Entity.h>
 #include <utils/Slice.h>
 #include <utils/StructureOfArrays.h>
 #include <utils/Range.h>
-#include <utils/debug.h>
 
 #include <stddef.h>
 
 #include <tsl/robin_set.h>
-
-#include <memory>
 
 namespace filament {
 
@@ -90,6 +82,7 @@ public:
         RENDERABLE_INSTANCE,    //   4 | instance of the Renderable component
         WORLD_TRANSFORM,        //  16 | instance of the Transform component
         VISIBILITY_STATE,       //   2 | visibility data of the component
+        SKINNING_STATE,         //   1 | skinning data of the component
         SKINNING_BUFFER,        //   8 | bones uniform buffer handle, offset, indices and weights
         MORPHING_BUFFER,        //  16 | weights uniform buffer handle, count, morph targets
         INSTANCES,              //  16 | instancing info for this Renderable
@@ -105,6 +98,7 @@ public:
         PRIMITIVES,             //   8 | level-of-detail'ed primitives
         SUMMED_PRIMITIVE_COUNT, //   4 | summed visible primitive counts
         UBO,                    // 128 |
+        DESCRIPTOR_SET_HANDLE,
 
         // FIXME: We need a better way to handle this
         USER_DATA,              //   4 | user data currently used to store the scale
@@ -114,6 +108,7 @@ public:
             utils::EntityInstance<RenderableManager>,   // RENDERABLE_INSTANCE
             math::mat4f,                                // WORLD_TRANSFORM
             FRenderableManager::Visibility,             // VISIBILITY_STATE
+            FRenderableManager::Skinning,               // SKINNING_STATE
             FRenderableManager::SkinningBindingInfo,    // SKINNING_BUFFER
             FRenderableManager::MorphingBindingInfo,    // MORPHING_BUFFER
             FRenderableManager::InstancesInfo,          // INSTANCES
@@ -122,9 +117,10 @@ public:
             uint8_t,                                    // CHANNELS
             uint8_t,                                    // LAYERS
             math::float3,                               // WORLD_AABB_EXTENT
-            utils::Slice<FRenderPrimitive>,             // PRIMITIVES
+            utils::Slice<const FRenderPrimitive>,       // PRIMITIVES
             uint32_t,                                   // SUMMED_PRIMITIVE_COUNT
             PerRenderableData,                          // UBO
+            backend::DescriptorSetHandle,               // DESCRIPTOR_SET_HANDLE
             // FIXME: We need a better way to handle this
             float                                       // USER_DATA
     >;
@@ -132,14 +128,14 @@ public:
     RenderableSoa const& getRenderableData() const noexcept { return mRenderableData; }
     RenderableSoa& getRenderableData() noexcept { return mRenderableData; }
 
-    static inline uint32_t getPrimitiveCount(RenderableSoa const& soa,
-            uint32_t first, uint32_t last) noexcept {
+    static uint32_t getPrimitiveCount(RenderableSoa const& soa,
+            uint32_t const first, uint32_t const last) noexcept {
         // the caller must guarantee that last is dereferenceable
         return soa.elementAt<SUMMED_PRIMITIVE_COUNT>(last) -
                 soa.elementAt<SUMMED_PRIMITIVE_COUNT>(first);
     }
 
-    static inline uint32_t getPrimitiveCount(RenderableSoa const& soa, uint32_t last) noexcept {
+    static uint32_t getPrimitiveCount(RenderableSoa const& soa, uint32_t const last) noexcept {
         // the caller must guarantee that last is dereferenceable
         return soa.elementAt<SUMMED_PRIMITIVE_COUNT>(last);
     }
@@ -182,9 +178,6 @@ public:
     LightSoa const& getLightData() const noexcept { return mLightData; }
     LightSoa& getLightData() noexcept { return mLightData; }
 
-    void updateUBOs(utils::Range<uint32_t> visibleRenderables,
-            backend::Handle<backend::HwBufferObject> renderableUbh) noexcept;
-
     bool hasContactShadows() const noexcept;
 
 private:
@@ -195,6 +188,7 @@ private:
     void addEntities(const utils::Entity* entities, size_t count);
     void remove(utils::Entity entity);
     void removeEntities(const utils::Entity* entities, size_t count);
+    void removeAllEntities() noexcept;
     size_t getEntityCount() const noexcept { return mEntities.size(); }
     size_t getRenderableCount() const noexcept;
     size_t getLightCount() const noexcept;
@@ -225,12 +219,6 @@ private:
     RenderableSoa mRenderableData;
     LightSoa mLightData;
     bool mHasContactShadows = false;
-
-    // State shared between Scene and driver callbacks.
-    struct SharedState {
-        BufferPoolAllocator<3> mBufferPoolAllocator = {};
-    };
-    std::shared_ptr<SharedState> mSharedState;
 };
 
 FILAMENT_DOWNCAST(Scene)

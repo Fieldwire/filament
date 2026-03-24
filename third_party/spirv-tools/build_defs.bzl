@@ -1,20 +1,21 @@
+"""Constants and macros for spirv-tools BUILD."""
+
 COMMON_COPTS = [
-        "-DSPIRV_CHECK_CONTEXT",
-        "-DSPIRV_COLOR_TERMINAL",
-    ] + select({
-    "@bazel_tools//src/conditions:windows": [""],
+    "-DSPIRV_CHECK_CONTEXT",
+    "-DSPIRV_COLOR_TERMINAL",
+] + select({
+    "@platforms//os:windows": [],
     "//conditions:default": [
         "-DSPIRV_LINUX",
         "-DSPIRV_TIMER_ENABLED",
+        "-fvisibility=hidden",
+        "-fno-exceptions",
+        "-fno-rtti",
         "-Wall",
         "-Wextra",
         "-Wnon-virtual-dtor",
         "-Wno-missing-field-initializers",
         "-Werror",
-        "-std=c++11",
-        "-fvisibility=hidden",
-        "-fno-exceptions",
-        "-fno-rtti",
         "-Wno-long-long",
         "-Wshadow",
         "-Wundef",
@@ -23,330 +24,138 @@ COMMON_COPTS = [
     ],
 })
 
-TEST_COPTS = COMMON_COPTS + select({
-    "@bazel_tools//src/conditions:windows": [
+TEST_COPTS = COMMON_COPTS + [
+] + select({
+    "@platforms//os:windows": [
         # Disable C4503 "decorated name length exceeded" warning,
         # triggered by some heavily templated types.
         # We don't care much about that in test code.
         # Important to do since we have warnings-as-errors.
-        "/wd4503"
+        "/wd4503",
     ],
     "//conditions:default": [
         "-Wno-undef",
         "-Wno-self-assign",
         "-Wno-shadow",
-        "-Wno-unused-parameter"
+        "-Wno-unused-parameter",
     ],
 })
 
+def incompatible_with(incompatible_constraints):
+    return select(_merge_dicts([{"//conditions:default": []}, {
+        constraint: ["@platforms//:incompatible"]
+        for constraint in incompatible_constraints
+    }]))
+
+SPIRV_CORE_GRAMMAR_JSON_FILE = "@spirv_headers//:spirv_core_grammar_unified1"
 DEBUGINFO_GRAMMAR_JSON_FILE = "@spirv_headers//:spirv_ext_inst_debuginfo_grammar_unified1"
 CLDEBUGINFO100_GRAMMAR_JSON_FILE = "@spirv_headers//:spirv_ext_inst_opencl_debuginfo_100_grammar_unified1"
 SHDEBUGINFO100_GRAMMAR_JSON_FILE = "@spirv_headers//:spirv_ext_inst_nonsemantic_shader_debuginfo_100_grammar_unified1"
 
-def generate_core_tables(version = None):
-    if not version:
-        fail("Must specify version", "version")
-    grammars = [
-        "@spirv_headers//:spirv_core_grammar_" + version,
-        DEBUGINFO_GRAMMAR_JSON_FILE,
-        CLDEBUGINFO100_GRAMMAR_JSON_FILE,
-    ]
-    outs = [
-        "core.insts-{}.inc".format(version),
-        "operand.kinds-{}.inc".format(version),
-    ]
-    fmtargs = grammars + outs
-    native.genrule(
-        name = "gen_core_tables_" + version,
-        srcs = grammars,
-        outs = outs,
-        cmd = (
-            "$(location :generate_grammar_tables) " +
-            "--spirv-core-grammar=$(location {0}) " +
-            "--extinst-debuginfo-grammar=$(location {1}) " +
-            "--extinst-cldebuginfo100-grammar=$(location {2}) " +
-            "--core-insts-output=$(location {3}) " +
-            "--operand-kinds-output=$(location {4}) " +
-            "--output-language=c++"
-        ).format(*fmtargs),
-        cmd_bat = (
-            "$(location :generate_grammar_tables) " +
-            "--spirv-core-grammar=$(location {0}) " +
-            "--extinst-debuginfo-grammar=$(location {1}) " +
-            "--extinst-cldebuginfo100-grammar=$(location {2}) " +
-            "--core-insts-output=$(location {3}) " +
-            "--operand-kinds-output=$(location {4}) " +
-            "--output-language=c++"
-        ).format(*fmtargs),
-        exec_tools = [":generate_grammar_tables"],
-        visibility = ["//visibility:private"],
-    )
+def _merge_dicts(dicts):
+    merged = {}
+    for d in dicts:
+        merged.update(d)
+    return merged
 
-def generate_enum_string_mapping(version = None):
-    if not version:
-        fail("Must specify version", "version")
-    grammars = [
-        "@spirv_headers//:spirv_core_grammar_" + version,
-        DEBUGINFO_GRAMMAR_JSON_FILE,
-        CLDEBUGINFO100_GRAMMAR_JSON_FILE,
-    ]
-    outs = [
-        "extension_enum.inc",
-        "enum_string_mapping.inc",
-    ]
-    fmtargs = grammars + outs
-    native.genrule(
-        name = "gen_enum_string_mapping",
-        srcs = grammars,
-        outs = outs,
-        cmd = (
-            "$(location :generate_grammar_tables) " +
-            "--spirv-core-grammar=$(location {0}) " +
-            "--extinst-debuginfo-grammar=$(location {1}) " +
-            "--extinst-cldebuginfo100-grammar=$(location {2}) " +
-            "--extension-enum-output=$(location {3}) " +
-            "--enum-string-mapping-output=$(location {4}) " +
-            "--output-language=c++"
-        ).format(*fmtargs),
-        cmd_bat = (
-            "$(location :generate_grammar_tables) " +
-            "--spirv-core-grammar=$(location {0}) " +
-            "--extinst-debuginfo-grammar=$(location {1}) " +
-            "--extinst-cldebuginfo100-grammar=$(location {2}) " +
-            "--extension-enum-output=$(location {3}) " +
-            "--enum-string-mapping-output=$(location {4}) " +
-            "--output-language=c++"
-        ).format(*fmtargs),
-        exec_tools = [":generate_grammar_tables"],
-        visibility = ["//visibility:private"],
-    )
 
-def generate_opencl_tables(version = None):
-    if not version:
-        fail("Must specify version", "version")
-    grammars = [
-        "@spirv_headers//:spirv_opencl_grammar_" + version,
-    ]
-    outs = ["opencl.std.insts.inc"]
-    fmtargs = grammars + outs
-    native.genrule(
-        name = "gen_opencl_tables_" + version,
-        srcs = grammars,
-        outs = outs,
-        cmd = (
-            "$(location :generate_grammar_tables) " +
-            "--extinst-opencl-grammar=$(location {0}) " +
-            "--opencl-insts-output=$(location {1})"
-        ).format(*fmtargs),
-        cmd_bat = (
-            "$(location :generate_grammar_tables) " +
-            "--extinst-opencl-grammar=$(location {0}) " +
-            "--opencl-insts-output=$(location {1})"
-        ).format(*fmtargs),
-        exec_tools = [":generate_grammar_tables"],
-        visibility = ["//visibility:private"],
-    )
+def ExtInst(name, target = "", prefix =""):
+    """
+    Returns a dictionary specifying the info needed to
+    process an extended instruction set.
 
-def generate_glsl_tables(version = None):
-    if not version:
-        fail("Must specify version", "version")
-    grammars = [
-        "@spirv_headers//:spirv_glsl_grammar_" + version,
-    ]
-    outs = ["glsl.std.450.insts.inc"]
-    fmtargs = grammars + outs
-    native.genrule(
-        name = "gen_glsl_tables_" + version,
-        srcs = grammars,
-        outs = outs,
-        cmd = (
-            "$(location :generate_grammar_tables) " +
-            "--extinst-glsl-grammar=$(location {0}) " +
-            "--glsl-insts-output=$(location {1}) " +
-            "--output-language=c++"
-        ).format(*fmtargs),
-        cmd_bat = (
-            "$(location :generate_grammar_tables) " +
-            "--extinst-glsl-grammar=$(location {0}) " +
-            "--glsl-insts-output=$(location {1}) " +
-            "--output-language=c++"
-        ).format(*fmtargs),
-        exec_tools = [":generate_grammar_tables"],
-        visibility = ["//visibility:private"],
-    )
+    Args:
+        name: The extension name; forms part of the .json grammar file.
+        target: if non-empty, the name of the bazel target in spirv-headers
+           that names the JSON grammar file for the extended instrution set.
+           If empty, the target name is derived from 'name'.
+        prefix: The optional prefix for names of operand enums.
 
-def generate_vendor_tables(extension, operand_kind_prefix = ""):
-    if not extension:
-        fail("Must specify extension", "extension")
-    extension_rule = extension.replace("-", "_").replace(".", "_")
-    grammars = ["@spirv_headers//:spirv_ext_inst_{}_grammar_unified1".format(extension_rule)]
-    outs = ["{}.insts.inc".format(extension)]
-    prefices = [operand_kind_prefix]
-    fmtargs = grammars + outs + prefices
+    Returns a dictionary with keys 'name', 'target', 'prefix' and the
+    corresponding values.
+    """
+    return {'name':name, 'target':target, 'prefix':prefix}
+
+
+def _extinst_grammar_target(e):
+    """
+    Args: e, as returned from extinst
+    Returns the SPIRV-Headers target for the given extended instruction set spec.
+    """
+    target = e['target']
+    name = e['name']
+    if len(target) > 0:
+        return "@spirv_headers//:{}".format(target)
+    name_part = name.replace("-", "_").replace(".", "_")
+    return "@spirv_headers//:spirv_ext_inst_{}_grammar_unified1".format(name_part)
+
+
+def create_grammar_tables_target(name, extinsts):
+    """
+    Creates a ":gen_compressed_tables" target for SPIR-V instruction
+    set grammar tables.
+
+    Args:
+        name: unused. Required by convention.
+        extinsts: list of extended instruction specs.
+            Each spec is a dictionary, as returned from 'extinst'.
+    """
+    grammars = dict(
+        core_grammar = SPIRV_CORE_GRAMMAR_JSON_FILE,
+    )
+    outs = dict(
+        core_tables_header_output = "core_tables_header.inc",
+        core_tables_body_output = "core_tables_body.inc",
+    )
+    extinst_args = []
+    for e in extinsts:
+        extinst_args.append('--extinst={},$(location {})'.format(e['prefix'],_extinst_grammar_target(e)))
+
+    cmd = (
+        "$(location :ggt)" +
+        " --spirv-core-grammar=$(location {core_grammar})" +
+        " --core-tables-body-output=$(location {core_tables_body_output})" +
+        " --core-tables-header-output=$(location {core_tables_header_output})" +
+        " " + " ".join(extinst_args)
+    ).format(**_merge_dicts([grammars, outs]))
+
     native.genrule(
-        name = "gen_vendor_tables_" + extension_rule,
-        srcs = grammars,
-        outs = outs,
-        cmd = (
-            "$(location :generate_grammar_tables) " +
-            "--extinst-vendor-grammar=$(location {0}) " +
-            "--vendor-insts-output=$(location {1}) " +
-            "--vendor-operand-kind-prefix={2}"
-        ).format(*fmtargs),
-        cmd_bat = (
-            "$(location :generate_grammar_tables) " +
-            "--extinst-vendor-grammar=$(location {0}) " +
-            "--vendor-insts-output=$(location {1}) " +
-            "--vendor-operand-kind-prefix={2}"
-        ).format(*fmtargs),
-        exec_tools = [":generate_grammar_tables"],
+        name = "gen_compressed_tables",
+        srcs = grammars.values() + [_extinst_grammar_target(e) for e in extinsts],
+        outs = outs.values(),
+        cmd = cmd,
+        cmd_bat = cmd,
+        tools = [":ggt"],
         visibility = ["//visibility:private"],
     )
 
 def generate_extinst_lang_headers(name, grammar = None):
+    """
+    Creates a :gen_extinst_lang_headers_* target for a C++ header
+    the enums in a SPIR-V extended instruction set.
+
+    Args:
+       name: the basename of the emitted header file.
+       grammar: the path to the JSON grammar file for the extended
+           instruction set.
+    """
     if not grammar:
         fail("Must specify grammar", "grammar")
-    outs = [name + ".h"]
-    fmtargs = outs
+    outs = dict(
+        extinst_output_path = name + ".h",
+    )
+    cmd = (
+        "$(location :generate_language_headers)" +
+        " --extinst-grammar=$<" +
+        " --extinst-output-path=$(location {extinst_output_path})"
+    ).format(**outs)
+
     native.genrule(
-        name = "gen_extinst_lang_headers_" + name,
+        name = "gen_extinst_lang_headers_{}".format(name),
         srcs = [grammar],
-        outs = outs,
-        cmd = (
-            "$(location :generate_language_headers) " +
-            "--extinst-grammar=$< " +
-            "--extinst-output-path=$(location {0})"
-        ).format(*fmtargs),
-        cmd_bat = (
-            "$(location :generate_language_headers) " +
-            "--extinst-grammar=$< " +
-            "--extinst-output-path=$(location {0})"
-        ).format(*fmtargs),
-        exec_tools = [":generate_language_headers"],
+        outs = outs.values(),
+        cmd = cmd,
+        cmd_bat = cmd,
+        tools = [":generate_language_headers"],
         visibility = ["//visibility:private"],
-    )
-
-def base_test(name, srcs, deps = []):
-    if srcs == []:
-        return
-    if name[-5:] != "_test":
-        name = name + "_test"
-    native.cc_test(
-        name = "base_" + name,
-        srcs = srcs,
-        compatible_with = [],
-        copts = TEST_COPTS,
-        size = "large",
-        deps = [
-            ":test_common",
-            "@com_google_googletest//:gtest_main",
-            "@com_google_googletest//:gtest",
-            "@com_google_effcee//:effcee",
-        ] + deps,
-    )
-
-def lint_test(name, srcs, deps = []):
-    if name[-5:] != "_test":
-        name = name + "_test"
-    native.cc_test(
-        name = "lint_" + name,
-        srcs = srcs,
-        compatible_with = [],
-        copts = TEST_COPTS,
-        size = "large",
-        deps = [
-            ":spirv_tools_lint",
-            "@com_google_googletest//:gtest_main",
-            "@com_google_googletest//:gtest",
-            "@com_google_effcee//:effcee",
-        ] + deps,
-    )
-
-def link_test(name, srcs, deps = []):
-    if name[-5:] != "_test":
-        name = name + "_test"
-    native.cc_test(
-        name = "link_" + name,
-        srcs = srcs,
-        compatible_with = [],
-        copts = TEST_COPTS,
-        size = "large",
-        deps = [
-            ":link_test_common",
-            "@com_google_googletest//:gtest_main",
-            "@com_google_googletest//:gtest",
-            "@com_google_effcee//:effcee",
-        ] + deps,
-    )
-
-def opt_test(name, srcs, deps = []):
-    if name[-5:] != "_test":
-        name = name + "_test"
-    native.cc_test(
-        name = "opt_" + name,
-        srcs = srcs,
-        compatible_with = [],
-        copts = TEST_COPTS,
-        size = "large",
-        deps = [
-            ":opt_test_common",
-            "@com_google_googletest//:gtest_main",
-            "@com_google_googletest//:gtest",
-            "@com_google_effcee//:effcee",
-        ] + deps,
-    )
-
-def reduce_test(name, srcs, deps = []):
-    if name[-5:] != "_test":
-        name = name + "_test"
-    native.cc_test(
-        name = "reduce_" + name,
-        srcs = srcs,
-        compatible_with = [],
-        copts = TEST_COPTS,
-        size = "large",
-        deps = [
-            ":reduce_test_common",
-            ":spirv_tools_reduce",
-            "@com_google_googletest//:gtest_main",
-            "@com_google_googletest//:gtest",
-            "@com_google_effcee//:effcee",
-        ] + deps,
-    )
-
-def util_test(name, srcs, deps = []):
-    if name[-5:] != "_test":
-        name = name + "_test"
-    native.cc_test(
-        name = "util_" + name,
-        srcs = srcs,
-        compatible_with = [],
-        copts = TEST_COPTS,
-        size = "large",
-        deps = [
-            ":opt_test_common",
-            "@com_google_googletest//:gtest_main",
-            "@com_google_googletest//:gtest",
-            "@com_google_effcee//:effcee",
-        ] + deps,
-    )
-
-def val_test(name, srcs = [], copts = [], deps = [], **kwargs):
-    if name[-5:] != "_test":
-        name = name + "_test"
-    if name[:4] != "val_":
-        name = "val_" + name
-    native.cc_test(
-        name = name,
-        srcs = srcs,
-        compatible_with = [],
-        copts = TEST_COPTS + copts,
-        size = "large",
-        deps = [
-            ":val_test_common",
-            "@com_google_googletest//:gtest_main",
-            "@com_google_googletest//:gtest",
-            "@com_google_effcee//:effcee",
-        ] + deps,
-        **kwargs
     )

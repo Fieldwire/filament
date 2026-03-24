@@ -17,9 +17,12 @@
 #ifndef TNT_METALCONTEXT_H
 #define TNT_METALCONTEXT_H
 
+#include "MetalErrorQueue.h"
 #include "MetalResourceTracker.h"
 #include "MetalShaderCompiler.h"
 #include "MetalState.h"
+
+#include <backend/DriverEnums.h>
 
 #include <CoreVideo/CVMetalTextureCache.h>
 #include <Metal/Metal.h>
@@ -46,13 +49,13 @@ class MetalBlitter;
 class MetalBufferPool;
 class MetalBumpAllocator;
 class MetalRenderTarget;
-class MetalSamplerGroup;
 class MetalSwapChain;
 class MetalTexture;
 class MetalTimerQueryInterface;
 struct MetalUniformBuffer;
 struct MetalIndexBuffer;
 struct MetalVertexBuffer;
+struct MetalDescriptorSet;
 
 constexpr static uint8_t MAX_SAMPLE_COUNT = 8;  // Metal devices support at most 8 MSAA samples
 
@@ -68,16 +71,66 @@ private:
     bool mDirty = false;
 };
 
-struct MetalContext {
-    explicit MetalContext(size_t metalFreedTextureListSize)
-        : texturesToDestroy(metalFreedTextureListSize) {}
+class MetalDynamicOffsets {
+public:
+    void setOffsets(uint32_t set, const uint32_t* offsets, uint32_t count) {
+        assert(set < MAX_DESCRIPTOR_SET_COUNT);
 
+        auto getStartIndexForSet = [&](uint32_t s) {
+            uint32_t startIndex = 0;
+            for (uint32_t i = 0; i < s; i++) {
+                startIndex += mCounts[i];
+            }
+            return startIndex;
+        };
+
+        const bool resizeNecessary = mCounts[set] != count;
+        if (UTILS_UNLIKELY(resizeNecessary)) {
+            int delta = count - mCounts[set];
+
+            auto thisSetStart = mOffsets.begin() + getStartIndexForSet(set);
+            if (delta > 0) {
+                mOffsets.insert(thisSetStart, delta, 0);
+            } else {
+                mOffsets.erase(thisSetStart, thisSetStart - delta);
+            }
+
+            mCounts[set] = count;
+        }
+
+        if (resizeNecessary ||
+                !std::equal(
+                        offsets, offsets + count, mOffsets.begin() + getStartIndexForSet(set))) {
+            std::copy(offsets, offsets + count, mOffsets.begin() + getStartIndexForSet(set));
+            mDirty = true;
+        }
+    }
+    bool isDirty() const { return mDirty; }
+    void setDirty(bool dirty) { mDirty = dirty; }
+
+    std::pair<uint32_t, const uint32_t*> getOffsets() const {
+        return { mOffsets.size(), mOffsets.data() };
+    }
+
+private:
+    std::array<uint32_t, MAX_DESCRIPTOR_SET_COUNT> mCounts = { 0 };
+    std::vector<uint32_t> mOffsets;
+    bool mDirty = false;
+};
+
+struct MetalContext {
     MetalDriver* driver;
     id<MTLDevice> device = nullptr;
     id<MTLCommandQueue> commandQueue = nullptr;
 
-    id<MTLCommandBuffer> pendingCommandBuffer = nullptr;
-    id<MTLRenderCommandEncoder> currentRenderPassEncoder = nullptr;
+    // The ID of pendingCommandBuffer (or the next command buffer, if pendingCommandBuffer is nil).
+    uint64_t pendingCommandBufferId = 1;
+    // read from driver thread, set from completion handlers
+    std::atomic<uint64_t> latestCompletedCommandBufferId = 0;
+    id<MTLCommandBuffer> pendingCommandBuffer = nil;
+    id<MTLRenderCommandEncoder> currentRenderPassEncoder = nil;
+    uint32_t currentFrame = 0;
+    MetalErrorQueue commandBufferErrors;
 
     std::atomic<bool> memorylessLimitsReached = false;
 
@@ -85,6 +138,7 @@ struct MetalContext {
     bool supportsTextureSwizzling = false;
     bool supportsAutoDepthResolve = false;
     bool supportsMemorylessRenderTargets = false;
+    bool supportsDepthClamp = false;
     uint8_t maxColorRenderTargets = 4;
     struct {
         uint8_t common;
@@ -104,15 +158,16 @@ struct MetalContext {
 
     RenderPassFlags currentRenderPassFlags;
     MetalRenderTarget* currentRenderTarget = nullptr;
+    bool validPipelineBound = false;
+    bool currentRenderPassAbandoned = false;
 
     // State trackers.
     PipelineStateTracker pipelineState;
     DepthStencilStateTracker depthStencilState;
-    std::array<BufferState, Program::UNIFORM_BINDING_COUNT> uniformState;
-    std::array<BufferState, MAX_SSBO_COUNT> ssboState;
     CullModeStateTracker cullModeState;
     WindingStateTracker windingState;
     DepthClampStateTracker depthClampState;
+    ScissorRectStateTracker scissorRectState;
     Handle<HwRenderPrimitive> currentRenderPrimitive;
 
     // State caches.
@@ -125,22 +180,16 @@ struct MetalContext {
 
     std::array<MetalPushConstantBuffer, Program::SHADER_TYPE_COUNT> currentPushConstants;
 
-    MetalSamplerGroup* samplerBindings[Program::SAMPLER_BINDING_COUNT] = {};
+    // Keeps track of descriptor sets we've finalized for the current render pass.
+    tsl::robin_set<MetalDescriptorSet*> finalizedDescriptorSets;
+    std::array<MetalDescriptorSet*, MAX_DESCRIPTOR_SET_COUNT> currentDescriptorSets = {};
+    MetalBufferBindings<MAX_DESCRIPTOR_SET_COUNT, ShaderStage::VERTEX> vertexDescriptorBindings;
+    MetalBufferBindings<MAX_DESCRIPTOR_SET_COUNT, ShaderStage::FRAGMENT> fragmentDescriptorBindings;
+    MetalBufferBindings<MAX_DESCRIPTOR_SET_COUNT, ShaderStage::COMPUTE> computeDescriptorBindings;
+    MetalDynamicOffsets dynamicOffsets;
 
-    // Keeps track of sampler groups we've finalized for the current render pass.
-    tsl::robin_set<MetalSamplerGroup*> finalizedSamplerGroups;
-
-    // Keeps track of all alive sampler groups, textures.
-    tsl::robin_set<MetalSamplerGroup*> samplerGroups;
+    // Keeps track of all alive textures.
     tsl::robin_set<MetalTexture*> textures;
-
-    // This circular buffer implements delayed destruction for Metal texture handles. It keeps a
-    // handle to a fixed number of the most recently destroyed texture handles. When we're asked to
-    // destroy a texture handle, we free its texture memory, but keep the MetalTexture object alive,
-    // marking it as "terminated". If we later are asked to use that texture, we can check its
-    // terminated status and throw an Objective-C error instead of crashing, which is helpful for
-    // debugging use-after-free issues in release builds.
-    utils::FixedCircularBuffer<Handle<HwTexture>> texturesToDestroy;
 
     MetalBufferPool* bufferPool;
     MetalBumpAllocator* bumpAllocator;
@@ -154,6 +203,7 @@ struct MetalContext {
 
     // Empty texture used to prevent GPU errors when a sampler has been bound without a texture.
     id<MTLTexture> emptyTexture = nil;
+    id<MTLBuffer> emptyBuffer = nil;
 
     MetalBlitter* blitter = nullptr;
 

@@ -177,6 +177,11 @@ public class MaterialBuilder {
         SCREEN_SPACE
     }
 
+    public enum ReflectionMode {
+        DEFAULT,
+        SCREEN_SPACE
+    }
+
     public enum RefractionType {
         SOLID,
         THIN
@@ -192,7 +197,8 @@ public class MaterialBuilder {
         OPENGL      (0x1),
         VULKAN      (0x2),
         METAL       (0x4),
-        ALL         (0x7);
+        WEBGPU      (0x8),
+        ALL         (0x15);
 
         final int number;
 
@@ -403,6 +409,12 @@ public class MaterialBuilder {
     }
 
     @NonNull
+    public MaterialBuilder reflectionMode(ReflectionMode mode) {
+        nMaterialBuilderReflectionMode(mNativeObject, mode.ordinal());
+        return this;
+    }
+
+    @NonNull
     public MaterialBuilder refractionType(RefractionType type) {
         nMaterialBuilderRefractionType(mNativeObject, type.ordinal());
         return this;
@@ -603,6 +615,7 @@ public class MaterialBuilder {
     private static native void nMaterialBuilderSpecularAntiAliasingThreshold(long mNativeObject,
             float threshold);
     private static native void nMaterialBuilderRefractionMode(long nativeBuilder, int mode);
+    private static native void nMaterialBuilderReflectionMode(long nativeBuilder, int mode);
     private static native void nMaterialBuilderRefractionType(long nativeBuilder, int type);
     private static native void nMaterialBuilderClearCoatIorChange(long mNativeObject,
             boolean clearCoatIorChange);

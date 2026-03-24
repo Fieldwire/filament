@@ -37,15 +37,16 @@ FFilamentAsset::~FFilamentAsset() {
     // Free transient load-time data if they haven't been freed yet.
     releaseSourceData();
 
-    // Destroy all instance objects. Instance entities / components are
-    // destroyed later in this method because they are owned by the asset
-    // (except for the root of the instance).
     for (FFilamentInstance* instance : mInstances) {
         mEntityManager->destroy(instance->mRoot);
-        delete instance;
     }
 
     delete mWireframe;
+
+    // Start fresh
+    if (const auto pickingRegistry = getPickingRegistry()) {
+        pickingRegistry->clear();
+    }
 
     // Destroy name components.
     if (mNameManager) {
@@ -74,6 +75,12 @@ FFilamentAsset::~FFilamentAsset() {
             mEngine->destroy(entity);
             mEntityManager->destroy(entity);
         }
+    }
+
+    // FilamentInstances need to be destroyed after the renderables have been destroyed
+    // so that there are no dangling MaterialInstance around
+    for (FFilamentInstance* instance : mInstances) {
+        delete instance;
     }
 
     for (auto vb : mVertexBuffers) {
@@ -105,7 +112,7 @@ const char* FFilamentAsset::getExtras(utils::Entity entity) const noexcept {
 void FFilamentAsset::addTextureBinding(MaterialInstance* materialInstance,
         const char* parameterName, const cgltf_texture* srcTexture,
         TextureProvider::TextureFlags flags) {
-    if (!srcTexture->image && !srcTexture->basisu_image) {
+    if (!srcTexture->image && !srcTexture->basisu_image && !srcTexture->webp_image) {
 #ifndef NDEBUG
         slog.w << "Texture is missing image (" << srcTexture->name << ")." << io::endl;
 #endif
@@ -437,6 +444,10 @@ const char* FilamentAsset::getSceneName(size_t sceneIndex) const noexcept {
 void FilamentAsset::addEntitiesToScene(Scene& targetScene, const Entity* entities, size_t count,
         SceneMask sceneFilter) const {
     downcast(this)->addEntitiesToScene(targetScene, entities, count, sceneFilter);
+}
+
+PickingRegistry* FilamentAsset::getPickingRegistry() noexcept {
+    return downcast(this)->getPickingRegistry();
 }
 
 } // namespace filament::gltfio

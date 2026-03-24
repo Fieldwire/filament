@@ -14,6 +14,9 @@
  * limitations under the License.
  */
 
+#include "common/arguments.h"
+#include "common/configuration.h"
+
 #include <filamentapp/Config.h>
 #include <filamentapp/FilamentApp.h>
 #include <filamentapp/IBL.h>
@@ -106,6 +109,7 @@ struct App {
     gltfio::ResourceLoader* resourceLoader = nullptr;
     gltfio::TextureProvider* stbDecoder = nullptr;
     gltfio::TextureProvider* ktxDecoder = nullptr;
+    gltfio::TextureProvider* webpDecoder = nullptr;
     bool recomputeAabb = false;
 
     bool actualSize = false;
@@ -141,6 +145,7 @@ struct App {
     AutomationEngine* automationEngine = nullptr;
     bool screenshot = false;
     uint8_t screenshotSeq = 0;
+    bool screenshotAsPPM = false;
 };
 
 static const char* DEFAULT_IBL = "assets/ibl/lightroom_14b";
@@ -154,19 +159,7 @@ static void printUsage(char* name) {
         "Options:\n"
         "   --help, -h\n"
         "       Prints this message\n\n"
-        "   --api, -a\n"
-        "       Specify the backend API: "
-
-// Matches logic in filament/backend/src/PlatformFactory.cpp for Backend::DEFAULT
-#if defined(IOS) || defined(__APPLE__)
-        "opengl, vulkan, or metal (default)"
-#elif defined(FILAMENT_DRIVER_SUPPORTS_VULKAN)
-        "opengl, vulkan (default), or metal"
-#else
-        "opengl (default), vulkan, or metal"
-#endif
-        "\n\n"
-
+        "API_USAGE"
         "   --feature-level=<1|2|3>, -f <1|2|3>\n"
         "       Specify the feature level to use. The default is the highest supported feature level.\n\n"
         "   --batch=<path to JSON file or 'default'>, -b\n"
@@ -202,10 +195,19 @@ static void printUsage(char* name) {
         "       Vulkan backend allows user to choose their GPU.\n"
         "       You can provide the index of the GPU or\n"
         "       a substring to match against the device name\n\n"
+        "   --screenshot-as-ppm, -d\n"
+        "       export PPM as oppose to TIFF screenshots\n\n"
+        "   --webgpu-backend=<backend>, -w\n"
+        "       You can force WebGPU to select a backend of your choice. Provided that the platform\n"
+        "       supports this backend. (See -a for argument options).\n\n"
     );
     const std::string from("SHOWCASE");
     for (size_t pos = usage.find(from); pos != std::string::npos; pos = usage.find(from, pos)) {
         usage.replace(pos, from.length(), exec_name);
+    }
+    const std::string apiUsage("API_USAGE");
+    for (size_t pos = usage.find(apiUsage); pos != std::string::npos; pos = usage.find(apiUsage, pos)) {
+        usage.replace(pos, apiUsage.length(), samples::getBackendAPIArgumentsUsage());
     }
     std::cout << usage;
 }
@@ -216,22 +218,24 @@ static std::ifstream::pos_type getFileSize(const char* filename) {
 }
 
 static int handleCommandLineArguments(int argc, char* argv[], App* app) {
-    static constexpr const char* OPTSTR = "ha:f:i:usc:rt:b:evg:";
+    static constexpr const char* OPTSTR = "ha:f:i:usc:rt:y:b:evg:dw:";
     static const struct option OPTIONS[] = {
-        { "help",            no_argument,          nullptr, 'h' },
-        { "api",             required_argument,    nullptr, 'a' },
-        { "feature-level",   required_argument,    nullptr, 'f' },
-        { "batch",           required_argument,    nullptr, 'b' },
-        { "headless",        no_argument,          nullptr, 'e' },
-        { "ibl",             required_argument,    nullptr, 'i' },
-        { "ubershader",      no_argument,          nullptr, 'u' },
-        { "actual-size",     no_argument,          nullptr, 's' },
-        { "camera",          required_argument,    nullptr, 'c' },
-        { "eyes",            required_argument,    nullptr, 'y' },
-        { "recompute-aabb",  no_argument,          nullptr, 'r' },
-        { "settings",        required_argument,    nullptr, 't' },
-        { "split-view",      no_argument,          nullptr, 'v' },
-        { "vulkan-gpu-hint", required_argument,    nullptr, 'g' },
+        { "help",              no_argument,          nullptr, 'h' },
+        { "api",               required_argument,    nullptr, 'a' },
+        { "feature-level",     required_argument,    nullptr, 'f' },
+        { "batch",             required_argument,    nullptr, 'b' },
+        { "headless",          no_argument,          nullptr, 'e' },
+        { "ibl",               required_argument,    nullptr, 'i' },
+        { "ubershader",        no_argument,          nullptr, 'u' },
+        { "actual-size",       no_argument,          nullptr, 's' },
+        { "camera",            required_argument,    nullptr, 'c' },
+        { "eyes",              required_argument,    nullptr, 'y' },
+        { "recompute-aabb",    no_argument,          nullptr, 'r' },
+        { "settings",          required_argument,    nullptr, 't' },
+        { "split-view",        no_argument,          nullptr, 'v' },
+        { "vulkan-gpu-hint",   required_argument,    nullptr, 'g' },
+        { "screenshot-as-ppm", no_argument,          nullptr, 'd' },
+        { "webgpu-backend",    required_argument,    nullptr, 'w' },
         { nullptr, 0, nullptr, 0 }
     };
     int opt;
@@ -244,15 +248,7 @@ static int handleCommandLineArguments(int argc, char* argv[], App* app) {
                 printUsage(argv[0]);
                 exit(0);
             case 'a':
-                if (arg == "opengl") {
-                    app->config.backend = Engine::Backend::OPENGL;
-                } else if (arg == "vulkan") {
-                    app->config.backend = Engine::Backend::VULKAN;
-                } else if (arg == "metal") {
-                    app->config.backend = Engine::Backend::METAL;
-                } else {
-                    std::cerr << "Unrecognized backend. Must be 'opengl'|'vulkan'|'metal'.\n";
-                }
+                app->config.backend = samples::parseArgumentsForBackend(arg);
                 break;
             case 'f':
                 if (arg == "1") {
@@ -315,6 +311,14 @@ static int handleCommandLineArguments(int argc, char* argv[], App* app) {
             }
             case 'g': {
                 app->config.vulkanGPUHint = arg;
+                break;
+            }
+            case 'd': {
+                app->screenshotAsPPM = true;
+                break;
+            }
+            case 'w': {
+                app->config.forcedWebGPUBackend = samples::parseArgumentsForBackend(arg);
                 break;
             }
         }
@@ -504,18 +508,41 @@ static void createOverdrawVisualizerEntities(Engine* engine, Scene* scene, App& 
 }
 
 static void onClick(App& app, View* view, ImVec2 pos) {
-    view->pick(pos.x, pos.y, [&app](View::PickingQueryResult const& result){
+    /*view->pick(pos.x, pos.y, [&app](View::PickingQueryResult const& result){
         if (const char* name = app.asset->getName(result.renderable); name) {
             app.notificationText = name;
         } else {
             app.notificationText.clear();
+        }
+    });*/
+
+    // The code below is an example of how to use the picking registry
+    // to get more detailed information about a pick result, such as the triangle that was hit,
+    // using CPU picking.
+    view->pick(
+      pos.x, pos.y, [&app, view, pos](View::PickingQueryResult const &result) {
+        // Triangle **index** range, inclusive, to be skipped
+        // Pass null to skip skipping
+        const uint32_t skipRanges[] = {0, 36, 144, 200}; // 1000000 is a sentinel value
+
+        auto hit = app.asset->getPickingRegistry()->pick(
+            *view, app.engine->getTransformManager(), result.renderable, pos.x,
+            pos.y, nullptr, 2);
+
+        if (const char *name = app.asset->getName(result.renderable); name) {
+          app.notificationText = std::string(name) + " Triangle " +
+                                 std::to_string(hit.triangleIndex);
+        } else {
+          app.notificationText.clear();
         }
     });
 }
 
 static utils::Path getPathForIBLAsset(std::string_view string) {
     auto isIBL = [] (utils::Path file) -> bool {
-        return file.getExtension() == "ktx" || file.getExtension() == "hdr";
+        return file.getExtension() == "ktx" || file.getExtension() == "hdr" ||
+            file.getExtension() == "exr";
+
     };
 
     utils::Path filename{ string };
@@ -634,7 +661,7 @@ int main(int argc, char** argv) {
         // pre-compile all material variants
         std::set<Material*> materials;
         RenderableManager const& rcm = app.engine->getRenderableManager();
-        Slice<Entity> const renderables{
+        Slice<const Entity> const renderables{
                 app.asset->getRenderableEntities(), app.asset->getRenderableEntityCount() };
         for (Entity const e: renderables) {
             auto ri = rcm.getInstance(e);
@@ -671,7 +698,15 @@ int main(int argc, char** argv) {
         buffer.shrink_to_fit();
     };
 
-    auto loadResources = [&app] (const utils::Path& filename) {
+    auto setupIBL = [&app]() {
+        auto ibl = FilamentApp::get().getIBL();
+        if (ibl) {
+            app.viewer->setIndirectLight(ibl->getIndirectLight(), ibl->getSphericalHarmonics());
+            app.viewer->getSettings().view.fogSettings.fogColorTexture = ibl->getFogTexture();
+        }
+    };
+
+    auto loadResources = [&app, &setupIBL] (const utils::Path& filename) {
         // Load external textures and buffers.
         std::string const gltfPath = filename.getAbsolutePath();
         ResourceConfiguration configuration = {};
@@ -686,6 +721,12 @@ int main(int argc, char** argv) {
             app.resourceLoader->addTextureProvider("image/png", app.stbDecoder);
             app.resourceLoader->addTextureProvider("image/jpeg", app.stbDecoder);
             app.resourceLoader->addTextureProvider("image/ktx2", app.ktxDecoder);
+            if (isWebpSupported()) {
+                app.webpDecoder = createWebpProvider(app.engine);
+                app.resourceLoader->addTextureProvider("image/webp", app.webpDecoder);
+            } else {
+                app.webpDecoder = nullptr;
+            }
         } else {
             app.resourceLoader->setConfiguration(configuration);
         }
@@ -708,12 +749,7 @@ int main(int argc, char** argv) {
             instances[mi]->setStencilWrite(true);
             instances[mi]->setStencilOpDepthStencilPass(MaterialInstance::StencilOperation::INCR);
         }
-
-        auto ibl = FilamentApp::get().getIBL();
-        if (ibl) {
-            app.viewer->setIndirectLight(ibl->getIndirectLight(), ibl->getSphericalHarmonics());
-            app.viewer->getSettings().view.fogSettings.fogColorTexture = ibl->getFogTexture();
-        }
+        setupIBL();
     };
 
     auto setup = [&](Engine* engine, View* view, Scene* scene) {
@@ -762,8 +798,11 @@ int main(int argc, char** argv) {
             options.sleepDuration = 0.0;
             options.exportScreenshots = true;
             options.exportSettings = true;
+            options.exportFormat = app.screenshotAsPPM
+                                           ? AutomationEngine::Options::ExportFormat::PPM
+                                           : AutomationEngine::Options::ExportFormat::TIFF;
             app.automationEngine->setOptions(options);
-            app.viewer->stopAnimation();
+            app.viewer->getSettings().animation.enabled = false;
         }
 
         if (!app.settingsFile.empty()) {
@@ -775,11 +814,27 @@ int main(int argc, char** argv) {
             }
         }
 
-        app.materials = (app.materialSource == JITSHADER) ?
-                createJitShaderProvider(engine, OPTIMIZE_MATERIALS) :
-                createUbershaderProvider(engine, UBERARCHIVE_DEFAULT_DATA, UBERARCHIVE_DEFAULT_SIZE);
+        app.materials = (app.materialSource == JITSHADER)
+                                ? createJitShaderProvider(engine, OPTIMIZE_MATERIALS,
+                                          samples::getJitMaterialVariantFilter(app.config.backend))
+                                : createUbershaderProvider(engine, UBERARCHIVE_DEFAULT_DATA,
+                                          UBERARCHIVE_DEFAULT_SIZE);
 
-        app.assetLoader = AssetLoader::create({engine, app.materials, app.names });
+        // This code path is used to load the gltf file with normals
+        // app.assetLoader = AssetLoader::create({ engine, app.materials, app.names });
+
+        // Use the below code to load the gltf file without normals
+        AssetConfigurationExtended ext = {
+            .gltfPath = filename.c_str(),
+            .trianglePickingEnabled = true,
+        };
+        AssetConfiguration config = {
+            .engine = engine,
+            .materials = app.materials,
+            .names = app.names,
+            .ext = &ext,
+        };
+        app.assetLoader = AssetLoader::create(config);
         app.mainCamera = &view->getCamera();
         if (filename.isEmpty()) {
             app.asset = app.assetLoader->createAsset(
@@ -937,12 +992,22 @@ int main(int argc, char** argv) {
                                     "d.shadowmap.display_shadow_texture_channel"), 0, 3);
                     ImGui::Unindent();
                 }
+
+                bool cameraFrustum = FilamentApp::get().isCameraFrustumEnabled();
+                ImGui::Checkbox("Show Camera Frustum", &cameraFrustum);
+                FilamentApp::get().setCameraFrustumEnabled(cameraFrustum);
+
+                bool shadowFrustum = FilamentApp::get().isDirectionalShadowFrustumEnabled();
+                ImGui::Checkbox("Show Shadow Frustum", &shadowFrustum);
+                FilamentApp::get().setDirectionalShadowFrustumEnabled(shadowFrustum);
+
                 bool debugFroxelVisualization;
                 if (debug.getProperty("d.lighting.debug_froxel_visualization",
                         &debugFroxelVisualization)) {
                     ImGui::Checkbox("Froxel Visualization", &debugFroxelVisualization);
                     debug.setProperty("d.lighting.debug_froxel_visualization",
                             debugFroxelVisualization);
+                    FilamentApp::get().setFroxelGridEnabled(debugFroxelVisualization);
                 }
 
                 auto dataSource = debug.getDataSource("d.view.frame_info");
@@ -1039,6 +1104,9 @@ int main(int argc, char** argv) {
         delete app.resourceLoader;
         delete app.stbDecoder;
         delete app.ktxDecoder;
+        delete app.webpDecoder;
+        delete app.automationSpec;
+        delete app.automationEngine;
 
         AssetLoader::destroy(&app.assetLoader);
     };
@@ -1052,7 +1120,16 @@ int main(int argc, char** argv) {
         // Gradually add renderables to the scene as their textures become ready.
         app.viewer->populateScene();
 
-        app.viewer->applyAnimation(now);
+        auto const& animSettings = app.viewer->getSettings().animation;
+        if (animSettings.enabled) {
+            double animTime = now;
+            if (animSettings.time >= 0.0f) {
+                animTime = animSettings.time;
+            } else {
+                animTime *= animSettings.speed;
+            }
+            app.viewer->applyAnimation(animTime);
+        }
     };
 
     auto resize = [&app](Engine*, View* view) {
@@ -1084,13 +1161,21 @@ int main(int argc, char** argv) {
 
         // Note that this focal length might be different from the slider value because the
         // automation engine applies Camera::computeEffectiveFocalLength when DoF is enabled.
-        FilamentApp::get().setCameraFocalLength(viewerOptions.cameraFocalLength);
-        FilamentApp::get().setCameraNearFar(viewerOptions.cameraNear, viewerOptions.cameraFar);
+        float focalLength = app.viewer->getSettings().camera.focalLength;
+        float const focusDistance = app.viewer->getSettings().camera.focusDistance;
+        if (app.viewer->getSettings().view.dof.enabled) {
+            focalLength = Camera::computeEffectiveFocalLength(focalLength / 1000.0,
+                                  std::max(0.1f, focusDistance)) *
+                          1000.0;
+        }
+        FilamentApp::get().setCameraFocalLength(focalLength);
+        FilamentApp::get().setCameraNearFar(app.viewer->getSettings().camera.near,
+                app.viewer->getSettings().camera.far);
 
-        const size_t cameraCount = app.asset->getCameraEntityCount();
+        size_t const cameraCount = app.asset->getCameraEntityCount();
         view->setCamera(app.mainCamera);
 
-        const int currentCamera = app.viewer->getCurrentCamera();
+        int const currentCamera = app.viewer->getCurrentCamera();
         if (currentCamera > 0 && currentCamera <= cameraCount) {
             const utils::Entity* cameras = app.asset->getCameraEntities();
             Camera* camera = engine->getCameraComponent(cameras[currentCamera - 1]);
@@ -1118,6 +1203,13 @@ int main(int argc, char** argv) {
         Camera& camera = view->getCamera();
         Skybox* skybox = scene->getSkybox();
         applySettings(engine, app.viewer->getSettings().viewer, &camera, skybox, renderer);
+        double const aspect =
+                (double) view->getViewport().width / (double) view->getViewport().height;
+        applySettings(engine, app.viewer->getSettings().camera, &camera, aspect);
+
+        // FIXME: This applySettings() is done here instead of in AutomationEngine.cpp because
+        // we need access to the Renderer, which AutomationEngine does not provide.
+        applySettings(engine, app.viewer->getSettings().debug, renderer);
 
         // technically we don't need to do this each frame
         auto& tcm = engine->getTransformManager();
@@ -1147,12 +1239,13 @@ int main(int argc, char** argv) {
         }
     };
 
-    auto postRender = [&app](Engine* engine, View* view, Scene*, Renderer* renderer) {
+    auto postRender = [&app](Engine* engine, View* view, Scene* scene, Renderer* renderer) {
         if (app.screenshot) {
             std::ostringstream stringStream;
             stringStream << "screenshot" << std::setfill('0') << std::setw(2) << +app.screenshotSeq;
+            std::string const ext = app.screenshotAsPPM ? ".ppm" : ".tif";
             AutomationEngine::exportScreenshot(
-                    view, renderer, stringStream.str() + ".ppm", false, app.automationEngine);
+                    view, renderer, stringStream.str() + ext, false, app.automationEngine);
             ++app.screenshotSeq;
             app.screenshot = false;
         }
@@ -1165,6 +1258,12 @@ int main(int argc, char** argv) {
             .renderer = renderer,
             .materials = app.instance->getMaterialInstances(),
             .materialCount = app.instance->getMaterialInstanceCount(),
+            .lightManager = &engine->getLightManager(),
+            .scene = scene,
+            .indirectLight = app.viewer->getIndirectLight(),
+            .sunlight = app.viewer->getSunlight(),
+            .assetLights = app.asset->getLightEntities(),
+            .assetLightCount = app.asset->getLightEntityCount(),
         };
         app.automationEngine->tick(engine, content, ImGui::GetIO().DeltaTime);
     };
@@ -1191,7 +1290,7 @@ int main(int argc, char** argv) {
         filename = getPathForIBLAsset(path);
         if (!filename.isEmpty()) {
             FilamentApp::get().loadIBL(path);
-            return;
+            setupIBL();
         }
     });
 

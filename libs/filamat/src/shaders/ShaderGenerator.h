@@ -20,16 +20,24 @@
 
 #include "MaterialInfo.h"
 
+#include "UibGenerator.h"
+
 #include <filament/MaterialEnums.h>
 
 #include <filamat/MaterialBuilder.h>
 
+#include <private/filament/EngineEnums.h>
 #include <private/filament/Variant.h>
+
+#include <backend/DriverEnums.h>
 
 #include <utils/CString.h>
 #include <utils/sstream.h>
 
-#include <algorithm>
+#include <string>
+
+#include <stdint.h>
+#include <stddef.h>
 
 namespace filamat {
 
@@ -50,23 +58,24 @@ public:
             size_t vertexLineOffset,
             MaterialBuilder::MaterialDomain materialDomain) noexcept;
 
-    std::string createVertexProgram(filament::backend::ShaderModel shaderModel,
+    std::string createSurfaceVertexProgram(filament::backend::ShaderModel shaderModel,
             MaterialBuilder::TargetApi targetApi, MaterialBuilder::TargetLanguage targetLanguage,
             MaterialBuilder::FeatureLevel featureLevel,
             MaterialInfo const& material, filament::Variant variant,
             filament::Interpolation interpolation,
-            filament::VertexDomain vertexDomain) const noexcept;
+            filament::VertexDomain vertexDomain, uint32_t apiLevel) const noexcept;
 
-    std::string createFragmentProgram(filament::backend::ShaderModel shaderModel,
+    std::string createSurfaceFragmentProgram(filament::backend::ShaderModel shaderModel,
             MaterialBuilder::TargetApi targetApi, MaterialBuilder::TargetLanguage targetLanguage,
             MaterialBuilder::FeatureLevel featureLevel,
             MaterialInfo const& material, filament::Variant variant,
-            filament::Interpolation interpolation) const noexcept;
+            filament::Interpolation interpolation,
+            filament::UserVariantFilterMask variantFilter, uint32_t apiLevel) const noexcept;
 
-    std::string createComputeProgram(filament::backend::ShaderModel shaderModel,
+    std::string createSurfaceComputeProgram(filament::backend::ShaderModel shaderModel,
             MaterialBuilder::TargetApi targetApi, MaterialBuilder::TargetLanguage targetLanguage,
             MaterialBuilder::FeatureLevel featureLevel,
-            MaterialInfo const& material) const noexcept;
+            MaterialInfo const& material, uint32_t apiLevel) const noexcept;
 
     /**
      * When a GLSL shader is optimized we run it through an intermediate SPIR-V
@@ -102,12 +111,13 @@ private:
     std::string createPostProcessVertexProgram(filament::backend::ShaderModel sm,
             MaterialBuilder::TargetApi targetApi, MaterialBuilder::TargetLanguage targetLanguage,
             MaterialBuilder::FeatureLevel featureLevel,
-            MaterialInfo const& material, filament::Variant::type_t variantKey) const noexcept;
+            MaterialInfo const& material, filament::Variant::type_t variantKey,
+            uint32_t apiLevel) const noexcept;
 
     std::string createPostProcessFragmentProgram(filament::backend::ShaderModel sm,
             MaterialBuilder::TargetApi targetApi, MaterialBuilder::TargetLanguage targetLanguage,
             MaterialBuilder::FeatureLevel featureLevel,
-            MaterialInfo const& material, uint8_t variant) const noexcept;
+            MaterialInfo const& material, uint8_t variant, uint32_t apiLevel) const noexcept;
 
     static void appendShader(utils::io::sstream& ss,
             const utils::CString& shader, size_t lineOffset) noexcept;

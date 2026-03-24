@@ -19,7 +19,7 @@
 #include <string>
 
 #include "source/binary.h"
-#include "source/enum_string_mapping.h"
+#include "source/table2.h"
 
 namespace spvtools {
 
@@ -40,8 +40,9 @@ std::string GetExtensionString(const spv_parsed_instruction_t* inst) {
 
 std::string ExtensionSetToString(const ExtensionSet& extensions) {
   std::stringstream ss;
-  extensions.ForEach(
-      [&ss](Extension ext) { ss << ExtensionToString(ext) << " "; });
+  for (auto extension : extensions) {
+    ss << ExtensionToString(extension) << " ";
+  }
   return ss.str();
 }
 

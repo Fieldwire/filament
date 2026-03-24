@@ -46,6 +46,7 @@
 #include "DracoCache.h"
 #include "FFilamentInstance.h"
 #include "Utility.h"
+#include "gltfio/PickingRegistry.h"
 
 #include <string>
 #include <unordered_map>
@@ -60,10 +61,12 @@
 #define GLTFIO_WARN(msg) slog.w << msg << io::endl
 #endif
 
-#if defined(__EMSCRIPTEN__) || defined(__ANDROID__) || defined(IOS)
+#ifndef GLTFIO_USE_FILESYSTEM
+#if defined(__EMSCRIPTEN__) || defined(__ANDROID__) || defined(FILAMENT_IOS)
 #define GLTFIO_USE_FILESYSTEM 0
 #else
 #define GLTFIO_USE_FILESYSTEM 1
+#endif
 #endif
 
 namespace utils {
@@ -99,6 +102,13 @@ struct Primitive {
     MorphTargetBuffer* morphTargetBuffer = nullptr;
     uint32_t morphTargetOffset;
     std::vector<int> slotIndices;
+
+    // Temporary storage for expanded indices during loading (AssetLoaderExtended only)
+    // NOTE: This is mesh-level storage because Primitives are cached and reused across
+    // multiple nodes. The indices are extracted in createPrimitives() (where slot.data
+    // is available) and then copied per-entity to PickingRegistry in ResourceLoader.
+    // Cleared immediately after copying to save memory.
+    std::vector<uint32_t> expandedIndices;
 };
 using MeshCache = utils::FixedCapacityVector<utils::FixedCapacityVector<Primitive>>;
 
@@ -109,12 +119,12 @@ struct FFilamentAsset : public FilamentAsset {
     FFilamentAsset(Engine* engine, utils::NameComponentManager* names,
             utils::EntityManager* entityManager, NodeManager* nodeManager,
             TrsTransformManager* trsTransformManager, const cgltf_data* srcAsset,
-            bool useExtendedAlgo) :
+            bool useExtendedAlgo, const bool trianglePickingEnabled) :
             mEngine(engine), mNameManager(names), mEntityManager(entityManager),
             mNodeManager(nodeManager), mTrsTransformManager(trsTransformManager),
             mSourceAsset(new SourceAsset {(cgltf_data*)srcAsset}),
             mTextures(srcAsset->textures_count),
-            mMeshCache(srcAsset->meshes_count) {
+            mMeshCache(srcAsset->meshes_count), mTrianglePickingEnabled(trianglePickingEnabled) {
         if (!useExtendedAlgo) {
             mResourceInfo = ResourceInfo{};
         } else {
@@ -229,6 +239,14 @@ struct FFilamentAsset : public FilamentAsset {
     void addEntitiesToScene(Scene& targetScene, const Entity* entities, size_t count,
             SceneMask sceneFilter) const;
 
+    PickingRegistry* getPickingRegistry() noexcept {
+        if (!mTrianglePickingEnabled) {
+            return nullptr;
+        }
+
+        return &mPickingRegistry;
+    }
+
     void detachFilamentComponents() noexcept {
         mDetachedFilamentComponents = true;
     }
@@ -284,6 +302,8 @@ struct FFilamentAsset : public FilamentAsset {
     // Sentinels for situations where ResourceLoader needs to generate data.
     const cgltf_accessor mGenerateNormals = {};
     const cgltf_accessor mGenerateTangents = {};
+
+    const bool mTrianglePickingEnabled;
 
     // Encapsulates reference-counted source data, which includes the cgltf hierachy
     // and potentially also includes buffer data that can be uploaded to the GPU.
@@ -372,6 +392,13 @@ struct FFilamentAsset : public FilamentAsset {
     };
 
     std::variant<ResourceInfo, ResourceInfoExtended> mResourceInfo;
+
+private:
+    /**
+     * Picking registry for triangle-level ray intersection testing.
+     * Automatically populated during asset loading.
+     */
+    PickingRegistry mPickingRegistry;
 };
 
 FILAMENT_DOWNCAST(FilamentAsset)

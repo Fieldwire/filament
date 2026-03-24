@@ -18,8 +18,6 @@
 
 #include "components/RenderableManager.h"
 
-#include "private/filament/SibStructs.h"
-
 #include "details/Engine.h"
 
 #include "FilamentAPI-impl.h"
@@ -28,8 +26,11 @@
 #include <math/mat4.h>
 
 #include <utils/CString.h>
+#include <utils/StaticString.h>
 
-#include <cstring>
+#include <string.h>
+#include <stddef.h>
+#include <stdint.h>
 
 namespace filament {
 
@@ -44,20 +45,28 @@ struct SkinningBuffer::BuilderDetails {
 using BuilderType = SkinningBuffer;
 BuilderType::Builder::Builder() noexcept = default;
 BuilderType::Builder::~Builder() noexcept = default;
-BuilderType::Builder::Builder(BuilderType::Builder const& rhs) noexcept = default;
-BuilderType::Builder::Builder(BuilderType::Builder&& rhs) noexcept = default;
-BuilderType::Builder& BuilderType::Builder::operator=(BuilderType::Builder const& rhs) noexcept = default;
-BuilderType::Builder& BuilderType::Builder::operator=(BuilderType::Builder&& rhs) noexcept = default;
+BuilderType::Builder::Builder(Builder const& rhs) noexcept = default;
+BuilderType::Builder::Builder(Builder&& rhs) noexcept = default;
+BuilderType::Builder& BuilderType::Builder::operator=(Builder const& rhs) noexcept = default;
+BuilderType::Builder& BuilderType::Builder::operator=(Builder&& rhs) noexcept = default;
 
 
-SkinningBuffer::Builder& SkinningBuffer::Builder::boneCount(uint32_t boneCount) noexcept {
+SkinningBuffer::Builder& SkinningBuffer::Builder::boneCount(uint32_t const boneCount) noexcept {
     mImpl->mBoneCount = boneCount;
     return *this;
 }
 
-SkinningBuffer::Builder& SkinningBuffer::Builder::initialize(bool initialize) noexcept {
+SkinningBuffer::Builder& SkinningBuffer::Builder::initialize(bool const initialize) noexcept {
     mImpl->mInitialize = initialize;
     return *this;
+}
+
+SkinningBuffer::Builder& SkinningBuffer::Builder::name(const char* name, size_t const len) noexcept {
+    return BuilderNameMixin::name(name, len);
+}
+
+SkinningBuffer::Builder& SkinningBuffer::Builder::name(utils::StaticString const& name) noexcept {
+    return BuilderNameMixin::name(name);
 }
 
 SkinningBuffer* SkinningBuffer::Builder::build(Engine& engine) {
@@ -77,20 +86,17 @@ FSkinningBuffer::FSkinningBuffer(FEngine& engine, const Builder& builder)
     //     than the minimum required size of the uniform block (the value of
     //     UNIFORM_BLOCK_DATA_SIZE).
 
+    // TODO: We should also tag the texture created inside createIndicesAndWeightsHandle.
     mHandle = driver.createBufferObject(
             getPhysicalBoneCount(mBoneCount) * sizeof(PerRenderableBoneUib::BoneData),
             BufferObjectBinding::UNIFORM,
-            BufferUsage::DYNAMIC);
-
-    if (auto name = builder.getName(); !name.empty()) {
-        // TODO: We should also tag the texture created inside createIndicesAndWeightsHandle.
-        driver.setDebugTag(mHandle.getId(), std::move(name));
-    }
+            BufferUsage::DYNAMIC,
+            utils::ImmutableCString{ builder.getName() });
 
     if (builder->mInitialize) {
         // initialize the bones to identity (before rounding up)
         auto* out = driver.allocatePod<PerRenderableBoneUib::BoneData>(mBoneCount);
-        std::uninitialized_fill_n(out, mBoneCount, FSkinningBuffer::makeBone({}));
+        std::uninitialized_fill_n(out, mBoneCount, makeBone({}));
         driver.updateBufferObject(mHandle, {
             out, mBoneCount * sizeof(PerRenderableBoneUib::BoneData) }, 0);
     }
@@ -102,7 +108,7 @@ void FSkinningBuffer::terminate(FEngine& engine) {
 }
 
 void FSkinningBuffer::setBones(FEngine& engine,
-        RenderableManager::Bone const* transforms, size_t count, size_t offset) {
+        RenderableManager::Bone const* transforms, size_t const count, size_t const offset) {
     FILAMENT_CHECK_PRECONDITION((offset + count) <= mBoneCount)
             << "SkinningBuffer (size=" << (unsigned)mBoneCount
             << ") overflow (boneCount=" << (unsigned)count << ", offset=" << (unsigned)offset
@@ -112,7 +118,7 @@ void FSkinningBuffer::setBones(FEngine& engine,
 }
 
 void FSkinningBuffer::setBones(FEngine& engine,
-        math::mat4f const* transforms, size_t count, size_t offset) {
+        mat4f const* transforms, size_t const count, size_t const offset) {
     FILAMENT_CHECK_PRECONDITION((offset + count) <= mBoneCount)
             << "SkinningBuffer (size=" << (unsigned)mBoneCount
             << ") overflow (boneCount=" << (unsigned)count << ", offset=" << (unsigned)offset
@@ -128,8 +134,8 @@ static uint32_t packHalf2x16(half2 v) noexcept {
     return (hi << 16) | lo;
 }
 
-void FSkinningBuffer::setBones(FEngine& engine, Handle<backend::HwBufferObject> handle,
-        RenderableManager::Bone const* transforms, size_t boneCount, size_t offset) noexcept {
+void FSkinningBuffer::setBones(FEngine& engine, Handle<HwBufferObject> handle,
+        RenderableManager::Bone const* transforms, size_t const boneCount, size_t const offset) noexcept {
     auto& driverApi = engine.getDriverApi();
     auto* UTILS_RESTRICT out = driverApi.allocatePod<PerRenderableBoneUib::BoneData>(boneCount);
     for (size_t i = 0, c = boneCount; i < c; ++i) {
@@ -157,8 +163,8 @@ PerRenderableBoneUib::BoneData FSkinningBuffer::makeBone(mat4f transform) noexce
     };
 }
 
-void FSkinningBuffer::setBones(FEngine& engine, Handle<backend::HwBufferObject> handle,
-        mat4f const* transforms, size_t boneCount, size_t offset) noexcept {
+void FSkinningBuffer::setBones(FEngine& engine, Handle<HwBufferObject> handle,
+        mat4f const* transforms, size_t const boneCount, size_t const offset) noexcept {
     auto& driverApi = engine.getDriverApi();
     auto* UTILS_RESTRICT out = driverApi.allocatePod<PerRenderableBoneUib::BoneData>(boneCount);
     for (size_t i = 0, c = boneCount; i < c; ++i) {
@@ -170,19 +176,19 @@ void FSkinningBuffer::setBones(FEngine& engine, Handle<backend::HwBufferObject> 
 }
 
 // This value is limited by ES3.0, ES3.0 only guarantees 2048.
-// When you change this value, you must change MAX_SKINNING_BUFFER_WIDTH at getters.vs
+// When you change this value, you must change MAX_SKINNING_BUFFER_WIDTH at surface_getters.vs
 constexpr size_t MAX_SKINNING_BUFFER_WIDTH = 2048;
 
-static inline size_t getSkinningBufferWidth(size_t pairCount) noexcept {
+static inline size_t getSkinningBufferWidth(size_t const pairCount) noexcept {
     return std::clamp(pairCount, size_t(1), MAX_SKINNING_BUFFER_WIDTH);
 }
 
-static inline size_t getSkinningBufferHeight(size_t pairCount) noexcept {
+static inline size_t getSkinningBufferHeight(size_t const pairCount) noexcept {
     return std::max(size_t(1),
             (pairCount + MAX_SKINNING_BUFFER_WIDTH - 1) / MAX_SKINNING_BUFFER_WIDTH);
 }
 
-inline size_t getSkinningBufferSize(size_t pairCount) noexcept {
+inline size_t getSkinningBufferSize(size_t const pairCount) noexcept {
     const size_t stride = getSkinningBufferWidth(pairCount);
     const size_t height = getSkinningBufferHeight(pairCount);
     return Texture::PixelBufferDescriptor::computeDataSize(
@@ -192,15 +198,15 @@ inline size_t getSkinningBufferSize(size_t pairCount) noexcept {
 }
 
 UTILS_NOINLINE
-void updateDataAt(backend::DriverApi& driver,
-        Handle<HwTexture> handle, PixelDataFormat format, PixelDataType type,
-        const utils::FixedCapacityVector<math::float2>& pairs,
-        size_t count) {
+void updateDataAt(DriverApi& driver,
+        Handle<HwTexture> handle, PixelDataFormat const format, PixelDataType const type,
+        const utils::FixedCapacityVector<float2>& pairs,
+        size_t const count) {
 
     size_t const elementSize = sizeof(float2);
     size_t const size = getSkinningBufferSize(count);
     auto* out = (float2*)malloc(size);
-    std::memcpy(out, pairs.begin(), size);
+    memcpy(out, pairs.begin(), size);
 
     size_t const textureWidth = getSkinningBufferWidth(count);
     size_t const lineCount = count / textureWidth;
@@ -209,7 +215,7 @@ void updateDataAt(backend::DriverApi& driver,
     // 'out' buffer is going to be used up to 2 times, so for simplicity we use a shared_buffer
     // to manage its lifetime. One side effect of this is that the callbacks below will allocate
     // a small object on the heap. (inspired by MorphTargetBuffered)
-    std::shared_ptr<void> const allocation((void*)out, ::free);
+    std::shared_ptr<void> const allocation((void*)out, free);
 
     if (lineCount) {
         // update the full-width lines if any
@@ -233,34 +239,20 @@ void updateDataAt(backend::DriverApi& driver,
     }
 }
 
-FSkinningBuffer::HandleIndicesAndWeights FSkinningBuffer::createIndicesAndWeightsHandle(
-        FEngine& engine, size_t count) {
-    backend::Handle<backend::HwSamplerGroup> samplerHandle;
-    backend::Handle<backend::HwTexture> textureHandle;
-
+TextureHandle FSkinningBuffer::createIndicesAndWeightsHandle(
+        FEngine& engine, size_t const count) {
     FEngine::DriverApi& driver = engine.getDriverApi();
     // create a texture for skinning pairs data (bone index and weight)
-    textureHandle = driver.createTexture(SamplerType::SAMPLER_2D, 1,
+    return driver.createTexture(SamplerType::SAMPLER_2D, 1,
             TextureFormat::RG32F, 1,
             getSkinningBufferWidth(count),
             getSkinningBufferHeight(count), 1,
             TextureUsage::DEFAULT);
-    samplerHandle = driver.createSamplerGroup(PerRenderPrimitiveSkinningSib::SAMPLER_COUNT,
-            utils::FixedSizeString<32>("Skinning buffer samplers"));
-    SamplerGroup samplerGroup(PerRenderPrimitiveSkinningSib::SAMPLER_COUNT);
-    samplerGroup.setSampler(PerRenderPrimitiveSkinningSib::BONE_INDICES_AND_WEIGHTS,
-            { textureHandle, {}});
-    driver.updateSamplerGroup(samplerHandle,
-            samplerGroup.toBufferDescriptor(driver));
-    return {
-            .sampler = samplerHandle,
-            .texture = textureHandle
-    };
 }
 
 void FSkinningBuffer::setIndicesAndWeightsData(FEngine& engine,
-        backend::Handle<backend::HwTexture> textureHandle,
-        const utils::FixedCapacityVector<math::float2>& pairs, size_t count) {
+        Handle<HwTexture> textureHandle,
+        const utils::FixedCapacityVector<float2>& pairs, size_t const count) {
 
     FEngine::DriverApi& driver = engine.getDriverApi();
     updateDataAt(driver, textureHandle,

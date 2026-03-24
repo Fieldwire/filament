@@ -79,7 +79,7 @@ public:
     }
 
     void setFrameScheduledCallback(
-            backend::CallbackHandler* handler, FrameScheduledCallback&& callback);
+            backend::CallbackHandler* handler, FrameScheduledCallback&& callback, uint64_t flags);
 
     bool isFrameScheduledCallbackSet() const noexcept;
 
@@ -87,6 +87,8 @@ public:
                 utils::Invocable<void(SwapChain*)>&& callback) noexcept;
 
     static bool isSRGBSwapChainSupported(FEngine& engine) noexcept;
+
+    static bool isMSAASwapChainSupported(FEngine& engine, uint32_t samples) noexcept;
 
     static bool isProtectedContentSupported(FEngine& engine) noexcept;
 

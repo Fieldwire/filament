@@ -17,7 +17,6 @@
 #include "ShaderGenerator.h"
 
 #include <GlslangToSpv.h>
-#include <SPVRemapper.h>
 
 #include <spirv_glsl.hpp>
 #include <spirv_msl.hpp>
@@ -73,12 +72,13 @@ void ShaderGenerator::shutdown() {
     FinalizeProcess();
 }
 
-ShaderGenerator::ShaderGenerator(std::string vertex, std::string fragment,
-        Backend backend, bool isMobile, const filament::SamplerInterfaceBlock* sib) noexcept
-        : mBackend(backend),
-          mVertexBlob(transpileShader(ShaderStage::VERTEX, std::move(vertex), backend, isMobile, sib)),
-          mFragmentBlob(transpileShader(ShaderStage::FRAGMENT, std::move(fragment), backend,
-                  isMobile, sib)) {
+ShaderGenerator::ShaderGenerator(std::string vertex, std::string fragment, Backend backend,
+        bool isMobile, filamat::DescriptorSets&& descriptorSets) noexcept
+    : mBackend(backend),
+      mVertexBlob(transpileShader(
+              ShaderStage::VERTEX, std::move(vertex), backend, isMobile, descriptorSets)),
+      mFragmentBlob(transpileShader(
+              ShaderStage::FRAGMENT, std::move(fragment), backend, isMobile, descriptorSets)) {
     switch (backend) {
         case Backend::OPENGL:
             mShaderLanguage = filament::backend::ShaderLanguage::ESSL3;
@@ -89,15 +89,17 @@ ShaderGenerator::ShaderGenerator(std::string vertex, std::string fragment,
         case Backend::METAL:
             mShaderLanguage = filament::backend::ShaderLanguage::MSL;
             break;
+        case Backend::WEBGPU:
+            mShaderLanguage = filament::backend::ShaderLanguage::WGSL;
+            break;
         case Backend::NOOP:
             mShaderLanguage = filament::backend::ShaderLanguage::ESSL3;
             break;
     }
 }
 
-ShaderGenerator::Blob ShaderGenerator::transpileShader(
-        ShaderStage stage, std::string shader, Backend backend, bool isMobile,
-        const filament::SamplerInterfaceBlock* sib) noexcept {
+ShaderGenerator::Blob ShaderGenerator::transpileShader(ShaderStage stage, std::string shader,
+        Backend backend, bool isMobile, const filamat::DescriptorSets& descriptorSets) noexcept {
     TProgram program;
     const EShLanguage language = stage == ShaderStage::VERTEX ? EShLangVertex : EShLangFragment;
     TShader tShader(language);
@@ -115,6 +117,8 @@ ShaderGenerator::Blob ShaderGenerator::transpileShader(
         shader.insert(pos, "#define TARGET_METAL_ENVIRONMENT\n");
     } else if (backend == Backend::VULKAN) {
         shader.insert(pos, "#define TARGET_VULKAN_ENVIRONMENT\n");
+    } else if (backend == Backend::WEBGPU) {
+        shader.insert(pos, "#define TARGET_WEBGPU_ENVIRONMENT\n");
     }
 
     const char* shaderCString = shader.c_str();
@@ -150,7 +154,8 @@ ShaderGenerator::Blob ShaderGenerator::transpileShader(
 
     assert_invariant(backend == Backend::OPENGL ||
            backend == Backend::METAL  ||
-           backend == Backend::VULKAN);
+           backend == Backend::VULKAN ||
+           backend == Backend::WEBGPU);
 
     if (backend == Backend::OPENGL) {
         if (isMobile) {
@@ -161,12 +166,14 @@ ShaderGenerator::Blob ShaderGenerator::transpileShader(
         return { result.c_str(), result.c_str() + result.length() + 1 };
     } else if (backend == Backend::METAL) {
         const auto sm = isMobile ? ShaderModel::MOBILE : ShaderModel::DESKTOP;
-        filamat::SibVector sibs = filamat::SibVector::with_capacity(1);
-        if (sib) { sibs.emplace_back(0, sib); }
-        filamat::GLSLPostProcessor::spirvToMsl(&spirv, &result, sm, false, sibs, nullptr);
+        filamat::GLSLPostProcessor::spirvToMsl(
+                &spirv, &result, stage, sm, false, descriptorSets, nullptr);
         return { result.c_str(), result.c_str() + result.length() + 1 };
     } else if (backend == Backend::VULKAN) {
         return { (uint8_t*)spirv.data(), (uint8_t*)(spirv.data() + spirv.size()) };
+    } else if (backend == Backend::WEBGPU){
+        filamat::GLSLPostProcessor::spirvToWgsl(&spirv, &result);
+        return { result.c_str(), result.c_str() + result.length() + 1 };
     }
 
     return {};
@@ -177,6 +184,18 @@ Program ShaderGenerator::getProgram(filament::backend::DriverApi&) noexcept {
     program.shaderLanguage(mShaderLanguage);
     program.shader(ShaderStage::VERTEX, mVertexBlob.data(), mVertexBlob.size());
     program.shader(ShaderStage::FRAGMENT, mFragmentBlob.data(), mFragmentBlob.size());
+    return program;
+}
+
+Program ShaderGenerator::getProgramWithPushConstants(filament::backend::DriverApi&,
+        std::array<PushConstants, filament::backend::Program::SHADER_TYPE_COUNT> constants) {
+    Program program;
+    program.shaderLanguage(mShaderLanguage);
+    program.shader(ShaderStage::VERTEX, mVertexBlob.data(), mVertexBlob.size());
+    program.shader(ShaderStage::FRAGMENT, mFragmentBlob.data(), mFragmentBlob.size());
+    for (auto const stage : {ShaderStage::VERTEX, ShaderStage::FRAGMENT }) {
+        program.pushConstants(stage, constants[uint8_t(stage)]);
+    }
     return program;
 }
 

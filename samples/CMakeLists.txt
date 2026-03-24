@@ -20,8 +20,8 @@ set(MATERIAL_SRCS
         materials/aiDefaultMat.mat
         materials/bakedColor.mat
         materials/bakedTexture.mat
-        materials/pointSprites.mat
         materials/aoPreview.mat
+        materials/arrayTexture.mat
         materials/groundShadow.mat
         materials/heightfield.mat
         materials/image.mat
@@ -39,9 +39,16 @@ set(MATERIAL_SRCS
         materials/sandboxSubsurface.mat
         materials/sandboxUnlit.mat
         materials/texturedLit.mat
+        materials/uvmorph.mat
 )
 
-if (CMAKE_CROSSCOMPILING)
+# Tint does not support setting gl_PointSize, disable the relevant sample if using WebGPU
+# https://github.com/gpuweb/gpuweb/issues/1190
+if (NOT FILAMENT_SUPPORTS_WEBGPU)
+    set(MATERIAL_SRCS ${MATERIAL_SRCS} materials/pointSprites.mat)
+endif ()
+
+if (CMAKE_CROSSCOMPILING OR FILAMENT_IMPORT_PREBUILT_EXECUTABLES)
     include(${IMPORT_EXECUTABLES})
 endif()
 
@@ -211,6 +218,23 @@ endif()
 target_sources(gltf-demo-resources PRIVATE ${RESGEN_SOURCE})
 
 # ==================================================================================================
+# Common Sample Utilities
+# ==================================================================================================
+
+add_library(samples-common STATIC
+    common/arguments.cpp
+    common/configuration.h
+    common/configuration.cpp
+)
+
+target_include_directories(samples-common PRIVATE
+    ${ROOT_DIR}/third_party/getopt/include
+)
+target_link_libraries(samples-common filament)
+
+set_target_properties(samples-common PROPERTIES FOLDER Samples/Common)
+
+# ==================================================================================================
 # Compiler flags
 # ==================================================================================================
 
@@ -228,7 +252,7 @@ endif()
 function(add_demo NAME)
     include_directories(${GENERATION_ROOT})
     add_executable(${NAME} ${NAME}.cpp)
-    target_link_libraries(${NAME} PRIVATE sample-resources filamentapp)
+    target_link_libraries(${NAME} PRIVATE sample-resources filamentapp samples-common)
     target_compile_options(${NAME} PRIVATE ${COMPILER_FLAGS})
     set_target_properties(${NAME} PROPERTIES FOLDER Samples)
 
@@ -246,17 +270,26 @@ if (NOT ANDROID)
     add_demo(gltf_viewer)
     add_demo(gltf_instances)
     add_demo(heightfield)
+    add_demo(helloasync)
     add_demo(hellomorphing)
+    add_demo(hellouvmorphing)
     add_demo(hellopbr)
     add_demo(hellotriangle)
     add_demo(helloskinning)
     add_demo(helloskinningbuffer)
     add_demo(helloskinningbuffer_morebones)
+    add_demo(hellostereo)
+    add_demo(hybrid_instancing)
     add_demo(image_viewer)
     add_demo(lightbulb)
     add_demo(material_sandbox)
+    add_demo(materialinstancestress)
     add_demo(multiple_windows)
-    add_demo(point_sprites)
+    # Tint does not support setting gl_PointSize, disable the relevant sample if using WebGPU
+    # https://github.com/gpuweb/gpuweb/issues/1190
+    if (NOT FILAMENT_SUPPORTS_WEBGPU)
+        add_demo(point_sprites)
+    endif ()
     add_demo(rendertarget)
     add_demo(sample_cloth)
     add_demo(sample_full_pbr)
@@ -274,7 +307,9 @@ if (NOT ANDROID)
     target_link_libraries(gltf_viewer PRIVATE gltf-demo-resources uberarchive gltfio viewer)
     target_link_libraries(gltf_instances PRIVATE gltf-demo-resources uberarchive gltfio viewer)
     target_link_libraries(hellopbr PRIVATE filameshio suzanne-resources)
+    target_link_libraries(hellostereo PRIVATE filameshio suzanne-resources)
     target_link_libraries(image_viewer PRIVATE viewer imageio)
+    target_link_libraries(materialinstancestress PRIVATE geometry filameshio suzanne-resources)
     target_link_libraries(multiple_windows PRIVATE filameshio suzanne-resources)
     target_link_libraries(rendertarget PRIVATE filameshio suzanne-resources)
     target_link_libraries(sample_cloth PRIVATE filameshio)

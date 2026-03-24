@@ -103,16 +103,49 @@ public class AssetLoader {
         mMaterialCache = provider;
     }
 
-    public AssetLoader(@NonNull Engine engine, @NonNull MaterialProvider provider,
-                       @NonNull EntityManager entities, String filePath, String defaultNodeName) {
-
+    /**
+     * Constructs an <code>AssetLoader</code> that uses the extended loader configuration.
+     * <p>
+     * This overload allows opting into additional features such as triangle picking support.
+     * Note that the {@code generateNormals} flag currently selects the extended loader behavior
+     * and may not provide fine-grained control over whether normals are generated in all cases;
+     * the underlying implementation may still generate normals unconditionally when using the
+     * extended loader path.
+     * </p>
+     * <p>
+     * Unlike the {@link #AssetLoader(Engine, MaterialProvider, EntityManager, String)} overload,
+     * this constructor does not accept a {@code defaultNodeName}. When using the extended loader
+     * configuration, the default node name (if any) is determined by the native implementation.
+     * </p>
+     *
+     * @param engine the engine that the loader should pass to builder objects
+     * @param provider an object that provides Filament materials corresponding to glTF materials
+     * @param entities the {@link EntityManager} that should be used to create entities
+     * @param generateNormals if true, selects the extended loader path. The extended path can
+     *                        compute flat normals (and corresponding tangents) for primitives
+     *                        that do not provide them, as part of the native loading pipeline.
+     *                        This flag therefore influences both path selection and whether
+     *                        normals may be generated when they are missing in the source data.
+     * @param trianglePickingEnabled enables creation of BVH and picking data
+     *                               structures for triangle-level picking
+     */
+    public AssetLoader(
+        @NonNull Engine engine,
+        @NonNull MaterialProvider provider,
+        @NonNull EntityManager entities,
+        boolean generateNormals,
+        boolean trianglePickingEnabled
+    ) {
         long nativeEngine = engine.getNativeObject();
         long nativeEntities = entities.getNativeObject();
-        if (filePath == null) {
-            mNativeObject = nCreateAssetLoader(nativeEngine, provider, nativeEntities, defaultNodeName);
-        } else {
-            mNativeObject = nCreateAssetLoaderExtended(nativeEngine, provider, nativeEntities, filePath, defaultNodeName);
-        }
+
+        mNativeObject = nFwCreateAssetLoader(
+            nativeEngine,
+            provider,
+            nativeEntities,
+            generateNormals,
+            trianglePickingEnabled
+        );
 
         if (mNativeObject == 0) {
             throw new IllegalStateException("Unable to parse glTF asset.");
@@ -209,8 +242,14 @@ public class AssetLoader {
 
     private static native long nCreateAssetLoader(long nativeEngine, Object provider,
             long nativeEntities, String defaultNodeName);
-    private static native long nCreateAssetLoaderExtended(long nativeEngine, Object provider,
-                                                          long nativeEntities, String filePath, String defaultNodeName);
+    private static native long nFwCreateAssetLoader(
+        long nativeEngine,
+        Object provider,
+        long nativeEntities,
+        boolean generateNormals,
+        boolean trianglePickingEnabled
+    );
+
     private static native void nDestroyAssetLoader(long nativeLoader);
     private static native long nCreateAsset(long nativeLoader, Buffer buffer, int remaining);
     private static native long nCreateInstancedAsset(long nativeLoader, Buffer buffer, int remaining,

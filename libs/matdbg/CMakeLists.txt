@@ -4,7 +4,7 @@ project(matdbg C ASM)
 set(TARGET matdbg)
 set(PUBLIC_HDR_DIR include)
 
-if (CMAKE_CROSSCOMPILING)
+if (CMAKE_CROSSCOMPILING OR FILAMENT_IMPORT_PREBUILT_EXECUTABLES)
     include(${IMPORT_EXECUTABLES})
 endif()
 
@@ -31,6 +31,8 @@ set(SRCS
     src/ShaderReplacer.cpp
     src/ShaderExtractor.cpp
     src/ShaderInfo.cpp
+    src/SourceFormatter.cpp
+    src/SourceFormatter.h
     src/TextWriter.cpp
 )
 

@@ -7,6 +7,257 @@ A new header is inserted each time a *tag* is created.
 Instead, if you are authoring a PR for the main branch, add your release note to
 [NEW_RELEASE_NOTES.md](./NEW_RELEASE_NOTES.md).
 
+## v1.69.5
+
+- engine: fix crash when using variance shadow maps
+
+## v1.69.4
+
+
+## v1.69.3
+
+
+## v1.69.2
+
+- engine: fix shader compilation failure in TAA material
+- engine: fix stereo & parallel shader compilation
+
+## v1.69.1
+
+
+## v1.69.0
+
+- engine: Support custom attributes morphing, and allow for omitting position and/or normal data. [⚠️ **Recompile Materials**]
+
+## v1.68.5
+
+- engine: "native" Streams are officially deprecated. Use "acquired" streams instead.
+- engine: add "engine.skip_frame_when_cpu_ahead_of_display" feature [b/474599530]
+
+## v1.68.4
+
+- gltfio: Add optional support for webp textures (EXT_texture_webp), controlled via FILAMENT_SUPPORTS_WEBP_TEXTURES cmake option
+
+## v1.68.3
+
+- materials: added support for the glTF `KHR_materials_dispersion` extension, which adds dispersion for refractive objects
+
+## v1.68.2
+
+- Support `setPresentationTime` with the Metal backend.
+
+## v1.68.1
+
+
+## v1.68.0
+
+- engine: add `View::getLastDynamicResolutionScale()` (b/457753622)
+- Metal: report GPU errors to the platform via `debugUpdateStat` (b/431665753).
+- materials: Make Material Instances' UBO descriptor use dynamic offsets. [⚠️ **Recompile Materials**]
+
+## v1.67.1
+
+- Metal: Add support for the `SwapChain::CONFIG_MSAA_4_SAMPLES` flag.
+- third_party: Optionally add libwebp to build
+  - controlled by cmake flag FILAMENT_SUPPORTS_WEBP_TEXTURES, defaults to OFF
+  - actual webp texture support for libs/gltfio coming in subsequent change
+
+## v1.67.0
+
+- materials: Add a new API getParameterTransformName that will return the value of the transformName field of a sampler
+parameter. [⚠️ **Recompile Materials**]
+
+## v1.66.2
+
+
+## v1.66.1
+
+- filamat: Removed a dependency on Glslang's deprecated SPIR-V remapper.
+  The functionality is already implemented by calling the CanonicalizeIds pass
+  in the SPIRV-Tools, and should be a non-functional change.
+
+## v1.66.0
+
+- materials: include default values of spec constants in material metadata [⚠️ **Recompile Materials**]
+
+## v1.65.4
+
+
+## v1.65.3
+
+
+## v1.65.2
+
+
+## v1.65.1
+
+- `setFrameScheduledCallback` now works on all backends (frame presentation scheduling is still only
+  available on Metal). Non-Metal backends can use the callback to be notified when Filament has
+  finished processing a frame on the CPU.
+- materials: added `getEyeFromViewMatrix()` for vertex shader [⚠️ **Recompile Materials**]
+- matc: make `--workarounds=none` the default [**Recompile Materials to take effect**]
+
+## v1.65.0
+
+lighting: the intermediate froxel record buffer is now dynamically sized [⚠️ **New Material Version**]
+
+## v1.64.1
+
+- Update CMake minimum version to 3.22.1
+- material: Add a material parameter to control shadow far attenuation (b/436680157)
+
+## v1.64.0
+
+- engine: add a `linearFog` material parameter. [⚠️ **New Material Version**]
+- opengl: When `Material::compile()` is called on a platform which doesn't support parallel compilation, shaders are automatically compiled over a number of frames
+- engine: Added `useDefaultDepthVariant` material parameter to force Filament to use its default variant for
+  depth-only passes. [**Requires recompiling materials**]
+- material: fix specularFactor in `LOW_QUALITY` mode. [**Requires recompiling materials**] to take effect.
+- material: Add CRC32 validation for material packages [⚠️ **New Material Version**]
+- material: Improve LineDictionary compression [⚠️ **New Material Version**]
+- Filament is now targeting c++20 (was previously c++17)
+
+## v1.63.1
+
+
+## v1.63.0
+
+- Rename `sampler` parameter `unfilterable` to `filterable` [⚠️ **New Material Version**]
+- Added `Renderer::shouldRenderFrame()`
+
+## v1.62.2
+
+- Metal: fix, respect alpha to coverage rasterization
+- engine: removed `Texture::generatePrefilterMipmap`, a new `libfilament-generatePrefilterMipmap` library can be used in its stead [⚠️ **API BREAKAGE**]
+
+## v1.62.1
+
+- Add new shader define `VARIANT_DEPTH`, defined when a material is compiled for depth variants
+  (e.g., shadows) [**Requires recompiling materials**]
+
+## v1.62.0
+
+- Add new `unfilterable` field to Filament Material's `sampler` [⚠️ **New Material Version**]
+
+## v1.61.2
+
+- samples: samples now have a CLI to select backend api
+
+## v1.61.1
+
+
+## v1.61.0
+
+- materials: sampler now export their type in the material binary [⚠️ **New Material Version**]
+- samples/texturedquad.cpp now has CLI to select backend api
+- samples/hellopbr.cpp CLI now allows for selecting webgpu
+
+## v1.60.1
+
+
+## v1.60.0
+
+- materials: remove dependence on per-view descset layout from filamat. [⚠️ **New Material Version**]
+- matc non-functional change: Update GLSL postprocessor to
+  isolate calls to SPVRemap from calls to SPIRV-Cross.
+
+
+## v1.59.5
+
+
+## v1.59.4
+
+
+## v1.59.3
+
+
+## v1.59.2
+
+- Fix build/compile errors when upgrading to MacOS 15.4
+
+## v1.59.1
+
+
+## v1.59.0
+
+- materials: five custom variables (varyings) are now available on the condition that the `color` attribute is not requested (b/404930099). [⚠️ **New Material Version**]
+
+## v1.58.2
+
+- engine: Generate 1D instead of 3D LUTs for color grading whenever possible.
+
+## v1.58.1
+
+
+## v1.58.0
+
+- materials: add an optional `transformName` field to sampler material parameters. [⚠️ **New Material Version**]
+
+## v1.57.3
+
+- android: breaking changes to API KTX1Loader::createIndirectLight and KTX1Loader::createSkybox
+
+## v1.57.2
+
+- Support including PlatformMetal.h in C++ files.
+
+## v1.57.1
+
+
+## v1.57.0
+
+- matdbg: Add support for debugging ESSL 1.0 shaders
+- backend: New platform API to better handle external textures [⚠️ **New Material Version**]
+
+## v1.56.8
+
+
+## v1.56.7
+
+
+## v1.56.6
+
+fix crash: the 'target_node' of Animation Channel may be nullpointer.
+
+## v1.56.5
+
+
+## v1.56.4
+
+
+## v1.56.3
+
+
+## v1.56.2
+
+- vk: fix stage pool gc logic
+
+## v1.56.1
+
+## v1.56.0
+
+- backend: descriptor layouts distinguish samplers and external samplers (b/376089915) [⚠️ **New Material Version**]
+
+## v1.55.1
+
+
+## v1.55.0
+- Add descriptor sets to describe shader resources. [⚠️ **New Material Version**]
+
+## v1.54.5
+
+
+## v1.54.4
+
+- Add support for multi-layered render target with array textures.
+
+## v1.54.3
+
+
+## v1.54.2
+
+- Add a `name` API to Filament objects for debugging handle use-after-free assertions
+
 ## v1.54.1
 
 
@@ -634,7 +885,7 @@ Instead, if you are authoring a PR for the main branch, add your release note to
 
 - engine: Binary size improvements.
 - engine: Add basic support for instanced renderables [**NEW API**].
-- engine: Fix, first imaged passsed to `Stream::SetAcquiredImage` is ignored and leaked.
+- engine: Fix, first imaged passed to `Stream::SetAcquiredImage` is ignored and leaked.
 - Vulkan: Robustness improvements.
 - Java: Fix, lookAt z axis negated.
 - gltfio: Be graceful when model has > 4 weights per vert.

@@ -164,6 +164,9 @@ THE SOFTWARE.
 #ifndef NO_THREADED_BUILDS
 #define ENABLE_THREADED_BUILDS
 #endif
+#ifndef NO_PICK_FILTER
+#define ENABLE_PICK_FILTER
+#endif
 
 // Experimental / WIP features
 
@@ -1519,6 +1522,47 @@ static constexpr bool customEnabled = true;
 #else
 static constexpr bool customEnabled = false;
 #endif
+
+namespace tinybvh {
+// Enable triangle filtering support for ray picking queries.
+// This allows users to specify a list of triangle index ranges to skip during ray traversal.
+//
+// Param skipRanges should contain pairs of start and end triangle indices, incrementing order,
+// which define the range of triangles to be ignored.
+// Example: skipRanges=[0,5, 10,15] skips triangles 0-5 and 10-15 (inclusive).
+//
+// Note: The filter is applied in the Intersect (not in IsOccluded) function.
+#ifdef ENABLE_PICK_FILTER
+static constexpr bool pickFilterEnabled = true;
+struct TriangleFilterContext {
+	const uint32_t* skipRanges;    // [start0,end0,start1,end1,...] sorted triangle index ranges (inclusive)
+	size_t skipRangeCount;         // number of pairs
+};
+
+static bool shouldSkipTriangleIdx(const TriangleFilterContext* ctx, uint32_t triIdx) {
+	if (!ctx || !ctx->skipRanges || ctx->skipRangeCount == 0) return false;
+
+	// Binary search to find first range with end >= triIdx
+	size_t lo = 0, hi = ctx->skipRangeCount;
+	while (lo < hi) {
+		const size_t mid = (lo + hi) >> 1;
+		const uint32_t rangeEnd = ctx->skipRanges[mid * 2 + 1];
+		if (rangeEnd < triIdx) lo = mid + 1;
+		else hi = mid;
+	}
+	if (lo >= ctx->skipRangeCount) return false;
+
+	const uint32_t rangeStart = ctx->skipRanges[lo * 2 + 0];
+	const uint32_t rangeEnd   = ctx->skipRanges[lo * 2 + 1];
+
+	// Check if triIdx falls within this range (inclusive on both ends)
+	return (triIdx >= rangeStart && triIdx <= rangeEnd);
+}
+#else
+static constexpr bool pickFilterEnabled = false;
+#endif
+
+} // namespace tinybvh, for the pick filter context and function.
 
 namespace tinybvh {
 
@@ -3225,6 +3269,14 @@ template <bool posX, bool posY, bool posZ> int32_t BVH::Intersect( Ray& ray ) co
 			{
 				const uint32_t pi = primIdx[node->leftFirst + i];
 				const uint32_t i0 = vertIdx[pi * 3], i1 = vertIdx[pi * 3 + 1], i2 = vertIdx[pi * 3 + 2];
+				#ifdef ENABLE_PICK_FILTER
+				if (pickFilterEnabled) {
+					auto* ctx = static_cast<const TriangleFilterContext*>(ray.hit.auxData);
+					if (ctx && ctx->skipRanges && ctx->skipRangeCount) {
+						if (shouldSkipTriangleIdx(ctx, pi)) continue;
+					}
+				}
+				#endif
 				IntersectTri( ray, pi, verts, i0, i1, i2 );
 			}
 			else if (customEnabled && customIntersect != 0) for (uint32_t i = 0; i < node->triCount; i++, cost += c_int)

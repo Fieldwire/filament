@@ -16,7 +16,7 @@
 
 #include <filament/Renderer.h>
 
-#include "ResourceAllocator.h"
+#include "TextureCache.h"
 
 #include "details/Engine.h"
 #include "details/Renderer.h"
@@ -42,30 +42,34 @@ void Renderer::render(View const* view) {
     downcast(this)->render(downcast(view));
 }
 
-void Renderer::setPresentationTime(int64_t monotonic_clock_ns) {
+void Renderer::setPresentationTime(int64_t const monotonic_clock_ns) {
     downcast(this)->setPresentationTime(monotonic_clock_ns);
 }
 
-void Renderer::skipFrame(uint64_t vsyncSteadyClockTimeNano) {
+void Renderer::skipFrame(uint64_t const vsyncSteadyClockTimeNano) {
     downcast(this)->skipFrame(vsyncSteadyClockTimeNano);
 }
 
-bool Renderer::beginFrame(SwapChain* swapChain, uint64_t vsyncSteadyClockTimeNano) {
+bool Renderer::shouldRenderFrame() const noexcept {
+    return downcast(this)->shouldRenderFrame();
+}
+
+bool Renderer::beginFrame(SwapChain* swapChain, uint64_t const vsyncSteadyClockTimeNano) {
     return downcast(this)->beginFrame(downcast(swapChain), vsyncSteadyClockTimeNano);
 }
 
 void Renderer::copyFrame(SwapChain* dstSwapChain, filament::Viewport const& dstViewport,
-        filament::Viewport const& srcViewport, CopyFrameFlag flags) {
+        filament::Viewport const& srcViewport, CopyFrameFlag const flags) {
     downcast(this)->copyFrame(downcast(dstSwapChain), dstViewport, srcViewport, flags);
 }
 
-void Renderer::readPixels(uint32_t xoffset, uint32_t yoffset, uint32_t width, uint32_t height,
+void Renderer::readPixels(uint32_t const xoffset, uint32_t const yoffset, uint32_t const width, uint32_t const height,
         PixelBufferDescriptor&& buffer) {
     downcast(this)->readPixels(xoffset, yoffset, width, height, std::move(buffer));
 }
 
 void Renderer::readPixels(RenderTarget* renderTarget,
-        uint32_t xoffset, uint32_t yoffset, uint32_t width, uint32_t height,
+        uint32_t const xoffset, uint32_t const yoffset, uint32_t const width, uint32_t const height,
         PixelBufferDescriptor&& buffer) {
     downcast(this)->readPixels(downcast(renderTarget),
             xoffset, yoffset, width, height, std::move(buffer));
@@ -81,6 +85,14 @@ double Renderer::getUserTime() const {
 
 void Renderer::resetUserTime() {
     downcast(this)->resetUserTime();
+}
+
+void Renderer::skipNextFrames(size_t frameCount) noexcept {
+    downcast(this)->skipNextFrames(frameCount);
+}
+
+size_t Renderer::getFrameToSkipCount() const noexcept {
+    return downcast(this)->getFrameToSkipCount();
 }
 
 void Renderer::setDisplayInfo(const DisplayInfo& info) noexcept {
@@ -103,11 +115,11 @@ void Renderer::renderStandaloneView(View const* view) {
     downcast(this)->renderStandaloneView(downcast(view));
 }
 
-void Renderer::setVsyncTime(uint64_t steadyClockTimeNano) noexcept {
+void Renderer::setVsyncTime(uint64_t const steadyClockTimeNano) noexcept {
     downcast(this)->setVsyncTime(steadyClockTimeNano);
 }
 
-utils::FixedCapacityVector<Renderer::FrameInfo> Renderer::getFrameInfoHistory(size_t historySize) const noexcept {
+utils::FixedCapacityVector<Renderer::FrameInfo> Renderer::getFrameInfoHistory(size_t const historySize) const noexcept {
     return downcast(this)->getFrameInfoHistory(historySize);
 }
 

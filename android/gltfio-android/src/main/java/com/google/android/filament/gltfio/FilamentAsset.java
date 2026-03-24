@@ -251,6 +251,225 @@ public class FilamentAsset {
 
     public Engine getEngine() { return mEngine; }
 
+    /**
+     * Result from ray-triangle intersection test.
+     */
+    public static class PickingHit {
+        /** The entity that was hit */
+        public final @Entity int entityId;
+        /** Index of the hit triangle (-1 if no hit) */
+        public final int triangleIndex;
+        /** Distance along the ray to the hit point */
+        public final float distance;
+
+        public PickingHit(int entityId, int triangleIndex, float distance) {
+            this.entityId = entityId;
+            this.triangleIndex = triangleIndex;
+            this.distance = distance;
+        }
+
+        /** Returns true if a hit was found (triangleIndex >= 0) */
+        public boolean hasHit() {
+            return triangleIndex >= 0;
+        }
+
+        @NonNull
+        @Override
+        public String toString() {
+            return "PickingHit{" +
+                    "entityId=" + entityId +
+                    ", triangleIndex=" + triangleIndex +
+                    ", distance=" + distance +
+                    '}';
+        }
+    }
+
+    /**
+     * Perform ray-triangle intersection test against a specific entity's mesh.
+     * Computes ray from screen coordinates and optionally skips triangles in specified ranges.
+     *
+     * @param view The View to use for screen-to-ray conversion
+     * @param entityId The entity ID to test against
+     * @param screenX Screen X coordinate
+     * @param screenY Screen Y coordinate
+     * @param skipRanges Optional array of triangle index ranges to skip during intersection.
+     *                   Format: [start0, end0, start1, end1, ...] where each pair defines
+     *                   an inclusive range of triangle indices. Can be null for no skipping.
+     * @return PickingHit with hit information (triangleIndex = -1 if no hit)
+     */
+    @NonNull
+    public PickingHit pick(long view, @Entity int entityId, int screenX, int screenY,
+                          @Nullable int[] skipRanges) {
+        int[] result = nPick(mNativeObject, view, mEngine.getNativeObject(),
+                            entityId, screenX, screenY, skipRanges);
+        return new PickingHit(
+            result[0],                              // entityId
+            result[1],                              // triangleIndex
+            Float.intBitsToFloat(result[2])         // distance
+        );
+    }
+
+    /**
+     * Perform ray-triangle intersection test without skip ranges.
+     */
+    @NonNull
+    public PickingHit pick(long view, @Entity int entityId, int screenX, int screenY) {
+        return pick(view, entityId, screenX, screenY, null);
+    }
+
+    /**
+     * Mesh data for an entity containing positions and indices.
+     * The ByteBuffers directly reference native C++ memory - no copy is made.
+     *
+     * <p><b>MEMORY OWNERSHIP:</b> The ByteBuffers are <b>weak references</b> to C++ memory.
+     * The JVM does NOT own this memory and cannot prevent it from being freed.
+     * You do NOT need to manually free/close the ByteBuffers - they will be garbage collected.
+     * However, GC'ing the ByteBuffer does NOT free the C++ memory (it's owned by PickingRegistry).</p>
+     *
+     * <p><b>LIFETIME WARNING:</b> The buffers are only valid while the FilamentAsset exists
+     * and releaseSourceData() has not been called. Accessing the buffers after the asset
+     * is destroyed will cause undefined behavior (crash or garbage data).</p>
+     *
+     * <p><b>SAFE USAGE PATTERN:</b></p>
+     * <pre>
+     * // GOOD: Use immediately and don't store
+     * val mesh = asset.getMeshData(entityId)
+     * mesh?.let { processImmediately(it) }
+     *
+     * // BAD: Don't cache the ByteBuffer beyond current scope
+     * val cachedBuffer = asset.getMeshData(entityId)?.positions  // DANGEROUS!
+     * // ... later, asset might be destroyed ...
+     * cachedBuffer?.get(0)  // CRASH!
+     * </pre>
+     */
+    public static class MeshData {
+        /**
+         * Direct ByteBuffer containing positions as floats (x, y, z per vertex).
+         * Read as FloatBuffer: positions.order(ByteOrder.nativeOrder()).asFloatBuffer()
+         * Each position is 12 bytes (3 floats * 4 bytes)
+         */
+        @Nullable
+        public final java.nio.ByteBuffer positions;
+
+        /**
+         * Direct ByteBuffer containing indices as uint32.
+         * Read as IntBuffer: indices.order(ByteOrder.nativeOrder()).asIntBuffer()
+         * Each index is 4 bytes
+         */
+        @Nullable
+        public final java.nio.ByteBuffer indices;
+
+        /**
+         * Direct ByteBuffer containing expanded indices as uint32.
+         * Read as IntBuffer: expandedIndices.order(ByteOrder.nativeOrder()).asIntBuffer()
+         * Each index is 4 bytes
+         * This is useful for rendering operations where vertex sharing is not needed.
+         */
+        @Nullable
+        public final java.nio.ByteBuffer expandedIndices;
+
+        MeshData(java.nio.ByteBuffer positions,
+                 java.nio.ByteBuffer indices,
+                 java.nio.ByteBuffer expandedIndices) {
+            this.positions = positions;
+            this.indices = indices;
+            this.expandedIndices = expandedIndices;
+        }
+    }
+
+    /**
+     * Gets mesh data (positions, indices, and expanded indices) for an entity.
+     *
+     * <p>The returned {@link MeshData} contains three direct {@link java.nio.ByteBuffer}s that
+     * reference native C++ memory owned by the {@code PickingRegistry} — no copy is made.</p>
+     *
+     * <ul>
+     *   <li><b>positions</b> — float3 per vertex (x, y, z), 12 bytes each.
+     *       Vertex count = {@code positions.capacity() / 12}.</li>
+     *   <li><b>indices</b> — uint32 per index slot, 4 bytes each, 3 slots per triangle.
+     *       Triangle count = {@code indices.capacity() / 4 / 3}.</li>
+     *   <li><b>expandedIndices</b> — uint32, same layout as indices but remapped to the
+     *       expanded (de-duplicated) vertex buffer used by the GPU renderable. Present only
+     *       when the asset was loaded via {@code AssetLoaderExtended}; may be null otherwise.</li>
+     * </ul>
+     *
+     * <p><b>IMPORTANT:</b> The buffers are only valid while the {@link FilamentAsset} exists.
+     * Do not cache or use them after the asset is destroyed.</p>
+     *
+     * <p>Example usage:</p>
+     * <pre>
+     * MeshData mesh = asset.getMeshData(entityId);
+     * if (mesh != null && mesh.positions != null && mesh.indices != null) {
+     *     FloatBuffer positions = mesh.positions
+     *         .order(ByteOrder.nativeOrder())
+     *         .asFloatBuffer();
+     *     int vertexCount = mesh.positions.capacity() / 12; // 3 floats * 4 bytes
+     *
+     *     IntBuffer indices = mesh.indices
+     *         .order(ByteOrder.nativeOrder())
+     *         .asIntBuffer();
+     *     int triangleCount = mesh.indices.capacity() / 4 / 3; // uint32, 3 per triangle
+     *
+     *     for (int i = 0; i < triangleCount; i++) {
+     *         int i0 = indices.get(i * 3);
+     *         int i1 = indices.get(i * 3 + 1);
+     *         int i2 = indices.get(i * 3 + 2);
+     *     }
+     * }
+     * </pre>
+     *
+     * @param entityId The entity to get mesh data for
+     * @return {@link MeshData} containing positions, indices, and expandedIndices,
+     *         or null if the entity is not registered in the PickingRegistry or
+     *         any buffer size exceeds {@link Integer#MAX_VALUE}
+     */
+    @Nullable
+    public MeshData getMeshData(@Entity int entityId) {
+        long[] info = nGetMeshDataInfo(mNativeObject, entityId);
+        if (info == null) {
+            return null;
+        }
+
+        // info: [positionsPtr, positionsSize, indicesPtr, indicesSize, expandedIndicesPtr, expandedIndicesSize]
+        long positionsPtr = info[0];
+        long positionsSize = info[1];
+        long indicesPtr = info[2];
+        long indicesSize = info[3];
+        long expandedIndicesPtr = info[4];
+        long expandedIndicesSize = info[5];
+
+        // Guard against silent truncation: ByteBuffer capacity is int-sized (max 2,147,483,647 bytes).
+        // Fail fast with null rather than producing a ByteBuffer with a truncated capacity
+        // that silently reads garbage beyond the true end of the data.
+        //   positions:        max ~178M vertices     (Integer.MAX_VALUE / 12 bytes per float3)
+        //   indices:          max ~178M triangles    (Integer.MAX_VALUE / 4 bytes per uint32 / 3 indices per triangle)
+        //   expandedIndices:  max ~178M triangles    (same as indices)
+        if (positionsSize > Integer.MAX_VALUE) {
+            android.util.Log.e("FilamentAsset",
+                    "getMeshData: positionsSize " + positionsSize + " exceeds Integer.MAX_VALUE for entity " + entityId);
+            return null;
+        }
+        if (indicesSize > Integer.MAX_VALUE) {
+            android.util.Log.e("FilamentAsset",
+                    "getMeshData: indicesSize " + indicesSize + " exceeds Integer.MAX_VALUE for entity " + entityId);
+            return null;
+        }
+        if (expandedIndicesSize > Integer.MAX_VALUE) {
+            android.util.Log.e("FilamentAsset",
+                    "getMeshData: expandedIndicesSize " + expandedIndicesSize + " exceeds Integer.MAX_VALUE for entity " + entityId);
+            return null;
+        }
+
+        // Safe to cast to int now — all sizes verified above to fit within Integer.MAX_VALUE.
+        java.nio.ByteBuffer positions = positionsPtr != 0 && positionsSize > 0
+            ? nNewDirectByteBuffer(positionsPtr, (int) positionsSize) : null;
+        java.nio.ByteBuffer indices = indicesPtr != 0 && indicesSize > 0
+            ? nNewDirectByteBuffer(indicesPtr, (int) indicesSize) : null;
+        java.nio.ByteBuffer expandedIndices = expandedIndicesPtr != 0 && expandedIndicesSize > 0
+            ? nNewDirectByteBuffer(expandedIndicesPtr, (int) expandedIndicesSize) : null;
+        return new MeshData(positions, indices, expandedIndices);
+    }
+
     void clearNativeObject() {
         mPrimaryInstance = null;
         mNativeObject = 0;
@@ -291,4 +510,15 @@ public class FilamentAsset {
     private static native void nGetResourceUris(long nativeAsset, String[] result);
 
     private static native void nReleaseSourceData(long nativeAsset);
+
+    private static native int[] nPick(long nativeAsset, long nativeView, long nativeEngine,
+                                      int entityId, int screenX, int screenY, int[] skipRanges);
+
+    private static native long nGetPickingRegistry(long nativeAsset);
+
+    private static native long[] nGetMeshDataInfo(long nativeAsset, int entityId);
+
+    // Creates a direct ByteBuffer from a native pointer.
+    // capacity is int — callers must verify the size fits within Integer.MAX_VALUE before calling.
+    private static native java.nio.ByteBuffer nNewDirectByteBuffer(long address, int capacity);
 }

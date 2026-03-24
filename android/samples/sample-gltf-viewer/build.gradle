@@ -1,24 +1,36 @@
 plugins {
     id 'com.android.application'
     id 'kotlin-android'
-    id 'filament-tools-plugin'
+    id 'filament-plugin'
 }
 
 project.ext.isSample = true
 
-filamentTools {
+kotlin {
+    jvmToolchain(versions.jdk)
+}
+
+filament {
     cmgenArgs = "-q --format=ktx --size=256 --extract-blur=0.1 --deploy=src/main/assets/envs/default_env"
     iblInputFile = project.layout.projectDirectory.file("../../../third_party/environments/lightroom_14b.hdr")
     iblOutputDir = project.layout.projectDirectory.dir("src/main/assets/envs")
 }
 
 // don't forget to update MainACtivity.kt when/if changing this.
-task copyMesh(type: Copy) {
+tasks.register('copyDamagedHelmetGltf', Copy) {
+    from file("../../../third_party/models/DamagedHelmet/DamagedHelmet.glb")
+    into file("src/main/assets/models")
+    rename {String fileName -> "helmet.glb"}
+}
+
+// don't forget to update MainACtivity.kt when/if changing this.
+tasks.register('copyBusterGltf', Copy) {
     from "../../../third_party/models/BusterDrone"
     into "src/main/assets/models"
 }
 
-preBuild.dependsOn copyMesh
+preBuild.dependsOn copyDamagedHelmetGltf
+preBuild.dependsOn copyBusterGltf
 
 clean.doFirst {
     delete "src/main/assets"
@@ -43,6 +55,10 @@ android {
     compileOptions {
         sourceCompatibility versions.jdk
         targetCompatibility versions.jdk
+    }
+
+    kotlinOptions {
+        jvmTarget = versions.jdk.toString()
     }
 }
 
