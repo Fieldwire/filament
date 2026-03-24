@@ -280,8 +280,8 @@ Java_com_google_android_filament_gltfio_AssetLoader_nFwCreateAssetLoader(
     jboolean trianglePickingEnabled
 ) {
     constexpr const char* kDefaultNodeName = "Unknown Object";
-    jstring defaultNodeName = env->NewStringUTF(kDefaultNodeName);
     if (!generateNormals && !trianglePickingEnabled) {
+        jstring defaultNodeName = env->NewStringUTF(kDefaultNodeName);
         return Java_com_google_android_filament_gltfio_AssetLoader_nCreateAssetLoader(
             env,
             jlass,
