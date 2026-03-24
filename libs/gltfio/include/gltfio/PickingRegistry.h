@@ -109,7 +109,7 @@ public:
      * @param meshCacheSize    number of entries in the mesh cache
      * @param getPrimsSize     (meshIndex) -> number of primitives for that mesh
      * @param getExpandedIndices (meshIndex, primIndex) -> reference to expandedIndices vector for that primitive
-     * @return true if all meshes registered successfully; false if any failed (sets mBvhBuildFailed on asset)
+     * @return true if all meshes registered successfully; false if any failed; failures are reported via logging
      */
     bool commitRegistrations(
         const cgltf_mesh* gltfMeshes,
