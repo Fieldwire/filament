@@ -279,7 +279,8 @@ Java_com_google_android_filament_gltfio_AssetLoader_nFwCreateAssetLoader(
     jboolean generateNormals,
     jboolean trianglePickingEnabled
 ) {
-    jstring defaultNodeName = env->NewStringUTF("Unknown Object");
+    constexpr const char* kDefaultNodeName = "Unknown Object";
+    jstring defaultNodeName = env->NewStringUTF(kDefaultNodeName);
     if (!generateNormals && !trianglePickingEnabled) {
         return Java_com_google_android_filament_gltfio_AssetLoader_nCreateAssetLoader(
             env,
@@ -310,8 +311,6 @@ Java_com_google_android_filament_gltfio_AssetLoader_nFwCreateAssetLoader(
     EntityManager* entities = reinterpret_cast<EntityManager *>(nativeEntities);
     NameComponentManager* names = new NameComponentManager(*entities);
 
-    const char *nativeDefaultNodeName = env->GetStringUTFChars(defaultNodeName, nullptr);
-
     AssetConfigurationExtended ext = {
         .gltfPath = "",
         .trianglePickingEnabled = static_cast<bool>(trianglePickingEnabled)
@@ -321,11 +320,9 @@ Java_com_google_android_filament_gltfio_AssetLoader_nFwCreateAssetLoader(
         .engine = engine,
         .materials = materialProvider,
         .names = names,
-        .defaultNodeName = const_cast<char *>(nativeDefaultNodeName),
+        .defaultNodeName = kDefaultNodeName,
         .ext = &ext,
     };
-
-    env->ReleaseStringUTFChars(defaultNodeName, nativeDefaultNodeName);
 
     return (jlong) AssetLoader::create(config);
 }
