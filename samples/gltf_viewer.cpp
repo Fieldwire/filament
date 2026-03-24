@@ -826,6 +826,7 @@ int main(int argc, char** argv) {
         // Use the below code to load the gltf file without normals
         AssetConfigurationExtended ext = {
             .gltfPath = filename.c_str(),
+            .trianglePickingEnabled = true,
         };
         AssetConfiguration config = {
             .engine = engine,
