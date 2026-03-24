@@ -121,12 +121,11 @@ public class AssetLoader {
      * @param engine the engine that the loader should pass to builder objects
      * @param provider an object that provides Filament materials corresponding to glTF materials
      * @param entities the {@link EntityManager} that should be used to create entities
-     * @param generateNormals selects the extended loader path and requests normal generation;
-     *                        current implementations may generate normals even if this flag is
-     *                        ignored by the native loader
-     * @param trianglePickingEnabled enables creation of data structures used for triangle-based
-     *                               picking on the loaded asset, if supported by the native
-     *                               loader implementation
+     * @param generateNormals if true, selects the extended loader path;
+     *                        normal generation is not currently implemented and
+     *                        this flag has no effect on geometry beyond path selection
+     * @param trianglePickingEnabled enables creation of BVH and picking data
+     *                               structures for triangle-level picking
      */
     public AssetLoader(
         @NonNull Engine engine,
