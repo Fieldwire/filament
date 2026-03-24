@@ -125,6 +125,7 @@ bool PickingRegistry::commitRegistrations(
     }
 
     pendingRegistrations.clear();
+    decltype(pendingRegistrations){}.swap(pendingRegistrations);
 
     // Free expandedIndices from meshCache now that all entities are registered
     for (size_t i = 0; i < meshCacheSize; i++) {
