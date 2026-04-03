@@ -255,6 +255,103 @@ std::vector<BufferSlot> computeGeometries(cgltf_primitive const* prim, uint8_t c
                     [vertexBuffer](BufferSlot& slot) { slot.vertices = vertexBuffer; });
             slots.insert(slots.end(), vslots.begin(), vslots.end());
         }
+
+        // When VERTEX_JOB is off (either mGenerateNormals=false, or the primitive has quantized
+        // attribute types that TangentsJobExtended cannot process), no VertexBuffer is produced
+        // by the tangent job. However, a VertexBuffer is still required to build the Renderable
+        // without crashing. We create one with the correct attribute declarations and vertex count
+        // from the INDEX_JOB fast-path output, and fill all attribute slots with placeholder data.
+        //
+        // Known limitation: vertex attributes (positions, UVs, normals) will not reflect the
+        // actual geometry values. This is acceptable today because this path is triggered by
+        // packed/quantized GLBs (gltfpack output with KHR_mesh_quantization or SNORM-filtered
+        // meshopt attributes) where TangentsJobExtended would PANIC on unsupported component types.
+        // A follow-up is needed to implement a passthrough path that reads decoded accessor data
+        // directly for standard float attributes and skips only the SNORM/quantized ones.
+        if ((jobType & VERTEX_JOB) == 0 && (jobType & INDEX_JOB) != 0 && !attributesMap.empty()) {
+            auto vertexBufferBuilder =
+                    VertexBuffer::Builder().enableBufferObjects().vertexCount(vertexCount);
+
+            std::vector<BufferSlot> vslots;
+            bool slottedTangent = false;
+            int maxSlot = 0;
+            for (auto [cgltfAttr, filamentAttr] : attributesMap) {
+                auto const [vattr, slot] = filamentAttr;
+                VertexBuffer::AttributeType type;
+                size_t attrByteCount;
+                switch (vattr) {
+                    case VertexAttribute::POSITION:
+                        type = VertexBuffer::AttributeType::FLOAT3;
+                        attrByteCount = sizeof(float3);
+                        break;
+                    case VertexAttribute::TANGENTS:
+                        type = VertexBuffer::AttributeType::SHORT4;
+                        attrByteCount = sizeof(short4);
+                        vertexBufferBuilder.normalized(vattr);
+                        slottedTangent = true;
+                        break;
+                    case VertexAttribute::COLOR:
+                        type = VertexBuffer::AttributeType::FLOAT4;
+                        attrByteCount = sizeof(float4);
+                        break;
+                    case VertexAttribute::UV0:
+                    case VertexAttribute::UV1:
+                        type = VertexBuffer::AttributeType::FLOAT2;
+                        attrByteCount = sizeof(float2);
+                        break;
+                    case VertexAttribute::BONE_INDICES:
+                        type = VertexBuffer::AttributeType::USHORT4;
+                        attrByteCount = sizeof(ushort4);
+                        break;
+                    case VertexAttribute::BONE_WEIGHTS:
+                        type = VertexBuffer::AttributeType::FLOAT4;
+                        attrByteCount = sizeof(float4);
+                        break;
+                    default:
+                        PANIC_POSTCONDITION("Unexpected vertex attribute %d",
+                                static_cast<int>(vattr));
+                }
+                vertexBufferBuilder.attribute(vattr, slot, type);
+                size_t const requiredSize = attrByteCount * vertexCount;
+                auto* dummyData = static_cast<uint8_t*>(malloc(requiredSize));
+                if (vattr == VertexAttribute::COLOR) {
+                    float4* dataf = (float4*) dummyData;
+                    for (size_t i = 0; i < vertexCount; ++i) {
+                        dataf[i] = float4(1.0, 1.0, 1.0, 1.0f);
+                    }
+                } else {
+                    memset(dummyData, 0xff, requiredSize);
+                }
+                vslots.push_back({
+                    .slot = slot,
+                    .sizeInBytes = requiredSize,
+                    .data = dummyData,
+                });
+                maxSlot = std::max(maxSlot, slot);
+            }
+            // For lit materials, always include a tangent slot if not already present.
+            if (!slottedTangent && !isUnlit) {
+                auto const slot = maxSlot + 1;
+                vertexBufferBuilder.attribute(VertexAttribute::TANGENTS, slot,
+                        VertexBuffer::AttributeType::SHORT4);
+                vertexBufferBuilder.normalized(VertexAttribute::TANGENTS);
+                size_t const requiredSize = sizeof(short4) * vertexCount;
+                auto* dummyData = static_cast<uint8_t*>(malloc(requiredSize));
+                memset(dummyData, 0xff, requiredSize);
+                vslots.push_back({
+                    .slot = slot,
+                    .sizeInBytes = requiredSize,
+                    .data = dummyData,
+                });
+            }
+            assert_invariant(!vslots.empty());
+            vertexBufferBuilder.bufferCount(vslots.size());
+            auto vertexBuffer = vertexBufferBuilder.build(*engine);
+            std::for_each(vslots.begin(), vslots.end(),
+                    [vertexBuffer](BufferSlot& slot) { slot.vertices = vertexBuffer; });
+            slots.insert(slots.end(), vslots.begin(), vslots.end());
+        }
+
         if ((jobType & INDEX_JOB) != 0) {
             auto indexBuffer = IndexBuffer::Builder()
                                        .indexCount(out.triangleCount * 3)
@@ -326,8 +423,25 @@ bool AssetLoaderExtended::createPrimitive(Input* input, Output* out,
         jobType |= INDEX_JOB;
     }
 
+    // Gate VERTEX_JOB on both the caller-supplied flag and per-primitive attribute type detection.
+    // TangentsJobExtended::unpack() only handles r_32f, r_8u, and r_16u component types.
+    // Packed GLBs from gltfpack use SNORM8 (r_8, e.g. oct-filtered normals) and SNORM16
+    // (r_16, e.g. KHR_mesh_quantization positions), which would hit PANIC_POSTCONDITION in
+    // unpack(). Checking per-primitive is more precise than a global flag: a single glTF can
+    // have some primitives with standard float attributes and others with quantized attributes.
     if (mGenerateNormals) {
-        jobType |= VERTEX_JOB;
+        bool canRunVertexJob = true;
+        for (cgltf_size i = 0; i < prim->attributes_count && canRunVertexJob; i++) {
+            cgltf_component_type const ct = prim->attributes[i].data->component_type;
+            if (ct != cgltf_component_type_r_32f &&
+                ct != cgltf_component_type_r_8u &&
+                ct != cgltf_component_type_r_16u) {
+                canRunVertexJob = false;
+            }
+        }
+        if (canRunVertexJob) {
+            jobType |= VERTEX_JOB;
+        }
     }
 
     AttributesMap attributesMap;
