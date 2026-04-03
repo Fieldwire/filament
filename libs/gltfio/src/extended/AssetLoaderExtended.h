@@ -26,6 +26,7 @@
 #include <cgltf.h>
 
 #include <string>
+#include <unordered_set>
 
 namespace filament::gltfio {
 
@@ -76,8 +77,7 @@ struct AssetLoaderExtended {
           mGltfPath(config.gltfPath),
           mGenerateNormals(config.generateNormals),
           mMaterials(materials),
-          mUriDataCache(std::make_shared<UriDataCache>()),
-          mCgltfBuffersLoaded(false) {}
+          mUriDataCache(std::make_shared<UriDataCache>()) {}
 
     ~AssetLoaderExtended() = default;
 
@@ -91,7 +91,7 @@ private:
     bool mGenerateNormals;
     MaterialProvider& mMaterials;
     UriDataCacheHandle mUriDataCache;
-    bool mCgltfBuffersLoaded;
+    std::unordered_set<cgltf_data const*> mDecodedCgltfDatas;
 };
 
 } // namespace filament::gltfio
