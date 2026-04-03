@@ -37,10 +37,6 @@ namespace filament::gltfio {
 
 namespace {
 
-constexpr uint8_t const VERTEX_JOB = 0x1;
-constexpr uint8_t const INDEX_JOB = 0x2;
-constexpr uint8_t const MORPH_TARGET_JOB = 0x4;
-
 constexpr int const GENERATED_0 = FFilamentAsset::ResourceInfoExtended::GENERATED_0_INDEX;
 constexpr int const GENERATED_1 = FFilamentAsset::ResourceInfoExtended::GENERATED_1_INDEX;
 
@@ -330,7 +326,9 @@ bool AssetLoaderExtended::createPrimitive(Input* input, Output* out,
         jobType |= INDEX_JOB;
     }
 
-    jobType |= VERTEX_JOB;
+    if (mGenerateNormals) {
+        jobType |= VERTEX_JOB;
+    }
 
     AttributesMap attributesMap;
     bool hasUv0 = false, hasUv1 = false, hasVertexColor = false, hasNormals = false;
