@@ -149,6 +149,48 @@ inline size_t filamentAttrByteSize(VertexBuffer::AttributeType t) {
     }
 }
 
+inline bool isFloatAttributeType(VertexBuffer::AttributeType t) {
+    switch (t) {
+        case VertexBuffer::AttributeType::FLOAT:
+        case VertexBuffer::AttributeType::FLOAT2:
+        case VertexBuffer::AttributeType::FLOAT3:
+        case VertexBuffer::AttributeType::FLOAT4:
+        case VertexBuffer::AttributeType::HALF:
+        case VertexBuffer::AttributeType::HALF2:
+        case VertexBuffer::AttributeType::HALF3:
+        case VertexBuffer::AttributeType::HALF4:
+            return true;
+        default:
+            return false;
+    }
+}
+
+inline bool isIntegerAttributeType(VertexBuffer::AttributeType t) {
+    switch (t) {
+        case VertexBuffer::AttributeType::BYTE:
+        case VertexBuffer::AttributeType::BYTE2:
+        case VertexBuffer::AttributeType::BYTE3:
+        case VertexBuffer::AttributeType::BYTE4:
+        case VertexBuffer::AttributeType::UBYTE:
+        case VertexBuffer::AttributeType::UBYTE2:
+        case VertexBuffer::AttributeType::UBYTE3:
+        case VertexBuffer::AttributeType::UBYTE4:
+        case VertexBuffer::AttributeType::SHORT:
+        case VertexBuffer::AttributeType::SHORT2:
+        case VertexBuffer::AttributeType::SHORT3:
+        case VertexBuffer::AttributeType::SHORT4:
+        case VertexBuffer::AttributeType::USHORT:
+        case VertexBuffer::AttributeType::USHORT2:
+        case VertexBuffer::AttributeType::USHORT3:
+        case VertexBuffer::AttributeType::USHORT4:
+        case VertexBuffer::AttributeType::INT:
+        case VertexBuffer::AttributeType::UINT:
+            return true;
+        default:
+            return false;
+    }
+}
+
 // Reads a vertex attribute from a decoded cgltf_accessor into a malloc'd buffer.
 // Handles the has_meshopt_compression data path (reads from buffer_view->data).
 // For types requiring conversion (e.g. SNORM8/UNORM8/SNORM16/UNORM16 → float),
@@ -158,6 +200,124 @@ struct AccessorData {
     size_t totalBytes;
     void* data;
 };
+
+inline float decodeSNorm8(int8_t raw) {
+    return raw < -127 ? -1.0f : raw / 127.0f;
+}
+
+inline float decodeSNorm16(int16_t raw) {
+    return raw < -32767 ? -1.0f : raw / 32767.0f;
+}
+
+bool convertAccessorToFloat3(AccessorData const& src, bool normalized, size_t count, float3* out) {
+    if (!src.data || !out) {
+        return false;
+    }
+    switch (src.type) {
+        case VertexBuffer::AttributeType::FLOAT3:
+            memcpy(out, src.data, sizeof(float3) * count);
+            return true;
+        case VertexBuffer::AttributeType::BYTE3: {
+            auto const* in = static_cast<int8_t const*>(src.data);
+            for (size_t i = 0; i < count; i++) {
+                out[i] = float3(
+                        normalized ? decodeSNorm8(in[i * 3 + 0]) : float(in[i * 3 + 0]),
+                        normalized ? decodeSNorm8(in[i * 3 + 1]) : float(in[i * 3 + 1]),
+                        normalized ? decodeSNorm8(in[i * 3 + 2]) : float(in[i * 3 + 2]));
+            }
+            return true;
+        }
+        case VertexBuffer::AttributeType::UBYTE3: {
+            auto const* in = static_cast<uint8_t const*>(src.data);
+            for (size_t i = 0; i < count; i++) {
+                out[i] = float3(
+                        normalized ? in[i * 3 + 0] / 255.0f : float(in[i * 3 + 0]),
+                        normalized ? in[i * 3 + 1] / 255.0f : float(in[i * 3 + 1]),
+                        normalized ? in[i * 3 + 2] / 255.0f : float(in[i * 3 + 2]));
+            }
+            return true;
+        }
+        case VertexBuffer::AttributeType::SHORT3: {
+            auto const* in = static_cast<int16_t const*>(src.data);
+            for (size_t i = 0; i < count; i++) {
+                out[i] = float3(
+                        normalized ? decodeSNorm16(in[i * 3 + 0]) : float(in[i * 3 + 0]),
+                        normalized ? decodeSNorm16(in[i * 3 + 1]) : float(in[i * 3 + 1]),
+                        normalized ? decodeSNorm16(in[i * 3 + 2]) : float(in[i * 3 + 2]));
+            }
+            return true;
+        }
+        case VertexBuffer::AttributeType::USHORT3: {
+            auto const* in = static_cast<uint16_t const*>(src.data);
+            for (size_t i = 0; i < count; i++) {
+                out[i] = float3(
+                        normalized ? in[i * 3 + 0] / 65535.0f : float(in[i * 3 + 0]),
+                        normalized ? in[i * 3 + 1] / 65535.0f : float(in[i * 3 + 1]),
+                        normalized ? in[i * 3 + 2] / 65535.0f : float(in[i * 3 + 2]));
+            }
+            return true;
+        }
+        default:
+            return false;
+    }
+}
+
+bool convertAccessorToFloat4(AccessorData const& src, bool normalized, size_t count, float4* out) {
+    if (!src.data || !out) {
+        return false;
+    }
+    switch (src.type) {
+        case VertexBuffer::AttributeType::FLOAT4:
+            memcpy(out, src.data, sizeof(float4) * count);
+            return true;
+        case VertexBuffer::AttributeType::BYTE4: {
+            auto const* in = static_cast<int8_t const*>(src.data);
+            for (size_t i = 0; i < count; i++) {
+                out[i] = float4(
+                        normalized ? decodeSNorm8(in[i * 4 + 0]) : float(in[i * 4 + 0]),
+                        normalized ? decodeSNorm8(in[i * 4 + 1]) : float(in[i * 4 + 1]),
+                        normalized ? decodeSNorm8(in[i * 4 + 2]) : float(in[i * 4 + 2]),
+                        normalized ? decodeSNorm8(in[i * 4 + 3]) : float(in[i * 4 + 3]));
+            }
+            return true;
+        }
+        case VertexBuffer::AttributeType::UBYTE4: {
+            auto const* in = static_cast<uint8_t const*>(src.data);
+            for (size_t i = 0; i < count; i++) {
+                out[i] = float4(
+                        normalized ? in[i * 4 + 0] / 255.0f : float(in[i * 4 + 0]),
+                        normalized ? in[i * 4 + 1] / 255.0f : float(in[i * 4 + 1]),
+                        normalized ? in[i * 4 + 2] / 255.0f : float(in[i * 4 + 2]),
+                        normalized ? in[i * 4 + 3] / 255.0f : float(in[i * 4 + 3]));
+            }
+            return true;
+        }
+        case VertexBuffer::AttributeType::SHORT4: {
+            auto const* in = static_cast<int16_t const*>(src.data);
+            for (size_t i = 0; i < count; i++) {
+                out[i] = float4(
+                        normalized ? decodeSNorm16(in[i * 4 + 0]) : float(in[i * 4 + 0]),
+                        normalized ? decodeSNorm16(in[i * 4 + 1]) : float(in[i * 4 + 1]),
+                        normalized ? decodeSNorm16(in[i * 4 + 2]) : float(in[i * 4 + 2]),
+                        normalized ? decodeSNorm16(in[i * 4 + 3]) : float(in[i * 4 + 3]));
+            }
+            return true;
+        }
+        case VertexBuffer::AttributeType::USHORT4: {
+            auto const* in = static_cast<uint16_t const*>(src.data);
+            for (size_t i = 0; i < count; i++) {
+                out[i] = float4(
+                        normalized ? in[i * 4 + 0] / 65535.0f : float(in[i * 4 + 0]),
+                        normalized ? in[i * 4 + 1] / 65535.0f : float(in[i * 4 + 1]),
+                        normalized ? in[i * 4 + 2] / 65535.0f : float(in[i * 4 + 2]),
+                        normalized ? in[i * 4 + 3] / 65535.0f : float(in[i * 4 + 3]));
+            }
+            return true;
+        }
+        default:
+            return false;
+    }
+}
 
 AccessorData makeZeroedAccessorData(cgltf_accessor const* accessor, size_t const vertexCount) {
     VertexBuffer::AttributeType permitType, actualType;
@@ -287,7 +447,12 @@ short4* buildFallbackTangentQuats(const cgltf_primitive* prim, size_t const vert
     }
 
     AccessorData normalData = readAccessorData(normalAccessor, vertexCount);
-    if (!normalData.data || normalData.type != VertexBuffer::AttributeType::FLOAT3) {
+    float3* normalFloats = static_cast<float3*>(malloc(sizeof(float3) * vertexCount));
+    if (!normalFloats ||
+            !convertAccessorToFloat3(normalData, normalAccessor->normalized, vertexCount, normalFloats)) {
+        if (normalFloats) {
+            free(normalFloats);
+        }
         if (normalData.data) {
             free(normalData.data);
         }
@@ -299,16 +464,25 @@ short4* buildFallbackTangentQuats(const cgltf_primitive* prim, size_t const vert
             .totalBytes = 0,
             .data = nullptr
     };
+    float4* tangentFloats = nullptr;
     if (tangentAccessor) {
         tangentData = readAccessorData(tangentAccessor, vertexCount);
+        tangentFloats = static_cast<float4*>(malloc(sizeof(float4) * vertexCount));
+        if (!tangentFloats ||
+                !convertAccessorToFloat4(tangentData, tangentAccessor->normalized, vertexCount, tangentFloats)) {
+            if (tangentFloats) {
+                free(tangentFloats);
+            }
+            tangentFloats = nullptr;
+        }
     }
 
     geometry::SurfaceOrientation::Builder sob;
     sob.vertexCount(vertexCount);
-    sob.normals(static_cast<float3*>(normalData.data));
+    sob.normals(normalFloats);
 
-    if (tangentData.data && tangentData.type == VertexBuffer::AttributeType::FLOAT4) {
-        sob.tangents(static_cast<float4*>(tangentData.data));
+    if (tangentFloats) {
+        sob.tangents(tangentFloats);
     }
 
     std::unique_ptr<geometry::SurfaceOrientation> helper(sob.build());
@@ -319,8 +493,12 @@ short4* buildFallbackTangentQuats(const cgltf_primitive* prim, size_t const vert
     }
 
     free(normalData.data);
+    free(normalFloats);
     if (tangentData.data) {
         free(tangentData.data);
+    }
+    if (tangentFloats) {
+        free(tangentFloats);
     }
 
     return quats;
@@ -486,6 +664,7 @@ std::vector<BufferSlot> computeGeometries(cgltf_primitive const* prim, uint8_t c
                 VertexBuffer::AttributeType type;
                 size_t requiredSize;
                 void* data;
+                bool shouldNormalize = false;
 
                 if (cattr_index == GENERATED_0 || cattr_index == GENERATED_1) {
                     // Synthetic attribute with no real accessor — generate placeholder data,
@@ -544,9 +723,14 @@ std::vector<BufferSlot> computeGeometries(cgltf_primitive const* prim, uint8_t c
                     type = result.type;
                     requiredSize = result.totalBytes;
                     data = result.data;
+                    shouldNormalize = accessor->normalized && isIntegerAttributeType(type) &&
+                            !isFloatAttributeType(type);
                 }
 
                 vertexBufferBuilder.attribute(vattr, slot, type);
+                if (shouldNormalize) {
+                    vertexBufferBuilder.normalized(vattr);
+                }
                 vslots.push_back({
                     .slot = slot,
                     .sizeInBytes = requiredSize,
