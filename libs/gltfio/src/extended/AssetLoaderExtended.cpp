@@ -24,6 +24,8 @@
 
 #include <filament/BufferObject.h>
 
+#include <geometry/SurfaceOrientation.h>
+
 #include <utils/JobSystem.h>
 #include <utils/Log.h>
 #include <utils/Panic.h>
@@ -36,10 +38,6 @@
 namespace filament::gltfio {
 
 namespace {
-
-constexpr uint8_t const VERTEX_JOB = 0x1;
-constexpr uint8_t const INDEX_JOB = 0x2;
-constexpr uint8_t const MORPH_TARGET_JOB = 0x4;
 
 constexpr int const GENERATED_0 = FFilamentAsset::ResourceInfoExtended::GENERATED_0_INDEX;
 constexpr int const GENERATED_1 = FFilamentAsset::ResourceInfoExtended::GENERATED_1_INDEX;
@@ -116,6 +114,394 @@ inline std::tuple<VertexBuffer::AttributeType, size_t, void*> getVertexBundle(
             PANIC_POSTCONDITION("Unexpected vertex attribute %d", static_cast<int>(attrib));
     }
     return {type, byteCount, data};
+}
+
+// Returns the byte stride of a Filament VertexBuffer AttributeType.
+inline size_t filamentAttrByteSize(VertexBuffer::AttributeType t) {
+    switch (t) {
+        case VertexBuffer::AttributeType::BYTE:
+        case VertexBuffer::AttributeType::UBYTE:   return 1;
+        case VertexBuffer::AttributeType::BYTE2:
+        case VertexBuffer::AttributeType::UBYTE2:
+        case VertexBuffer::AttributeType::SHORT:
+        case VertexBuffer::AttributeType::USHORT:
+        case VertexBuffer::AttributeType::HALF:    return 2;
+        case VertexBuffer::AttributeType::BYTE3:
+        case VertexBuffer::AttributeType::UBYTE3:  return 3;
+        case VertexBuffer::AttributeType::BYTE4:
+        case VertexBuffer::AttributeType::UBYTE4:
+        case VertexBuffer::AttributeType::SHORT2:
+        case VertexBuffer::AttributeType::USHORT2:
+        case VertexBuffer::AttributeType::INT:
+        case VertexBuffer::AttributeType::UINT:
+        case VertexBuffer::AttributeType::FLOAT:
+        case VertexBuffer::AttributeType::HALF2:   return 4;
+        case VertexBuffer::AttributeType::SHORT3:
+        case VertexBuffer::AttributeType::USHORT3:
+        case VertexBuffer::AttributeType::HALF3:   return 6;
+        case VertexBuffer::AttributeType::SHORT4:
+        case VertexBuffer::AttributeType::USHORT4:
+        case VertexBuffer::AttributeType::FLOAT2:
+        case VertexBuffer::AttributeType::HALF4:   return 8;
+        case VertexBuffer::AttributeType::FLOAT3:  return 12;
+        case VertexBuffer::AttributeType::FLOAT4:  return 16;
+        default: return 0;
+    }
+}
+
+inline bool isFloatAttributeType(VertexBuffer::AttributeType t) {
+    switch (t) {
+        case VertexBuffer::AttributeType::FLOAT:
+        case VertexBuffer::AttributeType::FLOAT2:
+        case VertexBuffer::AttributeType::FLOAT3:
+        case VertexBuffer::AttributeType::FLOAT4:
+        case VertexBuffer::AttributeType::HALF:
+        case VertexBuffer::AttributeType::HALF2:
+        case VertexBuffer::AttributeType::HALF3:
+        case VertexBuffer::AttributeType::HALF4:
+            return true;
+        default:
+            return false;
+    }
+}
+
+inline bool isIntegerAttributeType(VertexBuffer::AttributeType t) {
+    switch (t) {
+        case VertexBuffer::AttributeType::BYTE:
+        case VertexBuffer::AttributeType::BYTE2:
+        case VertexBuffer::AttributeType::BYTE3:
+        case VertexBuffer::AttributeType::BYTE4:
+        case VertexBuffer::AttributeType::UBYTE:
+        case VertexBuffer::AttributeType::UBYTE2:
+        case VertexBuffer::AttributeType::UBYTE3:
+        case VertexBuffer::AttributeType::UBYTE4:
+        case VertexBuffer::AttributeType::SHORT:
+        case VertexBuffer::AttributeType::SHORT2:
+        case VertexBuffer::AttributeType::SHORT3:
+        case VertexBuffer::AttributeType::SHORT4:
+        case VertexBuffer::AttributeType::USHORT:
+        case VertexBuffer::AttributeType::USHORT2:
+        case VertexBuffer::AttributeType::USHORT3:
+        case VertexBuffer::AttributeType::USHORT4:
+        case VertexBuffer::AttributeType::INT:
+        case VertexBuffer::AttributeType::UINT:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// Reads a vertex attribute from a decoded cgltf_accessor into a malloc'd buffer.
+// Handles the has_meshopt_compression data path (reads from buffer_view->data).
+// For types requiring conversion (e.g. SNORM8/UNORM8/SNORM16/UNORM16 → float),
+// normalises component-wise. Returns {permitType, totalBytes, data} — caller owns the buffer.
+struct AccessorData {
+    VertexBuffer::AttributeType type;
+    size_t totalBytes;
+    void* data;
+};
+
+inline float decodeSNorm8(int8_t raw) {
+    return raw < -127 ? -1.0f : raw / 127.0f;
+}
+
+inline float decodeSNorm16(int16_t raw) {
+    return raw < -32767 ? -1.0f : raw / 32767.0f;
+}
+
+bool convertAccessorToFloat3(AccessorData const& src, bool normalized, size_t count, float3* out) {
+    if (!src.data || !out) {
+        return false;
+    }
+    switch (src.type) {
+        case VertexBuffer::AttributeType::FLOAT3:
+            memcpy(out, src.data, sizeof(float3) * count);
+            return true;
+        case VertexBuffer::AttributeType::BYTE3: {
+            auto const* in = static_cast<int8_t const*>(src.data);
+            for (size_t i = 0; i < count; i++) {
+                out[i] = float3(
+                        normalized ? decodeSNorm8(in[i * 3 + 0]) : float(in[i * 3 + 0]),
+                        normalized ? decodeSNorm8(in[i * 3 + 1]) : float(in[i * 3 + 1]),
+                        normalized ? decodeSNorm8(in[i * 3 + 2]) : float(in[i * 3 + 2]));
+            }
+            return true;
+        }
+        case VertexBuffer::AttributeType::UBYTE3: {
+            auto const* in = static_cast<uint8_t const*>(src.data);
+            for (size_t i = 0; i < count; i++) {
+                out[i] = float3(
+                        normalized ? in[i * 3 + 0] / 255.0f : float(in[i * 3 + 0]),
+                        normalized ? in[i * 3 + 1] / 255.0f : float(in[i * 3 + 1]),
+                        normalized ? in[i * 3 + 2] / 255.0f : float(in[i * 3 + 2]));
+            }
+            return true;
+        }
+        case VertexBuffer::AttributeType::SHORT3: {
+            auto const* in = static_cast<int16_t const*>(src.data);
+            for (size_t i = 0; i < count; i++) {
+                out[i] = float3(
+                        normalized ? decodeSNorm16(in[i * 3 + 0]) : float(in[i * 3 + 0]),
+                        normalized ? decodeSNorm16(in[i * 3 + 1]) : float(in[i * 3 + 1]),
+                        normalized ? decodeSNorm16(in[i * 3 + 2]) : float(in[i * 3 + 2]));
+            }
+            return true;
+        }
+        case VertexBuffer::AttributeType::USHORT3: {
+            auto const* in = static_cast<uint16_t const*>(src.data);
+            for (size_t i = 0; i < count; i++) {
+                out[i] = float3(
+                        normalized ? in[i * 3 + 0] / 65535.0f : float(in[i * 3 + 0]),
+                        normalized ? in[i * 3 + 1] / 65535.0f : float(in[i * 3 + 1]),
+                        normalized ? in[i * 3 + 2] / 65535.0f : float(in[i * 3 + 2]));
+            }
+            return true;
+        }
+        default:
+            return false;
+    }
+}
+
+bool convertAccessorToFloat4(AccessorData const& src, bool normalized, size_t count, float4* out) {
+    if (!src.data || !out) {
+        return false;
+    }
+    switch (src.type) {
+        case VertexBuffer::AttributeType::FLOAT4:
+            memcpy(out, src.data, sizeof(float4) * count);
+            return true;
+        case VertexBuffer::AttributeType::BYTE4: {
+            auto const* in = static_cast<int8_t const*>(src.data);
+            for (size_t i = 0; i < count; i++) {
+                out[i] = float4(
+                        normalized ? decodeSNorm8(in[i * 4 + 0]) : float(in[i * 4 + 0]),
+                        normalized ? decodeSNorm8(in[i * 4 + 1]) : float(in[i * 4 + 1]),
+                        normalized ? decodeSNorm8(in[i * 4 + 2]) : float(in[i * 4 + 2]),
+                        normalized ? decodeSNorm8(in[i * 4 + 3]) : float(in[i * 4 + 3]));
+            }
+            return true;
+        }
+        case VertexBuffer::AttributeType::UBYTE4: {
+            auto const* in = static_cast<uint8_t const*>(src.data);
+            for (size_t i = 0; i < count; i++) {
+                out[i] = float4(
+                        normalized ? in[i * 4 + 0] / 255.0f : float(in[i * 4 + 0]),
+                        normalized ? in[i * 4 + 1] / 255.0f : float(in[i * 4 + 1]),
+                        normalized ? in[i * 4 + 2] / 255.0f : float(in[i * 4 + 2]),
+                        normalized ? in[i * 4 + 3] / 255.0f : float(in[i * 4 + 3]));
+            }
+            return true;
+        }
+        case VertexBuffer::AttributeType::SHORT4: {
+            auto const* in = static_cast<int16_t const*>(src.data);
+            for (size_t i = 0; i < count; i++) {
+                out[i] = float4(
+                        normalized ? decodeSNorm16(in[i * 4 + 0]) : float(in[i * 4 + 0]),
+                        normalized ? decodeSNorm16(in[i * 4 + 1]) : float(in[i * 4 + 1]),
+                        normalized ? decodeSNorm16(in[i * 4 + 2]) : float(in[i * 4 + 2]),
+                        normalized ? decodeSNorm16(in[i * 4 + 3]) : float(in[i * 4 + 3]));
+            }
+            return true;
+        }
+        case VertexBuffer::AttributeType::USHORT4: {
+            auto const* in = static_cast<uint16_t const*>(src.data);
+            for (size_t i = 0; i < count; i++) {
+                out[i] = float4(
+                        normalized ? in[i * 4 + 0] / 65535.0f : float(in[i * 4 + 0]),
+                        normalized ? in[i * 4 + 1] / 65535.0f : float(in[i * 4 + 1]),
+                        normalized ? in[i * 4 + 2] / 65535.0f : float(in[i * 4 + 2]),
+                        normalized ? in[i * 4 + 3] / 65535.0f : float(in[i * 4 + 3]));
+            }
+            return true;
+        }
+        default:
+            return false;
+    }
+}
+
+AccessorData makeZeroedAccessorData(cgltf_accessor const* accessor, size_t const vertexCount) {
+    VertexBuffer::AttributeType permitType, actualType;
+    getElementType(accessor->type, accessor->component_type, &permitType, &actualType);
+    size_t const totalBytes = filamentAttrByteSize(permitType) * vertexCount;
+    void* data = calloc(totalBytes, 1);
+    return {permitType, totalBytes, data};
+}
+
+AccessorData readAccessorData(cgltf_accessor const* accessor, size_t const vertexCount) {
+    assert_invariant(accessor);
+    assert_invariant(accessor->count == vertexCount);
+
+    if (!accessor->buffer_view) {
+        utils::slog.w << "Missing buffer_view for accessor; using zeroed fallback data."
+                      << utils::io::endl;
+        return makeZeroedAccessorData(accessor, vertexCount);
+    }
+
+    VertexBuffer::AttributeType permitType, actualType;
+    getElementType(accessor->type, accessor->component_type, &permitType, &actualType);
+
+    bool const needsConversion = (permitType != actualType);
+    size_t const outElemSize = filamentAttrByteSize(permitType);
+    size_t const totalBytes = outElemSize * vertexCount;
+    auto* out = static_cast<uint8_t*>(malloc(totalBytes));
+
+    // Get the pointer to the decoded accessor data, respecting the meshopt path.
+    uint8_t const* src = nullptr;
+    if (accessor->buffer_view->has_meshopt_compression) {
+        src = static_cast<uint8_t const*>(accessor->buffer_view->data);
+        if (!src) {
+            free(out);
+            utils::slog.w << "Missing meshopt-decoded buffer_view->data for accessor; using "
+                             "zeroed fallback data."
+                          << utils::io::endl;
+            return makeZeroedAccessorData(accessor, vertexCount);
+        }
+        src += accessor->offset;
+    } else {
+        auto const* buffer = accessor->buffer_view->buffer;
+        src = buffer ? static_cast<uint8_t const*>(buffer->data) : nullptr;
+        if (!src) {
+            free(out);
+            utils::slog.w << "Missing buffer->data for accessor; using zeroed fallback data."
+                          << utils::io::endl;
+            return makeZeroedAccessorData(accessor, vertexCount);
+        }
+        src += utility::computeBindingOffset(accessor);
+    }
+
+    size_t const compCount = cgltf_num_components(accessor->type);
+    size_t const srcStride = accessor->stride > 0 ? accessor->stride
+                                                   : compCount * filamentAttrByteSize(actualType);
+
+    if (!needsConversion) {
+        // Raw stride-aware copy: src and dest have the same element format.
+        if (srcStride == outElemSize) {
+            memcpy(out, src, totalBytes);
+        } else {
+            for (size_t i = 0; i < vertexCount; i++) {
+                memcpy(out + i * outElemSize, src + i * srcStride, outElemSize);
+            }
+        }
+    } else {
+        // Integer → float conversion: SNORM8/UNORM8/SNORM16/UNORM16 → float.
+        // The output permitType is always a FLOAT* type in these cases.
+        float* outF = reinterpret_cast<float*>(out);
+        for (size_t i = 0; i < vertexCount; i++) {
+            uint8_t const* elem = src + i * srcStride;
+            for (size_t c = 0; c < compCount; c++) {
+                float v = 0.0f;
+                switch (accessor->component_type) {
+                    case cgltf_component_type_r_8: {
+                        int8_t raw;
+                        memcpy(&raw, elem + c, 1);
+                        v = raw < -127 ? -1.0f : raw / 127.0f;
+                        break;
+                    }
+                    case cgltf_component_type_r_8u: {
+                        uint8_t raw;
+                        memcpy(&raw, elem + c, 1);
+                        v = raw / 255.0f;
+                        break;
+                    }
+                    case cgltf_component_type_r_16: {
+                        int16_t raw;
+                        memcpy(&raw, elem + c * 2, 2);
+                        v = raw < -32767 ? -1.0f : raw / 32767.0f;
+                        break;
+                    }
+                    case cgltf_component_type_r_16u: {
+                        uint16_t raw;
+                        memcpy(&raw, elem + c * 2, 2);
+                        v = raw / 65535.0f;
+                        break;
+                    }
+                    default:
+                        break;
+                }
+                outF[i * compCount + c] = v;
+            }
+        }
+    }
+
+    return {permitType, totalBytes, out};
+}
+
+// Builds tangent-space quaternions from decoded normal / tangent data using SurfaceOrientation.
+// Returns nullptr on failure; caller owns returned memory (free()).
+short4* buildFallbackTangentQuats(const cgltf_primitive* prim, size_t const vertexCount) {
+    cgltf_accessor const* normalAccessor = nullptr;
+    cgltf_accessor const* tangentAccessor = nullptr;
+
+    for (cgltf_size i = 0; i < prim->attributes_count; i++) {
+        auto const& attr = prim->attributes[i];
+        if (!normalAccessor && attr.type == cgltf_attribute_type_normal) {
+            normalAccessor = attr.data;
+        }
+        if (!tangentAccessor && attr.type == cgltf_attribute_type_tangent) {
+            tangentAccessor = attr.data;
+        }
+    }
+
+    if (!normalAccessor) {
+        return nullptr;
+    }
+
+    AccessorData normalData = readAccessorData(normalAccessor, vertexCount);
+    float3* normalFloats = static_cast<float3*>(malloc(sizeof(float3) * vertexCount));
+    if (!normalFloats ||
+            !convertAccessorToFloat3(normalData, normalAccessor->normalized, vertexCount, normalFloats)) {
+        if (normalFloats) {
+            free(normalFloats);
+        }
+        if (normalData.data) {
+            free(normalData.data);
+        }
+        return nullptr;
+    }
+
+    AccessorData tangentData{
+            .type = VertexBuffer::AttributeType::FLOAT4,
+            .totalBytes = 0,
+            .data = nullptr
+    };
+    float4* tangentFloats = nullptr;
+    if (tangentAccessor) {
+        tangentData = readAccessorData(tangentAccessor, vertexCount);
+        tangentFloats = static_cast<float4*>(malloc(sizeof(float4) * vertexCount));
+        if (!tangentFloats ||
+                !convertAccessorToFloat4(tangentData, tangentAccessor->normalized, vertexCount, tangentFloats)) {
+            if (tangentFloats) {
+                free(tangentFloats);
+            }
+            tangentFloats = nullptr;
+        }
+    }
+
+    geometry::SurfaceOrientation::Builder sob;
+    sob.vertexCount(vertexCount);
+    sob.normals(normalFloats);
+
+    if (tangentFloats) {
+        sob.tangents(tangentFloats);
+    }
+
+    std::unique_ptr<geometry::SurfaceOrientation> helper(sob.build());
+    short4* quats = nullptr;
+    if (helper) {
+        quats = static_cast<short4*>(malloc(sizeof(short4) * vertexCount));
+        helper->getQuats(quats, vertexCount);
+    }
+
+    free(normalData.data);
+    free(normalFloats);
+    if (tangentData.data) {
+        free(tangentData.data);
+    }
+    if (tangentFloats) {
+        free(tangentFloats);
+    }
+
+    return quats;
 }
 
 // This will run the jobs to create tangent spaces if necessary, or simply forward the data if the
@@ -259,6 +645,124 @@ std::vector<BufferSlot> computeGeometries(cgltf_primitive const* prim, uint8_t c
                     [vertexBuffer](BufferSlot& slot) { slot.vertices = vertexBuffer; });
             slots.insert(slots.end(), vslots.begin(), vslots.end());
         }
+
+        // When VERTEX_JOB is off (either mGenerateNormals=false, or the primitive has quantized
+        // attribute types that TangentsJobExtended cannot process), no VertexBuffer is produced
+        // by the tangent job. We build one here using real decoded accessor data for all
+        // attributes except TANGENTS, which gets an identity quaternion placeholder.
+        // Result: correct geometry and UV mapping; flat shading (lighting incorrect).
+        if ((jobType & VERTEX_JOB) == 0 && (jobType & INDEX_JOB) != 0 && !attributesMap.empty()) {
+            auto vertexBufferBuilder =
+                    VertexBuffer::Builder().enableBufferObjects().vertexCount(vertexCount);
+
+            std::vector<BufferSlot> vslots;
+            bool slottedTangent = false;
+            int maxSlot = 0;
+            for (auto [cgltfAttr, filamentAttr] : attributesMap) {
+                auto const [cattr_type, cattr_index] = cgltfAttr;
+                auto const [vattr, slot] = filamentAttr;
+                VertexBuffer::AttributeType type;
+                size_t requiredSize;
+                void* data;
+                bool shouldNormalize = false;
+
+                if (cattr_index == GENERATED_0 || cattr_index == GENERATED_1) {
+                    // Synthetic attribute with no real accessor — generate placeholder data,
+                    // matching the VERTEX_JOB path behaviour for generated attributes.
+                    size_t attrByteCount;
+                    if (vattr == VertexAttribute::COLOR) {
+                        type = VertexBuffer::AttributeType::FLOAT4;
+                        attrByteCount = sizeof(float4);
+                    } else {
+                        type = VertexBuffer::AttributeType::FLOAT2;
+                        attrByteCount = sizeof(float2);
+                    }
+                    requiredSize = attrByteCount * vertexCount;
+                    auto* genData = static_cast<uint8_t*>(malloc(requiredSize));
+                    if (vattr == VertexAttribute::COLOR) {
+                        float4* dataf = (float4*) genData;
+                        for (size_t i = 0; i < vertexCount; ++i) {
+                            dataf[i] = float4(1.0, 1.0, 1.0, 1.0f);
+                        }
+                    } else {
+                        memset(genData, 0xff, requiredSize);
+                    }
+                    data = genData;
+
+                } else if (vattr == VertexAttribute::TANGENTS) {
+                    // Tangent job is disabled for this primitive, but we can still derive
+                    // tangent-space quats from decoded normals/tangents.
+                    // If derivation fails, fall back to identity quats (flat shading).
+                    type = VertexBuffer::AttributeType::SHORT4;
+                    vertexBufferBuilder.normalized(vattr);
+                    slottedTangent = true;
+                    requiredSize = sizeof(short4) * vertexCount;
+                    short4* tbnData = buildFallbackTangentQuats(prim, vertexCount);
+                    if (!tbnData) {
+                        tbnData = static_cast<short4*>(malloc(requiredSize));
+                        for (size_t i = 0; i < vertexCount; ++i) {
+                            tbnData[i] = short4{0, 0, 0, 0x7FFF};
+                        }
+                    }
+                    data = tbnData;
+
+                } else {
+                    // Real attribute — look up the cgltf_accessor and read decoded data.
+                    // readAccessorData handles the has_meshopt_compression path and any
+                    // integer→float type conversions required by getElementType.
+                    cgltf_accessor const* accessor = nullptr;
+                    for (cgltf_size i = 0; i < prim->attributes_count; i++) {
+                        if (prim->attributes[i].type == cattr_type &&
+                                prim->attributes[i].index == cattr_index) {
+                            accessor = prim->attributes[i].data;
+                            break;
+                        }
+                    }
+                    assert_invariant(accessor);
+                    auto result = readAccessorData(accessor, vertexCount);
+                    type = result.type;
+                    requiredSize = result.totalBytes;
+                    data = result.data;
+                    shouldNormalize = accessor->normalized && isIntegerAttributeType(type) &&
+                            !isFloatAttributeType(type);
+                }
+
+                vertexBufferBuilder.attribute(vattr, slot, type);
+                if (shouldNormalize) {
+                    vertexBufferBuilder.normalized(vattr);
+                }
+                vslots.push_back({
+                    .slot = slot,
+                    .sizeInBytes = requiredSize,
+                    .data = data,
+                });
+                maxSlot = std::max(maxSlot, slot);
+            }
+            // For lit materials, always include a tangent slot if not already present.
+            if (!slottedTangent && !isUnlit) {
+                auto const slot = maxSlot + 1;
+                vertexBufferBuilder.attribute(VertexAttribute::TANGENTS, slot,
+                        VertexBuffer::AttributeType::SHORT4);
+                vertexBufferBuilder.normalized(VertexAttribute::TANGENTS);
+                size_t const requiredSize = sizeof(short4) * vertexCount;
+                auto* tbnData = static_cast<short4*>(malloc(requiredSize));
+                for (size_t i = 0; i < vertexCount; ++i) {
+                    tbnData[i] = short4{0, 0, 0, 0x7FFF};
+                }
+                vslots.push_back({
+                    .slot = slot,
+                    .sizeInBytes = requiredSize,
+                    .data = tbnData,
+                });
+            }
+            assert_invariant(!vslots.empty());
+            vertexBufferBuilder.bufferCount(vslots.size());
+            auto vertexBuffer = vertexBufferBuilder.build(*engine);
+            std::for_each(vslots.begin(), vslots.end(),
+                    [vertexBuffer](BufferSlot& slot) { slot.vertices = vertexBuffer; });
+            slots.insert(slots.end(), vslots.begin(), vslots.end());
+        }
+
         if ((jobType & INDEX_JOB) != 0) {
             auto indexBuffer = IndexBuffer::Builder()
                                        .indexCount(out.triangleCount * 3)
@@ -330,7 +834,26 @@ bool AssetLoaderExtended::createPrimitive(Input* input, Output* out,
         jobType |= INDEX_JOB;
     }
 
-    jobType |= VERTEX_JOB;
+    // Gate VERTEX_JOB on both the caller-supplied flag and per-primitive attribute type detection.
+    // TangentsJobExtended::unpack() only handles r_32f, r_8u, and r_16u component types.
+    // Packed GLBs from gltfpack use SNORM8 (r_8, e.g. oct-filtered normals) and SNORM16
+    // (r_16, e.g. KHR_mesh_quantization positions), which would hit PANIC_POSTCONDITION in
+    // unpack(). Checking per-primitive is more precise than a global flag: a single glTF can
+    // have some primitives with standard float attributes and others with quantized attributes.
+    if (mGenerateNormals) {
+        bool canRunVertexJob = true;
+        for (cgltf_size i = 0; i < prim->attributes_count && canRunVertexJob; i++) {
+            cgltf_component_type const ct = prim->attributes[i].data->component_type;
+            if (ct != cgltf_component_type_r_32f &&
+                ct != cgltf_component_type_r_8u &&
+                ct != cgltf_component_type_r_16u) {
+                canRunVertexJob = false;
+            }
+        }
+        if (canRunVertexJob) {
+            jobType |= VERTEX_JOB;
+        }
+    }
 
     AttributesMap attributesMap;
     bool hasUv0 = false, hasUv1 = false, hasVertexColor = false, hasNormals = false;
@@ -525,13 +1048,37 @@ bool AssetLoaderExtended::createPrimitive(Input* input, Output* out,
                 slotCount++};
     }
 
-    if (!mCgltfBuffersLoaded) {
-        mCgltfBuffersLoaded = utility::loadCgltfBuffers(gltf, mGltfPath.c_str(), mUriDataCache);
-        if (!mCgltfBuffersLoaded) {
+    auto needsBufferLoad = [](cgltf_data const* data) {
+        for (cgltf_size i = 0; i < data->buffers_count; i++) {
+            if (data->buffers[i].size > 0 && !data->buffers[i].data) {
+                return true;
+            }
+        }
+        return false;
+    };
+    auto needsMeshoptDecode = [](cgltf_data const* data) {
+        for (cgltf_size i = 0; i < data->buffer_views_count; i++) {
+            auto const& bv = data->buffer_views[i];
+            if (bv.has_meshopt_compression && !bv.data) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    bool const seenBefore = mDecodedCgltfDatas.find(gltf) != mDecodedCgltfDatas.end();
+    bool const shouldLoadBuffers = !seenBefore || needsBufferLoad(gltf);
+    bool const shouldDecodeMeshopt = !seenBefore || needsMeshoptDecode(gltf);
+
+    if (shouldLoadBuffers) {
+        if (!utility::loadCgltfBuffers(gltf, mGltfPath.c_str(), mUriDataCache)) {
             return false;
         }
+    }
+    if (shouldDecodeMeshopt) {
         utility::decodeMeshoptCompression(gltf);
     }
+    mDecodedCgltfDatas.insert(gltf);
 
     utility::decodeDracoMeshes(gltf, prim, input->dracoCache);
 

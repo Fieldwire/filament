@@ -363,6 +363,34 @@ void TangentsJobExtended::run(Params* params) {
     auto const vertexCount = prim.attributes[0].data->count;
     assert_invariant(vertexCount > 0);
 
+    // INDEX_JOB-only path: skip all vertex attribute unpacking (which would crash on
+    // meshopt-compressed buffers that haven't been decoded yet by ResourceLoader).
+    // Just populate out.triangles directly from prim.indices and return early.
+    if (!(params->jobType & VERTEX_JOB)) {
+        size_t const triangleCount = prim.indices
+                ? (prim.indices->count / 3)
+                : (vertexCount / 3);
+        auto* triangles = new uint3[triangleCount];
+        if (prim.indices) {
+            for (size_t tri = 0, j = 0; tri < triangleCount; ++tri) {
+                triangles[tri].x = cgltf_accessor_read_index(prim.indices, j++);
+                triangles[tri].y = cgltf_accessor_read_index(prim.indices, j++);
+                triangles[tri].z = cgltf_accessor_read_index(prim.indices, j++);
+            }
+        } else {
+            for (size_t tri = 0, j = 0; tri < triangleCount; ++tri) {
+                triangles[tri] = {(uint32_t)j, (uint32_t)(j+1), (uint32_t)(j+2)};
+                j += 3;
+            }
+        }
+        auto& out = params->out;
+        out.triangleCount = triangleCount;
+        out.triangles = triangles;
+        out.vertexCount = vertexCount;
+        // tbn, positions, uv0, etc. intentionally left null — not needed for PickingRegistry
+        return;
+    }
+
     std::unordered_map<uint8_t, cgltf_accessor const*> accessors;
     std::unordered_map<uint8_t, cgltf_accessor const*> morphAccessors;
     AttributeDataMap attributes;

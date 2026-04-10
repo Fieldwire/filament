@@ -26,6 +26,7 @@
 #include <cgltf.h>
 
 #include <string>
+#include <unordered_set>
 
 namespace filament::gltfio {
 
@@ -46,6 +47,11 @@ struct FilamentAttribute {
     VertexAttribute attribute;
     int slot;
 };
+
+// Job type flags used by AssetLoaderExtended and TangentsJobExtended.
+constexpr uint8_t VERTEX_JOB       = 0x1;
+constexpr uint8_t INDEX_JOB        = 0x2;
+constexpr uint8_t MORPH_TARGET_JOB = 0x4;
 
 // AssetLoaderExtended performs the same task as AssetLoader. Specifically, it takes the data from
 // cgltf and store them in CPU memory. These buffers are then forwarded to ResourceLoader for
@@ -69,9 +75,9 @@ struct AssetLoaderExtended {
             MaterialProvider& materials)
         : mEngine(engine),
           mGltfPath(config.gltfPath),
+          mGenerateNormals(config.generateNormals),
           mMaterials(materials),
-          mUriDataCache(std::make_shared<UriDataCache>()),
-          mCgltfBuffersLoaded(false) {}
+          mUriDataCache(std::make_shared<UriDataCache>()) {}
 
     ~AssetLoaderExtended() = default;
 
@@ -82,9 +88,10 @@ struct AssetLoaderExtended {
 private:
     filament::Engine* mEngine;
     std::string mGltfPath;
+    bool mGenerateNormals;
     MaterialProvider& mMaterials;
     UriDataCacheHandle mUriDataCache;
-    bool mCgltfBuffersLoaded;
+    std::unordered_set<cgltf_data const*> mDecodedCgltfDatas;
 };
 
 } // namespace filament::gltfio

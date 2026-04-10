@@ -313,6 +313,7 @@ Java_com_google_android_filament_gltfio_AssetLoader_nFwCreateAssetLoader(
 
     AssetConfigurationExtended ext = {
         .gltfPath = "",
+        .generateNormals = static_cast<bool>(generateNormals),
         .trianglePickingEnabled = static_cast<bool>(trianglePickingEnabled)
     };
 
