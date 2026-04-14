@@ -525,9 +525,12 @@ bool AssetLoaderExtended::createPrimitive(Input* input, Output* out,
                 slotCount++};
     }
 
-    if (!mCgltfBuffersLoaded) {
-        mCgltfBuffersLoaded = utility::loadCgltfBuffers(gltf, mGltfPath.c_str(), mUriDataCache);
-        if (!mCgltfBuffersLoaded) {
+    // Only do the expensive buffer load and meshopt decode once per filename for this loader.
+    if (auto const [pathIter, inserted] = mLoadedGltfPaths.emplace(mGltfPath); inserted) {
+        // failed to load
+        if (const bool loadSuccessful = utility::loadCgltfBuffers(gltf, mGltfPath.c_str(), mUriDataCache); !loadSuccessful) {
+            // Drop the entry so a later retry for the same file can try loading again.
+            mLoadedGltfPaths.erase(pathIter);
             return false;
         }
         utility::decodeMeshoptCompression(gltf);

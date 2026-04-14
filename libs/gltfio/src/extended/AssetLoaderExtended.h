@@ -26,6 +26,7 @@
 #include <cgltf.h>
 
 #include <string>
+#include <unordered_set>
 
 namespace filament::gltfio {
 
@@ -70,10 +71,14 @@ struct AssetLoaderExtended {
         : mEngine(engine),
           mGltfPath(config.gltfPath),
           mMaterials(materials),
-          mUriDataCache(std::make_shared<UriDataCache>()),
-          mCgltfBuffersLoaded(false) {}
+          mUriDataCache(std::make_shared<UriDataCache>()) {}
 
     ~AssetLoaderExtended() = default;
+
+    // Reset per-asset buffer-load bookkeeping before parsing a new glTF.
+    void beginAssetLoad() noexcept {
+        mLoadedGltfPaths.clear();
+    }
 
     bool createPrimitive(Input* input, Output* out, std::vector<BufferSlot>& outSlots);
 
@@ -84,7 +89,10 @@ private:
     std::string mGltfPath;
     MaterialProvider& mMaterials;
     UriDataCacheHandle mUriDataCache;
-    bool mCgltfBuffersLoaded;
+
+    // Track which filenames have already had cgltf buffer loading performed for the currently
+    // parsed asset, so repeated primitives in the same load do not reload the buffers.
+    std::unordered_set<std::string> mLoadedGltfPaths;
 };
 
 } // namespace filament::gltfio
