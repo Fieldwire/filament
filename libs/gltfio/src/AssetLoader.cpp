@@ -406,6 +406,12 @@ FFilamentAsset* FAssetLoader::createInstancedAsset(const uint8_t* bytes, uint32_
         return nullptr;
     }
 
+    if (mLoaderExtended) {
+        // The extended loader can outlive a single asset, so clear its per-asset buffer-load
+        // bookkeeping before starting a fresh parse.
+        mLoaderExtended->beginAssetLoad();
+    }
+
     FFilamentAsset* fAsset = createRootAsset(sourceAsset);
     if (mError) {
         delete fAsset;

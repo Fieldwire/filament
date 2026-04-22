@@ -75,6 +75,11 @@ struct AssetLoaderExtended {
 
     ~AssetLoaderExtended() = default;
 
+    // Reset per-asset buffer-load bookkeeping before parsing a new glTF.
+    void beginAssetLoad() noexcept {
+        mCgltfBuffersLoaded = false;
+    }
+
     bool createPrimitive(Input* input, Output* out, std::vector<BufferSlot>& outSlots);
 
     UriDataCacheHandle getUriDataCache() const noexcept { return mUriDataCache; }
@@ -84,7 +89,9 @@ private:
     std::string mGltfPath;
     MaterialProvider& mMaterials;
     UriDataCacheHandle mUriDataCache;
-    bool mCgltfBuffersLoaded;
+
+    // Track whether cgltf buffer loading has already run for the current asset parse.
+    bool mCgltfBuffersLoaded = false;
 };
 
 } // namespace filament::gltfio

@@ -525,11 +525,13 @@ bool AssetLoaderExtended::createPrimitive(Input* input, Output* out,
                 slotCount++};
     }
 
+    // Only do the expensive buffer load and meshopt decode once per asset parse for the
+    // configured glTF base path. beginAssetLoad() clears this flag before each new parse.
     if (!mCgltfBuffersLoaded) {
-        mCgltfBuffersLoaded = utility::loadCgltfBuffers(gltf, mGltfPath.c_str(), mUriDataCache);
-        if (!mCgltfBuffersLoaded) {
+        if (const bool loadSuccessful = utility::loadCgltfBuffers(gltf, mGltfPath.c_str(), mUriDataCache); !loadSuccessful) {
             return false;
         }
+        mCgltfBuffersLoaded = true;
         utility::decodeMeshoptCompression(gltf);
     }
 

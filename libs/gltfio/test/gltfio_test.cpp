@@ -45,10 +45,33 @@ using namespace utils;
 
 char const* ANIMATED_MORPH_CUBE_GLB = "AnimatedMorphCube.glb";
 char const* DAMAGED_HELMET_WEBP_GLB = "DamagedHelmetWebp.glb";
+char const* ANIMATED_TRIANGLE_GLTF = "AnimatedTriangle.gltf";
 
 static std::ifstream::pos_type getFileSize(const char* filename) {
     std::ifstream in(filename, std::ifstream::ate | std::ifstream::binary);
     return in.tellg();
+}
+
+static std::vector<uint8_t> readFile(const Path& filename) {
+    std::ifstream in(filename.c_str(), std::ifstream::binary | std::ifstream::ate);
+    if (!in.is_open()) {
+        ADD_FAILURE() << "Unable to open " << filename;
+        return {};
+    }
+
+    std::ifstream::pos_type const fileSize = in.tellg();
+    if (fileSize <= 0) {
+        ADD_FAILURE() << "Invalid file size for " << filename << ": " << fileSize;
+        return {};
+    }
+
+    std::vector<uint8_t> buffer(static_cast<size_t>(fileSize));
+    in.seekg(0, std::ifstream::beg);
+    if (!in.read((char*) buffer.data(), static_cast<std::streamsize>(buffer.size()))) {
+        ADD_FAILURE() << "Unable to read " << filename;
+        return {};
+    }
+    return buffer;
 }
 
 class glTFData {
@@ -261,6 +284,41 @@ TEST_F(glTFIOTest, DamagedHelmetWebpMaterials) {
     EXPECT_TRUE(mData[DAMAGED_HELMET_WEBP_GLB]->mWebpDecoder == nullptr);
     EXPECT_EQ(mEngine->getTextureCount(), 3);    
 #endif
+}
+
+TEST_F(glTFIOTest, ExtendedLoaderRepeatedParsesReuseSameLoader) {
+    ASSERT_TRUE(AssetConfigurationExtended::isSupported());
+
+    Path const gltfFile = Path::getCurrentExecutable().getParent() + Path(ANIMATED_TRIANGLE_GLTF);
+    Path const absoluteGltfFile = gltfFile.getAbsolutePath();
+    std::vector<uint8_t> const buffer = readFile(gltfFile);
+    ASSERT_FALSE(buffer.empty());
+
+    AssetConfigurationExtended ext = {
+            .gltfPath = absoluteGltfFile.c_str(),
+    };
+    AssetConfiguration config = {
+            .engine = mEngine,
+            .materials = mMaterialProvider,
+            .names = mNameManager,
+            .ext = &ext,
+    };
+
+    AssetLoader* loader = AssetLoader::create(config);
+    ASSERT_NE(loader, nullptr);
+
+    FilamentAsset* firstAsset = loader->createAsset(buffer.data(), buffer.size());
+    ASSERT_NE(firstAsset, nullptr);
+    EXPECT_GT(firstAsset->getRenderableEntityCount(), 0u);
+    const size_t firstRenderableCount = firstAsset->getRenderableEntityCount();
+    loader->destroyAsset(firstAsset);
+
+    FilamentAsset* secondAsset = loader->createAsset(buffer.data(), buffer.size());
+    ASSERT_NE(secondAsset, nullptr);
+    EXPECT_EQ(secondAsset->getRenderableEntityCount(), firstRenderableCount);
+    loader->destroyAsset(secondAsset);
+
+    AssetLoader::destroy(&loader);
 }
 
 int main(int argc, char** argv) {
