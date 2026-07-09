@@ -127,7 +127,11 @@ public:
                 // is rebuilt (e.g. device rotation or re-entering the viewer).
                 return;
             }
-            const vec3 translation = (mGrabFar - Base::raycastFarPlane(x, y)) * ulen / vlen;
+            const vec3 far = Base::raycastFarPlane(x, y);
+            if (!std::isfinite(far.x) || !std::isfinite(far.y) || !std::isfinite(far.z)) {
+                return;
+            }
+            const vec3 translation = (mGrabFar - far) * ulen / vlen;
             mPivot = mGrabPivot + translation;
             Base::mEye = mGrabEye + translation;
             Base::mTarget = mGrabTarget + translation;
@@ -141,7 +145,7 @@ public:
     void scroll(int x, int y, FLOAT scrolldelta) override {
         const vec3 gazeDir = Base::mTarget - Base::mEye;
         const FLOAT gazeLen = length(gazeDir);
-        if (gazeLen < FLOAT(1e-6)) {
+        if (!std::isfinite(gazeLen) || gazeLen < FLOAT(1e-6)) {
             // Eye and target coincide (or are corrupted): avoid normalize(0) -> NaN.
             return;
         }
