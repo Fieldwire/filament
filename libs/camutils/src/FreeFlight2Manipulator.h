@@ -84,7 +84,12 @@ public:
         mGrabEye = Base::mEye;
         mGrabTarget = Base::mTarget;
         mGrabFar = Base::raycastFarPlane(x, y);
-        Base::raycast(x, y, &mGrabScene);
+        if (!Base::raycast(x, y, &mGrabScene)) {
+            // No ground plane / raycast callback => raycast() returns false and leaves
+            // mGrabScene unwritten (uninitialized garbage, possibly NaN). Fall back to the
+            // current target so the pan math below stays finite and well-conditioned.
+            mGrabScene = mGrabTarget;
+        }
 
         // For FLYING
         mGrabWinX = x;
@@ -116,7 +121,17 @@ public:
         else if (mGrabState == PANNING) {
             const FLOAT ulen = distance(mGrabScene, mGrabEye);
             const FLOAT vlen = distance(mGrabFar, mGrabScene);
-            const vec3 translation = (mGrabFar - Base::raycastFarPlane(x, y)) * ulen / vlen;
+            if (!std::isfinite(ulen) || !std::isfinite(vlen) || vlen < FLOAT(1e-6)) {
+                // Degenerate grab geometry: skip this frame rather than emit NaN, which
+                // would otherwise corrupt mEye/mTarget permanently until the manipulator
+                // is rebuilt (e.g. device rotation or re-entering the viewer).
+                return;
+            }
+            const vec3 far = Base::raycastFarPlane(x, y);
+            if (!std::isfinite(far.x) || !std::isfinite(far.y) || !std::isfinite(far.z)) {
+                return;
+            }
+            const vec3 translation = (mGrabFar - far) * ulen / vlen;
             mPivot = mGrabPivot + translation;
             Base::mEye = mGrabEye + translation;
             Base::mTarget = mGrabTarget + translation;
@@ -128,9 +143,14 @@ public:
     }
 
     void scroll(int x, int y, FLOAT scrolldelta) override {
-        const vec3 gaze = normalize(Base::mTarget - Base::mEye);
+        const vec3 gazeDir = Base::mTarget - Base::mEye;
+        const FLOAT gazeLen = length(gazeDir);
+        if (!std::isfinite(gazeLen) || gazeLen < FLOAT(1e-6)) {
+            // Eye and target coincide (or are corrupted): avoid normalize(0) -> NaN.
+            return;
+        }
+        const vec3 gaze = gazeDir / gazeLen;
         const vec3 movement = gaze * Base::mProps.zoomSpeed * -scrolldelta;
-        const vec3 v0 = mPivot - Base::mEye;
         Base::mEye += movement;
         Base::mTarget += movement;
     }
@@ -161,16 +181,16 @@ private:
 
     // PANNING and ZOOMING
     bool mFlipped = false;
-    vec3 mGrabPivot;
-    vec3 mGrabScene;
-    vec3 mGrabFar;
-    vec3 mGrabEye;
-    vec3 mGrabTarget;
+    vec3 mGrabPivot{};
+    vec3 mGrabScene{};
+    vec3 mGrabFar{};
+    vec3 mGrabEye{};
+    vec3 mGrabTarget{};
 
     // FLYING
     int mGrabWinX;
     int mGrabWinY;
-    vec3 mPivot;
+    vec3 mPivot{};
     vec2 mTargetEuler;  // (pitch, yaw)
     vec2 mGrabEuler;    // (pitch, yaw)
     FLOAT mMoveSpeed = 1.0f;
