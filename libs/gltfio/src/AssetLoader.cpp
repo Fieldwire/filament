@@ -311,7 +311,7 @@ private:
 
     // Methods used during the first traveral (creation of VertexBuffer, IndexBuffer, etc)
     FFilamentAsset* createRootAsset(const cgltf_data* srcAsset);
-    void recursePrimitives(const cgltf_node* rootNode, FFilamentAsset* fAsset);
+    void recursePrimitives(const cgltf_node* rootNode, SceneMask scenes, FFilamentAsset* fAsset);
     void createPrimitives(const cgltf_node* node, const char* name, FFilamentAsset* fAsset);
     bool createPrimitive(const cgltf_primitive& inPrim, const char* name, Primitive* outPrim,
             FFilamentAsset* fAsset);
@@ -543,7 +543,7 @@ FFilamentAsset* FAssetLoader::createRootAsset(const cgltf_data* srcAsset) {
     }
 
     for (const auto& [node, sceneMask] : fAsset->mRootNodes) {
-        recursePrimitives(node, fAsset);
+        recursePrimitives(node, sceneMask, fAsset);
     }
 
     // Find every unique resource URI and store a pointer to any of the cgltf-owned cstrings
@@ -568,18 +568,18 @@ FFilamentAsset* FAssetLoader::createRootAsset(const cgltf_data* srcAsset) {
     return fAsset;
 }
 
-void FAssetLoader::recursePrimitives(const cgltf_node* node, FFilamentAsset* fAsset) {
+void FAssetLoader::recursePrimitives(const cgltf_node* node, SceneMask scenes, FFilamentAsset* fAsset) {
     auto nameStr = getNodeName(node, mDefaultNodeName);
     const char* name = nameStr.c_str();
     name = name ? name : "node";
 
-    if (node->mesh) {
+    if (node->mesh && scenes.any()) {
         createPrimitives(node, name, fAsset);
         fAsset->mRenderableCount++;
     }
 
     for (cgltf_size i = 0, len = node->children_count; i < len; ++i) {
-        recursePrimitives(node->children[i], fAsset);
+        recursePrimitives(node->children[i], scenes, fAsset);
     }
 }
 
@@ -654,7 +654,7 @@ void FAssetLoader::recurseEntities(const cgltf_node* node, SceneMask scenes, Ent
     name = name ? name : "node";
 
     // If the node has a mesh, then create a renderable component.
-    if (node->mesh) {
+    if (node->mesh && scenes.any()) {
         createRenderable(node, entity, name, fAsset);
         if (srcAsset->variants_count > 0) {
             createMaterialVariants(node->mesh, entity, fAsset, instance);
