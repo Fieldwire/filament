@@ -52,7 +52,8 @@ public:
         Base::mEye = Base::mProps.flightStartPosition;
         const auto pitch = Base::mProps.flightStartPitch;
         const auto yaw = Base::mProps.flightStartYaw;
-        mTargetEuler = {pitch, yaw};
+        // grabUpdate() applies mTargetEuler negated, store it that way so the first swipe doesn't flip the view
+        mTargetEuler = {-pitch, -yaw};
         updateTarget(pitch, yaw);
     }
 
@@ -158,8 +159,8 @@ public:
     Bookmark getCurrentBookmark() const override {
         Bookmark bookmark;
         bookmark.flight.position = Base::mEye;
-        bookmark.flight.pitch = mTargetEuler.x;
-        bookmark.flight.yaw = mTargetEuler.y;
+        bookmark.flight.pitch = -mTargetEuler.x;
+        bookmark.flight.yaw = -mTargetEuler.y;
         return bookmark;
     }
 
@@ -173,6 +174,7 @@ public:
 
     void jumpToBookmark(const Bookmark& bookmark) override {
         Base::mEye = bookmark.flight.position;
+        mTargetEuler = {-bookmark.flight.pitch, -bookmark.flight.yaw};
         updateTarget(bookmark.flight.pitch, bookmark.flight.yaw);
     }
 
